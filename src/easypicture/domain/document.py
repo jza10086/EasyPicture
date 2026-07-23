@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -12,6 +13,7 @@ from easypicture.domain.events import (
     DocumentEvent,
     DocumentEventListener,
     DocumentModifiedChanged,
+    DocumentPathChanged,
     DocumentRevisionChanged,
     LayerListChanged,
     LayerPixelsChanged,
@@ -24,6 +26,7 @@ from easypicture.pixels import RGBAArray, TileCoord
 from easypicture.pixels.types import validate_rgba_array
 
 MAX_DOCUMENT_DIMENSION = 8192
+MAX_DOCUMENT_LAYERS = 256
 type Unsubscribe = Callable[[], None]
 
 
@@ -38,9 +41,23 @@ class Document:
         layers: list[RasterLayer],
         active_layer_id: UUID,
         selection: Selection,
+        project_path: Path | None = None,
+        source_name: str | None = None,
+        modified: bool = False,
     ) -> None:
         if not layers:
             raise ValueError("document must contain at least one layer")
+        if len(layers) > MAX_DOCUMENT_LAYERS:
+            raise ValueError(f"document cannot contain more than {MAX_DOCUMENT_LAYERS} layers")
+        if not 1 <= size.width <= MAX_DOCUMENT_DIMENSION:
+            raise ValueError("document width is out of range")
+        if not 1 <= size.height <= MAX_DOCUMENT_DIMENSION:
+            raise ValueError("document height is out of range")
+        if selection.size != size:
+            raise ValueError("selection size must match the document")
+        layer_ids = {layer.id for layer in layers}
+        if len(layer_ids) != len(layers):
+            raise ValueError("layer ids must be unique")
         if all(layer.id != active_layer_id for layer in layers):
             raise ValueError("active layer must belong to the document")
         self.id = document_id
@@ -48,7 +65,9 @@ class Document:
         self._layers = layers
         self._active_layer_id = active_layer_id
         self.selection = selection
-        self._modified = False
+        self._project_path = Path(project_path) if project_path is not None else None
+        self._source_name = Path(source_name).name if source_name else None
+        self._modified = modified
         self._revision = 0
         self._listeners: dict[int, DocumentEventListener] = {}
         self._next_listener_token = 0
@@ -67,6 +86,30 @@ class Document:
             layers=[layer],
             active_layer_id=layer.id,
             selection=Selection.create_empty(size),
+        )
+
+    @classmethod
+    def restore(
+        cls,
+        *,
+        document_id: UUID,
+        size: Size,
+        layers: list[RasterLayer],
+        active_layer_id: UUID,
+        selection: Selection,
+        project_path: Path | None = None,
+        source_name: str | None = None,
+        modified: bool = False,
+    ) -> Document:
+        return cls(
+            document_id=document_id,
+            size=size,
+            layers=layers,
+            active_layer_id=active_layer_id,
+            selection=selection,
+            project_path=project_path,
+            source_name=source_name,
+            modified=modified,
         )
 
     @property
@@ -92,6 +135,20 @@ class Document:
     @property
     def modified(self) -> bool:
         return self._modified
+
+    @property
+    def project_path(self) -> Path | None:
+        return self._project_path
+
+    @property
+    def source_name(self) -> str | None:
+        return self._source_name
+
+    @property
+    def display_name(self) -> str:
+        if self._project_path is not None:
+            return self._project_path.name
+        return self._source_name or "Untitled"
 
     @property
     def revision(self) -> int:
@@ -130,6 +187,8 @@ class Document:
         *,
         activate: bool = True,
     ) -> None:
+        if len(self._layers) >= MAX_DOCUMENT_LAYERS:
+            raise ValueError(f"document cannot contain more than {MAX_DOCUMENT_LAYERS} layers")
         if any(existing.id == layer.id for existing in self._layers):
             raise ValueError("layer id already belongs to the document")
         if not 0 <= index <= len(self._layers):
@@ -291,6 +350,19 @@ class Document:
             )
         )
 
+    def set_project_path(self, path: Path | None) -> None:
+        normalized = Path(path) if path is not None else None
+        if normalized == self._project_path:
+            return
+        self._project_path = normalized
+        self._emit(
+            DocumentPathChanged(
+                document_id=self.id,
+                revision=self._revision,
+                project_path=str(normalized) if normalized is not None else None,
+            )
+        )
+
     def set_active_layer(self, layer_id: UUID) -> None:
         if layer_id == self._active_layer_id:
             return
@@ -369,4 +441,9 @@ class Document:
             listener(event)
 
 
-__all__ = ["Document", "MAX_DOCUMENT_DIMENSION", "Unsubscribe"]
+__all__ = [
+    "Document",
+    "MAX_DOCUMENT_DIMENSION",
+    "MAX_DOCUMENT_LAYERS",
+    "Unsubscribe",
+]

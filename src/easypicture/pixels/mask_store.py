@@ -45,6 +45,9 @@ class MaskTileStore:
         coord = TileCoord(tx, ty)
         return self._tile_revisions.get(coord, 0)
 
+    def has_tile(self, tx: int, ty: int) -> bool:
+        return TileCoord(tx, ty) in self._tiles
+
     def read_tile(self, tx: int, ty: int) -> MaskArray:
         coord = TileCoord(tx, ty)
         tile = self._tiles.get(coord, self._empty_tile)
@@ -64,6 +67,33 @@ class MaskTileStore:
         self._revision += 1
         self._tile_revisions[coord] = self._tile_revisions.get(coord, 0) + 1
         return replacement
+
+    def replace_tile(self, tx: int, ty: int, pixels: MaskArray | None) -> bool:
+        coord = TileCoord(tx, ty)
+        current = self._tiles.get(coord)
+        if pixels is None:
+            if current is None:
+                return False
+            del self._tiles[coord]
+        else:
+            validate_mask_array(
+                pixels,
+                expected_width=self.tile_size,
+                expected_height=self.tile_size,
+            )
+            if current is not None and np.array_equal(current, pixels):
+                return False
+            self._tiles[coord] = pixels.copy(order="C")
+        self._revision += 1
+        self._tile_revisions[coord] = self._tile_revisions.get(coord, 0) + 1
+        return True
+
+    def clone_shared(self) -> MaskTileStore:
+        clone = MaskTileStore(self.tile_size)
+        clone._tiles = self._tiles.copy()
+        clone._tile_revisions = self._tile_revisions.copy()
+        clone._revision = self._revision
+        return clone
 
     def read_region(self, rect: Rect) -> MaskArray:
         output = np.zeros((rect.height, rect.width), dtype=np.uint8)

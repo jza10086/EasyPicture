@@ -1,9 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import numpy as np
+from PIL import Image
 from PySide6.QtWidgets import QWidget
 
 from easypicture.controller import ApplicationController
-from easypicture.ui.dialogs import NewDocumentSpec
+from easypicture.ui.dialogs import (
+    NewDocumentSpec,
+    RecoveryDecision,
+    UnsavedDecision,
+)
 from tests.fakes import FakeDialogService, make_settings
 
 
@@ -113,3 +121,147 @@ def test_new_document_does_not_replace_dirty_document_when_discard_cancelled(
 
     assert not controller.request_new_document(parent)
     assert controller.document is original
+
+
+def test_save_as_sets_project_path_and_clean_state(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(16, 12)
+    dialogs.project_save_path = tmp_path / "saved.limg"
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    controller.document.record_change()
+
+    assert controller.request_save_as(parent)
+
+    assert controller.document.project_path == dialogs.project_save_path
+    assert controller.document.display_name == "saved.limg"
+    assert not controller.document.modified
+    assert dialogs.project_save_path.exists()
+
+
+def test_png_export_does_not_clear_modified(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(8, 8)
+    dialogs.png_export_path = tmp_path / "export.png"
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    controller.document.record_change()
+    revision = controller.document.revision
+
+    assert controller.request_export_png(parent)
+
+    assert controller.document.modified
+    assert controller.document.revision == revision
+    assert dialogs.png_export_path.exists()
+
+
+def test_open_image_creates_clean_source_named_document(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    source = tmp_path / "photo.png"
+    pixels = np.zeros((4, 5, 4), dtype=np.uint8)
+    pixels[0, 0] = (1, 2, 3, 255)
+    Image.fromarray(pixels, "RGBA").save(source)
+    dialogs = FakeDialogService()
+    dialogs.open_path = source
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+
+    assert controller.request_open_document(parent)
+
+    assert controller.document is not None
+    assert controller.document.display_name == "photo.png"
+    assert controller.document.project_path is None
+    assert not controller.document.modified
+
+
+def test_corrupt_open_preserves_current_document(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    corrupt = tmp_path / "broken.limg"
+    corrupt.write_bytes(b"not a project")
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(10, 10)
+    dialogs.open_path = corrupt
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    original = controller.document
+
+    assert not controller.request_open_document(parent)
+
+    assert controller.document is original
+    assert dialogs.errors
+
+
+def test_unsaved_save_then_close_uses_project_save(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(10, 10)
+    dialogs.project_save_path = tmp_path / "closed.limg"
+    dialogs.unsaved_decision = UnsavedDecision.SAVE
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    controller.document.record_change()
+
+    assert controller.close_document(parent)
+
+    assert controller.document is None
+    assert dialogs.project_save_path.exists()
+
+
+def test_recovery_draft_round_trip(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    recovery_dir = tmp_path / "recovery"
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(10, 10)
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=recovery_dir,
+        recovery_interval_ms=10,
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    controller.document.record_change()
+    qtbot.waitUntil(controller.recovery_path.exists, timeout=5000)
+
+    restore_dialogs = FakeDialogService()
+    restore_dialogs.recovery_decision = RecoveryDecision.RESTORE
+    restored = ApplicationController(
+        make_settings(str(tmp_path / "restored-settings.ini")),
+        restore_dialogs,
+        recovery_dir=recovery_dir,
+    )
+
+    assert restored.offer_recovery(parent)
+    assert restored.document is not None
+    assert restored.document.modified
+    assert restored.document.display_name == "Untitled"

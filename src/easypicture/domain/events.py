@@ -30,6 +30,13 @@ class DocumentRevisionChanged:
 
 
 @dataclass(frozen=True, slots=True)
+class DocumentPathChanged:
+    document_id: UUID
+    revision: int
+    project_path: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class LayerListChanged:
     document_id: UUID
     revision: int
@@ -56,6 +63,7 @@ class LayerPixelsChanged:
 
 type DocumentEvent = (
     DocumentModifiedChanged
+    | DocumentPathChanged
     | ActiveLayerChanged
     | DocumentRevisionChanged
     | LayerListChanged
@@ -73,6 +81,7 @@ __all__ = [
     "DocumentEvent",
     "DocumentEventListener",
     "DocumentModifiedChanged",
+    "DocumentPathChanged",
     "DocumentRevisionChanged",
     "LayerListChanged",
     "LayerPixelsChanged",

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QSettings
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QWidget
 
 from easypicture.domain import Document, Size
-from easypicture.ui.dialogs import NewDocumentSpec
+from easypicture.ui.dialogs import (
+    NewDocumentSpec,
+    RecoveryDecision,
+    UnsavedDecision,
+)
 from easypicture.ui.settings import AppSettings
 
 
@@ -18,6 +24,13 @@ class FakeDialogService:
         self.undo_reset_result = True
         self.undo_reset_calls: list[tuple[int, int]] = []
         self.undo_too_large_calls: list[tuple[int, int]] = []
+        self.open_path: Path | None = None
+        self.project_save_path: Path | None = None
+        self.png_export_path: Path | None = None
+        self.unsaved_decision: UnsavedDecision | None = None
+        self.recovery_decision = RecoveryDecision.KEEP
+        self.errors: list[tuple[str, str]] = []
+        self.warnings: list[tuple[str, tuple[str, ...]]] = []
 
     def request_new_document(
         self,
@@ -31,6 +44,59 @@ class FakeDialogService:
         _ = parent, document
         self.discard_calls += 1
         return self.discard_result
+
+    def confirm_unsaved(
+        self,
+        parent: QWidget,
+        document: Document,
+    ) -> UnsavedDecision:
+        _ = parent, document
+        self.discard_calls += 1
+        if self.unsaved_decision is not None:
+            return self.unsaved_decision
+        return UnsavedDecision.DISCARD if self.discard_result else UnsavedDecision.CANCEL
+
+    def choose_open_file(self, parent: QWidget) -> Path | None:
+        _ = parent
+        return self.open_path
+
+    def choose_project_save_file(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+    ) -> Path | None:
+        _ = parent, suggested_name
+        return self.project_save_path
+
+    def choose_png_export_file(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+    ) -> Path | None:
+        _ = parent, suggested_name
+        return self.png_export_path
+
+    def confirm_recovery(
+        self,
+        parent: QWidget,
+        display_name: str,
+    ) -> RecoveryDecision:
+        _ = parent, display_name
+        return self.recovery_decision
+
+    def show_error(self, parent: QWidget, title: str, message: str) -> None:
+        _ = parent
+        self.errors.append((title, message))
+
+    def show_warnings(
+        self,
+        parent: QWidget,
+        title: str,
+        messages: tuple[str, ...],
+    ) -> None:
+        _ = parent
+        if messages:
+            self.warnings.append((title, messages))
 
     def choose_color(
         self,

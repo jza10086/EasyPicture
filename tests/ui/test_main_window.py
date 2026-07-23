@@ -52,3 +52,27 @@ def test_close_clean_document_returns_to_empty_state(qtbot, tmp_path) -> None:
     assert controller.document is None
     assert window.central_stack.currentWidget() is window.empty_state
     assert dialogs.discard_calls == 0
+
+
+def test_save_updates_window_title_and_actions(qtbot, tmp_path) -> None:
+    settings = make_settings(str(tmp_path / "settings.ini"))
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(20, 10)
+    dialogs.project_save_path = tmp_path / "named.limg"
+    controller = ApplicationController(
+        settings,
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    window = MainWindow(controller, settings)
+    qtbot.addWidget(window)
+    window.new_action.trigger()
+    assert controller.document is not None
+    controller.document.record_change()
+
+    window.save_action.trigger()
+
+    assert window.windowTitle() == "named.limg — EasyPicture"
+    assert window.save_action.isEnabled()
+    assert window.save_as_action.isEnabled()
+    assert window.export_action.isEnabled()

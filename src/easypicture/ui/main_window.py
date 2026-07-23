@@ -33,6 +33,7 @@ class EmptyStateWidget(QFrame):
         super().__init__(parent)
         self.setObjectName("EmptyState")
         self.new_button = QPushButton("新建文档", self)
+        self.open_button = QPushButton("打开图片或项目", self)
         title = QLabel("EasyPicture", self)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 24px; font-weight: 600;")
@@ -44,6 +45,7 @@ class EmptyStateWidget(QFrame):
         layout.addWidget(title)
         layout.addWidget(hint)
         layout.addWidget(self.new_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.open_button, alignment=Qt.AlignmentFlag.AlignCenter)
         layout.addStretch(1)
 
 
@@ -89,6 +91,8 @@ class MainWindow(QMainWindow):
     def _create_actions(self) -> None:
         self.new_action = QAction("新建(&N)", self)
         self.new_action.setShortcut(QKeySequence.StandardKey.New)
+        self.open_action = QAction("打开(&O)", self)
+        self.open_action.setShortcut(QKeySequence.StandardKey.Open)
         self.close_action = QAction("关闭文档(&C)", self)
         self.close_action.setShortcut(QKeySequence.StandardKey.Close)
         self.exit_action = QAction("退出(&X)", self)
@@ -97,10 +101,9 @@ class MainWindow(QMainWindow):
         self.save_action = QAction("保存(&S)", self)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_as_action = QAction("另存为", self)
-        self.export_action = QAction("导出", self)
+        self.export_action = QAction("导出 PNG", self)
         for action in (self.save_action, self.save_as_action, self.export_action):
             action.setEnabled(False)
-            action.setToolTip("项目保存与导出将在 P3 提供")
 
         self.undo_action = QAction("撤销", self)
         self.redo_action = QAction("重做", self)
@@ -121,6 +124,7 @@ class MainWindow(QMainWindow):
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("文件(&F)")
         file_menu.addAction(self.new_action)
+        file_menu.addAction(self.open_action)
         file_menu.addAction(self.close_action)
         file_menu.addSeparator()
         file_menu.addAction(self.save_action)
@@ -142,7 +146,7 @@ class MainWindow(QMainWindow):
     def _create_toolbars(self) -> None:
         self.tool_options = QToolBar("工具选项", self)
         self.tool_options.setObjectName("ToolOptionsToolbar")
-        self.tool_options.addWidget(QLabel("P2：暂无正式编辑工具", self.tool_options))
+        self.tool_options.addWidget(QLabel("P3：暂无正式编辑工具", self.tool_options))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.tool_options)
 
         self.tools_toolbar = QToolBar("工具", self)
@@ -183,8 +187,13 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.empty_state.new_button.clicked.connect(self._request_new_document)
+        self.empty_state.open_button.clicked.connect(self._request_open_document)
         self.new_action.triggered.connect(self._request_new_document)
+        self.open_action.triggered.connect(self._request_open_document)
         self.close_action.triggered.connect(self._request_close_document)
+        self.save_action.triggered.connect(self._request_save_document)
+        self.save_as_action.triggered.connect(self._request_save_as_document)
+        self.export_action.triggered.connect(self._request_export_png)
         self.exit_action.triggered.connect(self.close)
         self.zoom_in_action.triggered.connect(self.canvas_view.zoom_in)
         self.zoom_out_action.triggered.connect(self.canvas_view.zoom_out)
@@ -199,6 +208,7 @@ class MainWindow(QMainWindow):
         undo_stack.redoTextChanged.connect(self._update_undo_actions)
         self.controller.document_changed.connect(self._on_document_changed)
         self.controller.document_event.connect(self._on_document_event)
+        self.controller.status_message.connect(self.statusBar().showMessage)
         self.canvas_view.zoom_changed.connect(self._on_zoom_changed)
         self.canvas_view.cursor_document_position_changed.connect(self._on_cursor_position)
 
@@ -215,12 +225,27 @@ class MainWindow(QMainWindow):
     def _request_close_document(self) -> None:
         self.controller.close_document(self)
 
+    def _request_open_document(self) -> None:
+        self.controller.request_open_document(self)
+
+    def _request_save_document(self) -> None:
+        self.controller.request_save(self)
+
+    def _request_save_as_document(self) -> None:
+        self.controller.request_save_as(self)
+
+    def _request_export_png(self) -> None:
+        self.controller.request_export_png(self)
+
     def _on_document_changed(self, document: Document | None) -> None:
         self.canvas_view.set_document(document)
         self.layer_panel.set_document(document)
         has_document = document is not None
         self.central_stack.setCurrentWidget(self.canvas_view if has_document else self.empty_state)
         self.close_action.setEnabled(has_document)
+        self.save_action.setEnabled(has_document)
+        self.save_as_action.setEnabled(has_document)
+        self.export_action.setEnabled(has_document)
         for action in (
             self.zoom_in_action,
             self.zoom_out_action,
@@ -254,7 +279,7 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(f"EasyPicture {__version__}")
             return
         modified_marker = "*" if document.modified else ""
-        self.setWindowTitle(f"Untitled{modified_marker} — EasyPicture")
+        self.setWindowTitle(f"{document.display_name}{modified_marker} — EasyPicture")
 
     def _on_zoom_changed(self, zoom: float) -> None:
         self.zoom_label.setText(f"{zoom * 100:.1f}%")

@@ -10,6 +10,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from easypicture.commands.patch_store import PatchHandle, UndoPatchStore
 from easypicture.domain import Document, RasterLayer
+from easypicture.domain.document import MAX_DOCUMENT_LAYERS
 from easypicture.pixels import RGBAArray, TileCoord
 
 DEFAULT_UNDO_BUDGET_BYTES = 1024 * 1024 * 1024
@@ -212,6 +213,8 @@ class DocumentCommandService:
 
     def create_layer(self) -> bool:
         document = self._require_document()
+        if len(document.layers) >= MAX_DOCUMENT_LAYERS:
+            return False
         names = {layer.name for layer in document.layers}
         number = 1
         while f"图层 {number}" in names:
@@ -229,6 +232,8 @@ class DocumentCommandService:
 
     def duplicate_layer(self, layer_id: UUID) -> bool:
         document = self._require_document()
+        if len(document.layers) >= MAX_DOCUMENT_LAYERS:
+            return False
         source = document.layer_by_id(layer_id)
         layer = source.duplicate()
         index = document.layer_index(layer_id) + 1
@@ -368,6 +373,14 @@ class DocumentCommandService:
             self.undo_stack.resetClean()
         finally:
             self._suppress_clean_sync = False
+
+    def mark_saved(self, document_id: UUID, revision: int) -> bool:
+        document = self._document
+        if document is None or document.id != document_id or document.revision != revision:
+            return False
+        self.undo_stack.setClean()
+        document.mark_clean()
+        return True
 
     def _push_property(
         self,

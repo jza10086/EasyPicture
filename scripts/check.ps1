@@ -23,6 +23,11 @@ try {
     Invoke-Checked { uv run mypy src } "mypy"
     Invoke-Checked { uv run pytest -q } "pytest"
     Invoke-Checked { uv run python -m easypicture --smoke-test } "application smoke test"
+    $ioSmokeDir = Join-Path $repoRoot ".cache\io-smoke"
+    New-Item -ItemType Directory -Path $ioSmokeDir -Force | Out-Null
+    Invoke-Checked {
+        uv run python -m easypicture --io-smoke-test $ioSmokeDir
+    } "persistence I/O smoke test"
 }
 finally {
     Pop-Location

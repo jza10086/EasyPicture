@@ -1,10 +1,10 @@
 # EasyPicture
 
-EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已完成 P2
-应用骨架：包含单文档生命周期、分块像素/选区存储、多图层管理、渐进 Tile 合成、
-图层与像素撤销、可缩放平移画布、工具切换框架以及设置持久化。
+EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已完成 P3
+可行走骨架：包含单文档生命周期、分块像素/选区存储、多图层管理、渐进 Tile 合成、
+图层与像素撤销、常用图片导入、`.limg` 项目保存/恢复、自动恢复和 PNG 导出。
 
-文件读写、导入导出和正式图像编辑工具尚未实现。
+画笔、选区操作、变换和完整格式导出尚未实现。
 
 ## 环境
 
@@ -23,6 +23,7 @@ EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当�
 .\scripts\check.ps1
 .\scripts\benchmark.ps1
 .\scripts\benchmark-p2.ps1
+.\scripts\benchmark-p3.ps1
 .\scripts\package.ps1
 .\scripts\smoke-standalone.ps1
 ```
@@ -33,8 +34,9 @@ EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当�
 $env:UV_CACHE_DIR = "$PWD\.cache\uv"
 uv run python -m easypicture
 uv run python -m easypicture --smoke-test
+uv run python -m easypicture --io-smoke-test .cache\io-smoke
 ```
 
 总体技术评估和开发路线见
 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段结果见
-[`docs/p2_acceptance.md`](docs/p2_acceptance.md)。
+[`docs/p3_acceptance.md`](docs/p3_acceptance.md)。

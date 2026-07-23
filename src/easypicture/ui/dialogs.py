@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
 from PySide6.QtGui import QColor
@@ -10,6 +12,7 @@ from PySide6.QtWidgets import (
     QColorDialog,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFormLayout,
     QMessageBox,
     QSpinBox,
@@ -31,6 +34,18 @@ class NewDocumentSpec:
         return Size(self.width, self.height)
 
 
+class UnsavedDecision(Enum):
+    SAVE = "save"
+    DISCARD = "discard"
+    CANCEL = "cancel"
+
+
+class RecoveryDecision(Enum):
+    RESTORE = "restore"
+    DISCARD = "discard"
+    KEEP = "keep"
+
+
 class DialogService(Protocol):
     def request_new_document(
         self,
@@ -39,6 +54,32 @@ class DialogService(Protocol):
     ) -> NewDocumentSpec | None: ...
 
     def confirm_discard(self, parent: QWidget, document: Document) -> bool: ...
+
+    def confirm_unsaved(
+        self,
+        parent: QWidget,
+        document: Document,
+    ) -> UnsavedDecision: ...
+
+    def choose_open_file(self, parent: QWidget) -> Path | None: ...
+
+    def choose_project_save_file(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+    ) -> Path | None: ...
+
+    def choose_png_export_file(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+    ) -> Path | None: ...
+
+    def confirm_recovery(self, parent: QWidget, display_name: str) -> RecoveryDecision: ...
+
+    def show_error(self, parent: QWidget, title: str, message: str) -> None: ...
+
+    def show_warnings(self, parent: QWidget, title: str, messages: tuple[str, ...]) -> None: ...
 
     def choose_color(
         self,
@@ -119,6 +160,104 @@ class QtDialogService:
         )
         return result == QMessageBox.StandardButton.Discard
 
+    def confirm_unsaved(
+        self,
+        parent: QWidget,
+        document: Document,
+    ) -> UnsavedDecision:
+        box = QMessageBox(parent)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("保存更改？")
+        box.setText(f"是否保存对“{document.display_name}”的更改？")
+        box.setInformativeText("不保存将丢失上次项目保存后的更改。")
+        save_button = box.addButton("保存", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton("放弃", QMessageBox.ButtonRole.DestructiveRole)
+        cancel_button = box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(save_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_button:
+            return UnsavedDecision.SAVE
+        if clicked is discard_button:
+            return UnsavedDecision.DISCARD
+        _ = cancel_button
+        return UnsavedDecision.CANCEL
+
+    def choose_open_file(self, parent: QWidget) -> Path | None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            parent,
+            "打开图片或项目",
+            "",
+            (
+                "支持的文件 (*.limg *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.tga);;"
+                "EasyPicture 项目 (*.limg);;图片 (*.png *.jpg *.jpeg *.webp *.bmp *.tif "
+                "*.tiff *.tga);;所有文件 (*)"
+            ),
+        )
+        return Path(path) if path else None
+
+    def choose_project_save_file(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+    ) -> Path | None:
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            parent,
+            "保存 EasyPicture 项目",
+            suggested_name,
+            "EasyPicture 项目 (*.limg)",
+        )
+        if not path:
+            return None
+        result = Path(path)
+        return result if result.suffix.lower() == ".limg" else result.with_suffix(".limg")
+
+    def choose_png_export_file(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+    ) -> Path | None:
+        path, _selected_filter = QFileDialog.getSaveFileName(
+            parent,
+            "导出 PNG",
+            suggested_name,
+            "PNG 图片 (*.png)",
+        )
+        if not path:
+            return None
+        result = Path(path)
+        return result if result.suffix.lower() == ".png" else result.with_suffix(".png")
+
+    def confirm_recovery(self, parent: QWidget, display_name: str) -> RecoveryDecision:
+        box = QMessageBox(parent)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("发现恢复草稿")
+        box.setText(f"发现“{display_name}”的自动恢复草稿。")
+        box.setInformativeText("是否恢复上次异常退出前保存的内容？")
+        restore_button = box.addButton("恢复", QMessageBox.ButtonRole.AcceptRole)
+        discard_button = box.addButton("丢弃", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(restore_button)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is restore_button:
+            return RecoveryDecision.RESTORE
+        if clicked is discard_button:
+            return RecoveryDecision.DISCARD
+        return RecoveryDecision.KEEP
+
+    def show_error(self, parent: QWidget, title: str, message: str) -> None:
+        QMessageBox.critical(parent, title, message)
+
+    def show_warnings(
+        self,
+        parent: QWidget,
+        title: str,
+        messages: tuple[str, ...],
+    ) -> None:
+        if messages:
+            QMessageBox.warning(parent, title, "\n".join(messages))
+
     def choose_color(
         self,
         parent: QWidget,
@@ -174,4 +313,6 @@ __all__ = [
     "NewDocumentDialog",
     "NewDocumentSpec",
     "QtDialogService",
+    "RecoveryDecision",
+    "UnsavedDecision",
 ]
