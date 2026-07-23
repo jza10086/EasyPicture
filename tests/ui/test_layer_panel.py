@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtTest import QTest
 
 from easypicture.controller import ApplicationController
 from easypicture.ui.dialogs import NewDocumentSpec
@@ -25,6 +26,16 @@ def _names(window: MainWindow) -> list[str]:
         str(model.data(model.index(row, 0), Qt.ItemDataRole.DisplayRole))
         for row in range(model.rowCount())
     ]
+
+
+def _visibility_point(window: MainWindow, row: int) -> QPoint:
+    panel = window.layer_panel
+    return panel.list_view.visibility_rect(panel.model.index(row, 0)).center()
+
+
+def _text_point(window: MainWindow, row: int) -> QPoint:
+    panel = window.layer_panel
+    return panel.list_view.text_rect(panel.model.index(row, 0)).center()
 
 
 def test_layer_panel_shows_top_layer_first_and_buttons_are_undoable(qtbot, tmp_path) -> None:
@@ -116,3 +127,91 @@ def test_selecting_active_layer_does_not_mark_document_modified(qtbot, tmp_path)
 
     assert document.active_layer.name == "图层 1"
     assert not document.modified
+
+
+def test_visibility_double_click_is_not_swallowed_by_rename(qtbot, tmp_path) -> None:
+    window, controller = _window_with_document(qtbot, tmp_path)
+    window.show()
+    qtbot.wait(1)
+    document = controller.document
+    assert document is not None
+    active_id = document.active_layer_id
+
+    QTest.mouseDClick(
+        window.layer_panel.list_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=_visibility_point(window, 0),
+    )
+
+    assert not document.active_layer.visible
+    assert document.active_layer_id == active_id
+    assert controller.commands.undo_stack.count() == 1
+    assert not window.layer_panel.list_view.visibility_scrubbing
+
+
+def test_visibility_scrub_batches_rows_without_selecting_or_reordering(
+    qtbot,
+    tmp_path,
+) -> None:
+    window, controller = _window_with_document(qtbot, tmp_path)
+    panel = window.layer_panel
+    for _ in range(3):
+        panel.new_button.click()
+    window.show()
+    qtbot.wait(1)
+    document = controller.document
+    assert document is not None
+    active_id = document.active_layer_id
+    before_names = _names(window)
+    before_count = controller.commands.undo_stack.count()
+
+    QTest.mousePress(
+        panel.list_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=_visibility_point(window, 0),
+    )
+    QTest.mouseMove(panel.list_view.viewport(), _visibility_point(window, 2))
+    QTest.mouseRelease(
+        panel.list_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=_visibility_point(window, 2),
+    )
+
+    assert [layer.visible for layer in reversed(document.layers)] == [
+        False,
+        False,
+        False,
+        True,
+    ]
+    assert document.active_layer_id == active_id
+    assert _names(window) == before_names
+    assert controller.commands.undo_stack.count() == before_count + 1
+    assert controller.commands.undo_stack.undoText() == "批量切换图层可见性"
+
+    controller.commands.undo_stack.undo()
+    assert all(layer.visible for layer in document.layers)
+
+
+def test_only_text_region_changes_active_layer(qtbot, tmp_path) -> None:
+    window, controller = _window_with_document(qtbot, tmp_path)
+    panel = window.layer_panel
+    panel.new_button.click()
+    window.show()
+    qtbot.wait(1)
+    document = controller.document
+    assert document is not None
+    top_id = document.active_layer_id
+
+    QTest.mouseClick(
+        panel.list_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=_visibility_point(window, 1),
+    )
+    assert document.active_layer_id == top_id
+
+    QTest.mouseClick(
+        panel.list_view.viewport(),
+        Qt.MouseButton.LeftButton,
+        pos=_text_point(window, 1),
+    )
+    assert document.active_layer.name == "图层 1"

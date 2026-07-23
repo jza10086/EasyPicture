@@ -10,8 +10,10 @@ from PySide6.QtCore import (
     QMimeData,
     QModelIndex,
     QPersistentModelIndex,
+    QRect,
     Qt,
 )
+from PySide6.QtGui import QFocusEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -20,6 +22,9 @@ from PySide6.QtWidgets import (
     QListView,
     QPushButton,
     QSpinBox,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QVBoxLayout,
     QWidget,
 )
@@ -202,6 +207,152 @@ class LayerListModel(QAbstractListModel):
             self.dataChanged.emit(index, index)
 
 
+class LayerItemDelegate(QStyledItemDelegate):
+    def visibility_rect(self, view: QListView, index: QModelIndex) -> QRect:
+        option = QStyleOptionViewItem()
+        option.initFrom(view.viewport())
+        option.rect = view.visualRect(index)
+        self.initStyleOption(option, index)
+        return view.style().subElementRect(
+            QStyle.SubElement.SE_ItemViewItemCheckIndicator,
+            option,
+            view.viewport(),
+        )
+
+    def text_rect(self, view: QListView, index: QModelIndex) -> QRect:
+        option = QStyleOptionViewItem()
+        option.initFrom(view.viewport())
+        option.rect = view.visualRect(index)
+        self.initStyleOption(option, index)
+        return view.style().subElementRect(
+            QStyle.SubElement.SE_ItemViewItemText,
+            option,
+            view.viewport(),
+        )
+
+
+class LayerListView(QListView):
+    """Keep visibility scrubbing separate from selection and layer reordering."""
+
+    def __init__(
+        self,
+        commands: DocumentCommandService,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.commands = commands
+        self.layer_delegate = LayerItemDelegate(self)
+        self.setItemDelegate(self.layer_delegate)
+        self.setMouseTracking(True)
+        self._visibility_scrubbing = False
+        self._scrub_target_visible = False
+        self._scrub_last_row = -1
+        self._scrubbed_layer_ids: set[object] = set()
+
+    @property
+    def visibility_scrubbing(self) -> bool:
+        return self._visibility_scrubbing
+
+    def visibility_rect(self, index: QModelIndex) -> QRect:
+        return self.layer_delegate.visibility_rect(self, index)
+
+    def text_rect(self, index: QModelIndex) -> QRect:
+        return self.layer_delegate.text_rect(self, index)
+
+    def cancel_visibility_scrub(self) -> None:
+        if not self._visibility_scrubbing:
+            return
+        self._visibility_scrubbing = False
+        self._scrub_last_row = -1
+        self._scrubbed_layer_ids.clear()
+        self.commands.end_visibility_scrub()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        index = self.indexAt(event.position().toPoint())
+        if event.button() == Qt.MouseButton.LeftButton and index.isValid():
+            if self.visibility_rect(index).contains(event.position().toPoint()):
+                self._begin_visibility_scrub(index)
+                event.accept()
+                return
+            if not self.text_rect(index).contains(event.position().toPoint()):
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self._visibility_scrubbing:
+            if not event.buttons() & Qt.MouseButton.LeftButton:
+                self.cancel_visibility_scrub()
+                event.accept()
+                return
+            index = self.indexAt(event.position().toPoint())
+            if index.isValid():
+                first_row = min(self._scrub_last_row, index.row())
+                last_row = max(self._scrub_last_row, index.row())
+                for row in range(first_row, last_row + 1):
+                    self._apply_visibility_to_row(row)
+                self._scrub_last_row = index.row()
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._visibility_scrubbing and event.button() == Qt.MouseButton.LeftButton:
+            self.cancel_visibility_scrub()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        index = self.indexAt(event.position().toPoint())
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and index.isValid()
+            and self.visibility_rect(index).contains(event.position().toPoint())
+        ):
+            self._begin_visibility_scrub(index)
+            self.cancel_visibility_scrub()
+            event.accept()
+            return
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and index.isValid()
+            and not self.text_rect(index).contains(event.position().toPoint())
+        ):
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def focusOutEvent(self, event: QFocusEvent) -> None:
+        self.cancel_visibility_scrub()
+        super().focusOutEvent(event)
+
+    def _begin_visibility_scrub(self, index: QModelIndex) -> None:
+        if self._visibility_scrubbing:
+            return
+        model = self.model()
+        if not isinstance(model, LayerListModel):
+            return
+        layer = model.layer_for_index(index)
+        if layer is None or not self.commands.begin_visibility_scrub():
+            return
+        self._visibility_scrubbing = True
+        self._scrub_target_visible = not layer.visible
+        self._scrub_last_row = index.row()
+        self._scrubbed_layer_ids.clear()
+        self._apply_visibility_to_row(index.row())
+
+    def _apply_visibility_to_row(self, row: int) -> None:
+        model = self.model()
+        if not isinstance(model, LayerListModel):
+            return
+        layer = model.layer_for_index(model.index(row, 0))
+        if layer is None or layer.id in self._scrubbed_layer_ids:
+            return
+        self._scrubbed_layer_ids.add(layer.id)
+        self.commands.set_layer_visible(layer.id, self._scrub_target_visible)
+
+
 class LayerPanel(QWidget):
     def __init__(
         self,
@@ -211,7 +362,7 @@ class LayerPanel(QWidget):
         super().__init__(parent)
         self.commands = commands
         self.model = LayerListModel(commands, self)
-        self.list_view = QListView(self)
+        self.list_view = LayerListView(commands, self)
         self.list_view.setObjectName("LayerList")
         self.list_view.setModel(self.model)
         self.list_view.setEditTriggers(
@@ -269,6 +420,7 @@ class LayerPanel(QWidget):
         self.set_document(None)
 
     def set_document(self, document: Document | None) -> None:
+        self.list_view.cancel_visibility_scrub()
         self.model.set_document(document)
         self.setEnabled(document is not None)
         self._sync_active_layer()
@@ -385,4 +537,10 @@ class LayerPanel(QWidget):
         self.down_button.setEnabled(index > 0)
 
 
-__all__ = ["LAYER_MIME_TYPE", "LayerListModel", "LayerPanel"]
+__all__ = [
+    "LAYER_MIME_TYPE",
+    "LayerItemDelegate",
+    "LayerListModel",
+    "LayerListView",
+    "LayerPanel",
+]

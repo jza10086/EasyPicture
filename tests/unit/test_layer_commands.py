@@ -306,3 +306,25 @@ def test_patch_handles_are_released_when_undo_limit_discards_oldest() -> None:
     assert service.undo_stack.count() == 100
     assert service.patch_store.handle_count == 200
     assert service.history_bytes <= service.undo_budget_bytes
+
+
+def test_visibility_scrub_is_one_undoable_macro() -> None:
+    document = Document.create(256, 256)
+    service = DocumentCommandService()
+    service.attach_document(document)
+    assert service.create_layer()
+    assert service.create_layer()
+    layer_ids = [layer.id for layer in document.layers]
+    baseline_count = service.undo_stack.count()
+
+    assert service.begin_visibility_scrub()
+    for layer_id in layer_ids:
+        assert service.set_layer_visible(layer_id, False)
+    service.end_visibility_scrub()
+
+    assert service.undo_stack.count() == baseline_count + 1
+    assert service.undo_stack.undoText() == "批量切换图层可见性"
+    assert not any(layer.visible for layer in document.layers)
+
+    service.undo_stack.undo()
+    assert all(layer.visible for layer in document.layers)

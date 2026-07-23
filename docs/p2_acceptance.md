@@ -20,6 +20,8 @@
 - 已实现 QPainter source-over、两级 LRU、精确失效和渐进调度；
 - 已将 CanvasItem 接入实际多图层渲染；
 - 已实现顶层优先的图层面板、拖放与按钮排序及动态撤销/重做 Action；
+- 已修复显隐双击被重命名触发器吞掉的问题，并实现类似 Blender 的跨行拖拭
+  批量显隐；眼睛区域不选择或移动图层，只有文字区域参与选择、重命名和拖动排序；
 - 已新增 ADR-0008、ADR-0009 和 P2 密集层基准。
 
 保存、另存为和导出继续禁用。P2 没有加入画笔、选区工具、导入导出、项目文件或
@@ -31,7 +33,7 @@
 uv lock --check                         PASS
 uv run ruff check .                     PASS
 uv run mypy src                         PASS (32 source files)
-uv run pytest -q                        PASS (83 tests)
+uv run pytest -q                        PASS (87 tests)
 uv run python -m easypicture --smoke-test
                                         PASS
 Nuitka standalone build                 PASS
@@ -42,6 +44,7 @@ isolated PATH standalone smoke          PASS
 
 - 图层创建、复制、删除、重命名、排序、属性和最后一层保护；
 - 顶层优先显示、拖放及按钮排序、选择和 Action 状态；
+- 显隐区域连续单击/双击、跨行拖拭、活动层隔离及单步撤销；
 - 连续 100 次图层属性 undo/redo；
 - 共享 Tile 的 copy-on-write；
 - 多 Tile before/after、缺失 Tile 和 PatchStore raw/zlib 往返；
@@ -74,8 +77,8 @@ isolated PATH standalone smoke          PASS
 ## Standalone 验收
 
 - Nuitka 4.1.3、MSVC 14.5 构建成功；
-- `EasyPicture.exe` 约 16.74 MiB；
-- standalone 目录约 109.34 MiB，共 74 个文件；
+- `EasyPicture.exe` 约 16.78 MiB；
+- standalone 目录约 109.38 MiB，共 74 个文件；
 - 包含 `qwindows.dll` 和 Qt imageformats；
 - PATH 仅保留 Windows 系统目录时执行 `--smoke-test`，退出码为 0。
 

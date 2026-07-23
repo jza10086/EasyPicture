@@ -185,6 +185,7 @@ class DocumentCommandService:
         self._document: Document | None = None
         self._commands: dict[UUID, _DocumentCommand] = {}
         self._suppress_clean_sync = False
+        self._visibility_macro_open = False
         self.undo_stack.cleanChanged.connect(self._on_clean_changed)
 
     @property
@@ -196,6 +197,8 @@ class DocumentCommandService:
         return sum(command.storage_bytes for command in self._commands.values())
 
     def attach_document(self, document: Document | None) -> None:
+        if self._visibility_macro_open:
+            self.end_visibility_scrub()
         self._clear_stack()
         self._document = document
         self._suppress_clean_sync = True
@@ -271,6 +274,20 @@ class DocumentCommandService:
             visible,
             "切换图层可见性",
         )
+
+    def begin_visibility_scrub(self) -> bool:
+        if self._document is None or self._visibility_macro_open:
+            return False
+        self.undo_stack.beginMacro("批量切换图层可见性")
+        self._visibility_macro_open = True
+        return True
+
+    def end_visibility_scrub(self) -> None:
+        if not self._visibility_macro_open:
+            return
+        self.undo_stack.endMacro()
+        self._visibility_macro_open = False
+        self._reconcile_commands()
 
     def set_layer_opacity(self, layer_id: UUID, opacity: float) -> bool:
         if not 0.0 <= opacity <= 1.0:
@@ -392,11 +409,16 @@ class DocumentCommandService:
 
     def _reconcile_commands(self) -> None:
         active_ids: set[UUID] = set()
-        for index in range(self.undo_stack.count()):
-            command = self.undo_stack.command(index)
+
+        def collect_ids(command: QUndoCommand) -> None:
             command_id = getattr(command, "command_id", None)
             if isinstance(command_id, UUID):
                 active_ids.add(command_id)
+            for child_index in range(command.childCount()):
+                collect_ids(command.child(child_index))
+
+        for index in range(self.undo_stack.count()):
+            collect_ids(self.undo_stack.command(index))
         for command_id in tuple(self._commands):
             if command_id not in active_ids:
                 command = self._commands.pop(command_id)
