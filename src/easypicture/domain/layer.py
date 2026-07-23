@@ -51,5 +51,18 @@ class RasterLayer:
     def record_pixel_change(self) -> None:
         self._revision += 1
 
+    def duplicate(self, name: str | None = None) -> RasterLayer:
+        return RasterLayer(
+            id=uuid4(),
+            name=name if name is not None else f"{self.name} 副本",
+            size=self.size,
+            origin=self.origin,
+            pixels=self.pixels.clone_shared(),
+            visible=self.visible,
+            opacity=self.opacity,
+            locked=self.locked,
+            alpha_locked=self.alpha_locked,
+        )
+
 
 __all__ = ["RasterLayer"]

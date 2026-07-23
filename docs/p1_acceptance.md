@@ -2,7 +2,7 @@
 
 - 日期：2026-07-23
 - 自动验收：Passed
-- 人工验收：Pending
+- 人工验收：Passed
 - Python：3.14.3 x64
 - Tile 决策：256×256（保持不变）
 
@@ -29,14 +29,14 @@ P1 没有加入图层合成、撤销栈、文件读写、图层操作或正式�
 uv lock --check                         PASS
 uv run ruff check .                     PASS
 uv run mypy src                         PASS (27 source files)
-uv run pytest -q                        PASS (57 tests)
+uv run pytest -q                        PASS (58 tests)
 uv run python -m easypicture --smoke-test
                                         PASS
 Nuitka standalone build                 PASS
 isolated PATH standalone smoke          PASS
 ```
 
-57 项测试包括原有 21 项 P0 测试，并新增：
+58 项测试包括原有 21 项 P0 测试，并新增：
 
 - Document 尺寸边界、默认图层、UUID、revision、modified 和事件订阅；
 - Mask 稀疏存储、copy-on-write 及跨 2、4、9 Tile 读写；
@@ -45,6 +45,7 @@ isolated PATH standalone smoke          PASS
 - 临时目录中的设置、窗口状态和颜色往返；
 - 缩放、平移和非零图层 origin 下的坐标往返；
 - 鼠标锚点缩放、中键平移和画布视图不修改领域 revision；
+- 首次适合窗口后的滚动条布局变化会自动重新居中；
 - 工具连续切换时 Overlay、交互状态和光标清理；
 - 主窗口空状态、标题、菜单启用状态和状态栏。
 
@@ -72,7 +73,9 @@ isolated PATH standalone smoke          PASS
 Nuitka 仍提示 Python 3.14 支持属于实验性。当前构建和运行均通过；依赖升级后必须
 重新执行 standalone 构建与隔离 PATH 冒烟。
 
-## 待人工验收
+## 人工验收
+
+用户已在当前机器完成并通过：
 
 1. 新建默认 1920×1080 和自定义尺寸文档；
 2. 检查棋盘格、Dock、状态栏和窗口标题；
@@ -81,8 +84,8 @@ Nuitka 仍提示 Python 3.14 支持属于实验性。当前构建和运行均通
 5. 重启后确认窗口布局、颜色和上次新建尺寸恢复；
 6. 确认关闭 clean 文档不提示；modified 对话框分支已由自动测试覆盖。
 
-人工验收完成后，将本文件的人工验收状态改为 `Passed`。P1 自动验收通过不代表
-上述交互体验已经得到用户确认。
+首次“适合窗口”后画布因滚动条布局变化出现水平偏移的问题，已在独立修复提交中
+解决，并由用户完成后续人工验证。
 
 ## 复现命令
 

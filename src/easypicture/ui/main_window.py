@@ -1,4 +1,4 @@
-"""P1 single-document main window."""
+"""P2 single-document main window with layer management and undo."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from easypicture.domain import Document, DocumentEvent, Point
 from easypicture.tools import NullTool, ToolContext, ToolController
 from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_panel import ColorPanel
+from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.settings import AppSettings
 
@@ -56,6 +57,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.controller = controller
         self.settings = settings
+        self.controller.set_dialog_parent(self)
         self.setObjectName("MainWindow")
         self.resize(1100, 720)
 
@@ -140,7 +142,7 @@ class MainWindow(QMainWindow):
     def _create_toolbars(self) -> None:
         self.tool_options = QToolBar("工具选项", self)
         self.tool_options.setObjectName("ToolOptionsToolbar")
-        self.tool_options.addWidget(QLabel("P1：暂无编辑工具", self.tool_options))
+        self.tool_options.addWidget(QLabel("P2：暂无正式编辑工具", self.tool_options))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.tool_options)
 
         self.tools_toolbar = QToolBar("工具", self)
@@ -152,9 +154,8 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tools_toolbar)
 
     def _create_docks(self) -> None:
-        self.layers_label = QLabel("图层操作将在 P2 提供", self)
-        self.layers_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.layers_dock = self._make_dock("图层", "LayersDock", self.layers_label)
+        self.layer_panel = LayerPanel(self.controller.commands, self)
+        self.layers_dock = self._make_dock("图层", "LayersDock", self.layer_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.layers_dock)
 
         self.color_panel = ColorPanel(self.settings, self.controller.dialogs, self)
@@ -189,6 +190,13 @@ class MainWindow(QMainWindow):
         self.zoom_out_action.triggered.connect(self.canvas_view.zoom_out)
         self.fit_action.triggered.connect(self.canvas_view.fit_document)
         self.actual_size_action.triggered.connect(self.canvas_view.actual_size)
+        undo_stack = self.controller.commands.undo_stack
+        self.undo_action.triggered.connect(lambda _checked=False: undo_stack.undo())
+        self.redo_action.triggered.connect(lambda _checked=False: undo_stack.redo())
+        undo_stack.canUndoChanged.connect(self._update_undo_actions)
+        undo_stack.canRedoChanged.connect(self._update_undo_actions)
+        undo_stack.undoTextChanged.connect(self._update_undo_actions)
+        undo_stack.redoTextChanged.connect(self._update_undo_actions)
         self.controller.document_changed.connect(self._on_document_changed)
         self.controller.document_event.connect(self._on_document_event)
         self.canvas_view.zoom_changed.connect(self._on_zoom_changed)
@@ -209,6 +217,7 @@ class MainWindow(QMainWindow):
 
     def _on_document_changed(self, document: Document | None) -> None:
         self.canvas_view.set_document(document)
+        self.layer_panel.set_document(document)
         has_document = document is not None
         self.central_stack.setCurrentWidget(self.canvas_view if has_document else self.empty_state)
         self.close_action.setEnabled(has_document)
@@ -221,15 +230,23 @@ class MainWindow(QMainWindow):
             action.setEnabled(has_document)
         if document is None:
             self.document_size_label.setText("无文档")
-            self.layers_label.setText("图层操作将在 P2 提供")
         else:
             self.document_size_label.setText(f"{document.width} × {document.height} px")
-            self.layers_label.setText(f"{len(document.layers)} 个图层（操作将在 P2 提供）")
+        self._update_undo_actions()
         self._update_window_title()
 
     def _on_document_event(self, event: DocumentEvent) -> None:
-        _ = event
+        self.layer_panel.handle_event(event)
         self._update_window_title()
+
+    def _update_undo_actions(self, *_args: object) -> None:
+        stack = self.controller.commands.undo_stack
+        self.undo_action.setEnabled(stack.canUndo())
+        self.redo_action.setEnabled(stack.canRedo())
+        undo_text = stack.undoText()
+        redo_text = stack.redoText()
+        self.undo_action.setText(f"撤销 {undo_text}" if undo_text else "撤销")
+        self.redo_action.setText(f"重做 {redo_text}" if redo_text else "重做")
 
     def _update_window_title(self) -> None:
         document = self.controller.document

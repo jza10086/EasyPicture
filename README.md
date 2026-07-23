@@ -1,10 +1,10 @@
 # EasyPicture
 
-EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已完成 P1
-应用骨架：包含单文档生命周期、领域模型、分块像素/选区存储、可缩放平移画布、
-工具切换框架、颜色与窗口设置以及 QImage 显示桥。
+EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已完成 P2
+应用骨架：包含单文档生命周期、分块像素/选区存储、多图层管理、渐进 Tile 合成、
+图层与像素撤销、可缩放平移画布、工具切换框架以及设置持久化。
 
-图层合成、撤销、文件读写和正式图像编辑工具尚未实现。
+文件读写、导入导出和正式图像编辑工具尚未实现。
 
 ## 环境
 
@@ -22,6 +22,7 @@ EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当�
 .\scripts\run.ps1
 .\scripts\check.ps1
 .\scripts\benchmark.ps1
+.\scripts\benchmark-p2.ps1
 .\scripts\package.ps1
 .\scripts\smoke-standalone.ps1
 ```
@@ -36,4 +37,4 @@ uv run python -m easypicture --smoke-test
 
 总体技术评估和开发路线见
 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段结果见
-[`docs/p1_acceptance.md`](docs/p1_acceptance.md)。
+[`docs/p2_acceptance.md`](docs/p2_acceptance.md)。

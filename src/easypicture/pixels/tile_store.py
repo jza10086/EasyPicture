@@ -52,6 +52,9 @@ class TilePixelStore:
         coord = TileCoord(tx, ty)
         return self._tile_revisions.get(coord, 0)
 
+    def has_tile(self, tx: int, ty: int) -> bool:
+        return TileCoord(tx, ty) in self._tiles
+
     def read_tile(self, tx: int, ty: int) -> RGBAArray:
         """Return an immutable view of a tile, or an immutable transparent tile."""
         coord = TileCoord(tx, ty)
@@ -73,6 +76,35 @@ class TilePixelStore:
         self._revision += 1
         self._tile_revisions[coord] = self._tile_revisions.get(coord, 0) + 1
         return replacement
+
+    def replace_tile(self, tx: int, ty: int, pixels: RGBAArray | None) -> bool:
+        """Replace one full tile exactly, or remove it when ``pixels`` is ``None``."""
+        coord = TileCoord(tx, ty)
+        current = self._tiles.get(coord)
+        if pixels is None:
+            if current is None:
+                return False
+            del self._tiles[coord]
+        else:
+            validate_rgba_array(
+                pixels,
+                expected_width=self.tile_size,
+                expected_height=self.tile_size,
+            )
+            if current is not None and np.array_equal(current, pixels):
+                return False
+            self._tiles[coord] = pixels.copy(order="C")
+        self._revision += 1
+        self._tile_revisions[coord] = self._tile_revisions.get(coord, 0) + 1
+        return True
+
+    def clone_shared(self) -> TilePixelStore:
+        """Clone the store while sharing immutable-until-write Tile buffers."""
+        clone = TilePixelStore(self.tile_size)
+        clone._tiles = self._tiles.copy()
+        clone._tile_revisions = self._tile_revisions.copy()
+        clone._revision = self._revision
+        return clone
 
     def read_region(self, rect: Rect) -> RGBAArray:
         """Copy a rectangular region into a contiguous RGBA array."""

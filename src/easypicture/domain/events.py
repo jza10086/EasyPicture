@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from easypicture.pixels import TileCoord
+
 
 @dataclass(frozen=True, slots=True)
 class DocumentModifiedChanged:
@@ -27,7 +29,39 @@ class DocumentRevisionChanged:
     revision: int
 
 
-type DocumentEvent = DocumentModifiedChanged | ActiveLayerChanged | DocumentRevisionChanged
+@dataclass(frozen=True, slots=True)
+class LayerListChanged:
+    document_id: UUID
+    revision: int
+    layer_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LayerPropertiesChanged:
+    document_id: UUID
+    revision: int
+    layer_id: UUID
+    properties: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class LayerPixelsChanged:
+    document_id: UUID
+    revision: int
+    layer_id: UUID
+    layer_revision: int
+    layer_tiles: frozenset[TileCoord]
+    document_tiles: frozenset[TileCoord]
+
+
+type DocumentEvent = (
+    DocumentModifiedChanged
+    | ActiveLayerChanged
+    | DocumentRevisionChanged
+    | LayerListChanged
+    | LayerPropertiesChanged
+    | LayerPixelsChanged
+)
 
 
 class DocumentEventListener(Protocol):
@@ -40,4 +74,7 @@ __all__ = [
     "DocumentEventListener",
     "DocumentModifiedChanged",
     "DocumentRevisionChanged",
+    "LayerListChanged",
+    "LayerPixelsChanged",
+    "LayerPropertiesChanged",
 ]

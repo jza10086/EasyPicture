@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QWidget
 
+from easypicture.commands import DocumentCommandService
 from easypicture.domain import Document, DocumentEvent
 from easypicture.domain.document import Unsubscribe
 from easypicture.ui.dialogs import DialogService
@@ -28,10 +29,18 @@ class ApplicationController(QObject):
         self.dialogs = dialogs
         self._document: Document | None = None
         self._unsubscribe: Unsubscribe | None = None
+        self._dialog_parent: QWidget | None = None
+        self.commands = DocumentCommandService(
+            confirm_history_reset=self._confirm_undo_history_reset,
+            report_command_too_large=self._report_undo_command_too_large,
+        )
 
     @property
     def document(self) -> Document | None:
         return self._document
+
+    def set_dialog_parent(self, parent: QWidget) -> None:
+        self._dialog_parent = parent
 
     def request_new_document(self, parent: QWidget) -> bool:
         spec = self.dialogs.request_new_document(parent, self.settings.last_document_size())
@@ -64,12 +73,31 @@ class ApplicationController(QObject):
             self._unsubscribe()
         self._unsubscribe = None
         self._document = document
+        self.commands.attach_document(document)
         if document is not None:
             self._unsubscribe = document.subscribe(self._forward_document_event)
         self.document_changed.emit(document)
 
     def _forward_document_event(self, event: DocumentEvent) -> None:
         self.document_event.emit(event)
+
+    def _confirm_undo_history_reset(self, required_bytes: int, budget_bytes: int) -> bool:
+        if self._dialog_parent is None:
+            return False
+        return self.dialogs.confirm_undo_history_reset(
+            self._dialog_parent,
+            required_bytes,
+            budget_bytes,
+        )
+
+    def _report_undo_command_too_large(self, required_bytes: int, budget_bytes: int) -> None:
+        if self._dialog_parent is None:
+            return
+        self.dialogs.show_undo_command_too_large(
+            self._dialog_parent,
+            required_bytes,
+            budget_bytes,
+        )
 
 
 __all__ = ["ApplicationController"]

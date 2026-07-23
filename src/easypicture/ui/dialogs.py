@@ -47,6 +47,20 @@ class DialogService(Protocol):
         title: str,
     ) -> QColor | None: ...
 
+    def confirm_undo_history_reset(
+        self,
+        parent: QWidget,
+        required_bytes: int,
+        budget_bytes: int,
+    ) -> bool: ...
+
+    def show_undo_command_too_large(
+        self,
+        parent: QWidget,
+        required_bytes: int,
+        budget_bytes: int,
+    ) -> None: ...
+
 
 class NewDocumentDialog(QDialog):
     def __init__(self, default_size: Size, parent: QWidget | None = None) -> None:
@@ -118,6 +132,41 @@ class QtDialogService:
             QColorDialog.ColorDialogOption.ShowAlphaChannel,
         )
         return color if color.isValid() else None
+
+    def confirm_undo_history_reset(
+        self,
+        parent: QWidget,
+        required_bytes: int,
+        budget_bytes: int,
+    ) -> bool:
+        result = QMessageBox.warning(
+            parent,
+            "撤销历史空间不足",
+            (
+                "执行此操作需要重置现有撤销历史。\n\n"
+                f"当前操作：{required_bytes / (1024 * 1024):.1f} MiB\n"
+                f"撤销预算：{budget_bytes / (1024 * 1024):.0f} MiB\n\n"
+                "是否清空旧撤销历史并继续？"
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return result == QMessageBox.StandardButton.Yes
+
+    def show_undo_command_too_large(
+        self,
+        parent: QWidget,
+        required_bytes: int,
+        budget_bytes: int,
+    ) -> None:
+        QMessageBox.critical(
+            parent,
+            "操作超出撤销预算",
+            (
+                f"此操作需要 {required_bytes / (1024 * 1024):.1f} MiB 撤销空间，"
+                f"超过 {budget_bytes / (1024 * 1024):.0f} MiB 上限，因此未执行。"
+            ),
+        )
 
 
 __all__ = [

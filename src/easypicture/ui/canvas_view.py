@@ -9,6 +9,7 @@ from PySide6.QtGui import QKeyEvent, QMouseEvent, QTransform, QWheelEvent
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
 from easypicture.domain import Document, Point, RasterLayer
+from easypicture.render import TileRenderer
 from easypicture.ui.canvas_item import CanvasItem
 
 if TYPE_CHECKING:
@@ -53,11 +54,16 @@ class CanvasView(QGraphicsView):
     def zoom(self) -> float:
         return self._zoom
 
+    @property
+    def renderer(self) -> TileRenderer | None:
+        return self._canvas_item.renderer if self._canvas_item is not None else None
+
     def set_tool_controller(self, controller: ToolController) -> None:
         self._tool_controller = controller
 
     def set_document(self, document: Document | None) -> None:
         if self._canvas_item is not None:
+            self._canvas_item.dispose()
             self.scene().removeItem(self._canvas_item)
         self._document = document
         self._canvas_item = None
@@ -67,7 +73,8 @@ class CanvasView(QGraphicsView):
             self.cursor_document_position_changed.emit(None)
             return
 
-        self._canvas_item = CanvasItem(document.size)
+        renderer = TileRenderer(document, parent=self)
+        self._canvas_item = CanvasItem(document.size, renderer)
         self.scene().addItem(self._canvas_item)
         margin = 64.0
         self.scene().setSceneRect(

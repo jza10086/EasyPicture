@@ -6,6 +6,9 @@ from easypicture.domain.events import (
     DocumentEvent,
     DocumentModifiedChanged,
     DocumentRevisionChanged,
+    LayerListChanged,
+    LayerPixelsChanged,
+    LayerPropertiesChanged,
 )
 from easypicture.domain.geometry import PixelPoint, Point, Size
 from easypicture.domain.layer import RasterLayer
@@ -17,6 +20,9 @@ __all__ = [
     "DocumentEvent",
     "DocumentModifiedChanged",
     "DocumentRevisionChanged",
+    "LayerListChanged",
+    "LayerPixelsChanged",
+    "LayerPropertiesChanged",
     "PixelPoint",
     "Point",
     "RasterLayer",
