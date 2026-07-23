@@ -48,6 +48,29 @@ def test_zoom_keeps_viewport_anchor_stable(qtbot) -> None:
     assert abs(before.y() - after.y()) <= 0.5
 
 
+def test_fit_document_recenters_after_scrollbar_layout_change(qtbot) -> None:
+    view = CanvasView()
+    qtbot.addWidget(view)
+    view.resize(800, 600)
+    view.show()
+    view.set_document(Document.create(1920, 1080))
+    view.set_zoom(2.0)
+    qtbot.waitUntil(view.verticalScrollBar().isVisible)
+
+    view.fit_document()
+    qtbot.waitUntil(lambda: not view.verticalScrollBar().isVisible())
+    qtbot.wait(1)
+
+    viewport_center = view.viewport().rect().center()
+    document_center = view.mapFromScene(QPointF(960.0, 540.0))
+    assert abs(document_center.x() - viewport_center.x()) <= 2
+
+    view.fit_document()
+    view.set_zoom(1.5)
+    qtbot.wait(1)
+    assert view.zoom == 1.5
+
+
 def test_middle_mouse_pan_moves_scrollbars_without_editing(qtbot) -> None:
     view = CanvasView()
     qtbot.addWidget(view)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QTransform, QWheelEvent
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
@@ -42,6 +42,7 @@ class CanvasView(QGraphicsView):
         self._panning = False
         self._pan_last = QPoint()
         self._tool_controller: ToolController | None = None
+        self._fit_request_id = 0
         self.scene().setSceneRect(QRectF(-100.0, -100.0, 200.0, 200.0))
 
     @property
@@ -76,6 +77,7 @@ class CanvasView(QGraphicsView):
         self.centerOn(self._canvas_item)
 
     def set_zoom(self, zoom: float, anchor: QPoint | None = None) -> None:
+        self._fit_request_id += 1
         clamped = min(self.MAX_ZOOM, max(self.MIN_ZOOM, zoom))
         if anchor is None:
             anchor = self.viewport().rect().center()
@@ -101,6 +103,18 @@ class CanvasView(QGraphicsView):
     def fit_document(self) -> None:
         if self._canvas_item is None:
             return
+        self._fit_request_id += 1
+        self._apply_document_fit()
+        request_id = self._fit_request_id
+        canvas_item = self._canvas_item
+        QTimer.singleShot(
+            0,
+            lambda: self._refine_document_fit(request_id, canvas_item),
+        )
+
+    def _apply_document_fit(self) -> None:
+        if self._canvas_item is None:
+            return
         self.fitInView(self._canvas_item.boundingRect(), Qt.AspectRatioMode.KeepAspectRatio)
         fitted = abs(self.transform().m11())
         self._zoom = min(self.MAX_ZOOM, max(self.MIN_ZOOM, fitted))
@@ -108,6 +122,15 @@ class CanvasView(QGraphicsView):
             self.set_zoom(self._zoom)
         else:
             self.zoom_changed.emit(self._zoom)
+
+    def _refine_document_fit(
+        self,
+        request_id: int,
+        canvas_item: CanvasItem,
+    ) -> None:
+        if request_id != self._fit_request_id or canvas_item is not self._canvas_item:
+            return
+        self._apply_document_fit()
 
     def global_to_viewport(self, point: QPoint) -> QPoint:
         return self.viewport().mapFromGlobal(point)
