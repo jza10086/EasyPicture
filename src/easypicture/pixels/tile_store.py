@@ -7,6 +7,7 @@ from collections.abc import Iterator
 import numpy as np
 
 from easypicture.pixels.types import (
+    DEFAULT_TILE_SIZE,
     DirtyRegion,
     Rect,
     RGBAArray,
@@ -24,7 +25,7 @@ class TilePixelStore:
     writable buffer without acquiring it again through ``writable_tile``.
     """
 
-    def __init__(self, tile_size: int = 256) -> None:
+    def __init__(self, tile_size: int = DEFAULT_TILE_SIZE) -> None:
         if tile_size <= 0:
             raise ValueError("tile_size must be positive")
         self.tile_size = tile_size

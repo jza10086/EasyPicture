@@ -1,0 +1,1 @@
+"""EasyPicture test support package."""

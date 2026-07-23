@@ -8,6 +8,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 type RGBAArray = NDArray[np.uint8]
+type MaskArray = NDArray[np.uint8]
+
+DEFAULT_TILE_SIZE = 256
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -79,10 +82,34 @@ def validate_rgba_array(
         raise ValueError("pixels must be C-contiguous")
 
 
+def validate_mask_array(
+    pixels: MaskArray,
+    *,
+    expected_width: int | None = None,
+    expected_height: int | None = None,
+) -> None:
+    """Validate a uint8, C-contiguous, single-channel mask."""
+    if not isinstance(pixels, np.ndarray):
+        raise TypeError("mask must be a numpy.ndarray")
+    if pixels.dtype != np.uint8:
+        raise TypeError("mask must use dtype uint8")
+    if pixels.ndim != 2:
+        raise ValueError("mask must have shape (height, width)")
+    if expected_width is not None and pixels.shape[1] != expected_width:
+        raise ValueError(f"mask width must be {expected_width}")
+    if expected_height is not None and pixels.shape[0] != expected_height:
+        raise ValueError(f"mask height must be {expected_height}")
+    if not pixels.flags.c_contiguous:
+        raise ValueError("mask must be C-contiguous")
+
+
 __all__ = [
     "DirtyRegion",
+    "DEFAULT_TILE_SIZE",
+    "MaskArray",
     "RGBAArray",
     "Rect",
     "TileCoord",
     "validate_rgba_array",
+    "validate_mask_array",
 ]

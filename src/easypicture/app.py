@@ -9,6 +9,10 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from easypicture import __version__
+from easypicture.controller import ApplicationController
+from easypicture.ui.dialogs import DialogService, QtDialogService
+from easypicture.ui.main_window import MainWindow
+from easypicture.ui.settings import AppSettings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,18 +26,24 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def create_window() -> QMainWindow:
-    """Create the intentionally minimal P0 main window."""
-    window = QMainWindow()
-    window.setWindowTitle(f"EasyPicture {__version__}")
-    window.resize(960, 640)
-    return window
+def create_window(
+    *,
+    settings: AppSettings | None = None,
+    dialogs: DialogService | None = None,
+) -> QMainWindow:
+    """Create the P1 main window with injectable settings and dialogs."""
+    resolved_settings = settings if settings is not None else AppSettings()
+    resolved_dialogs = dialogs if dialogs is not None else QtDialogService()
+    controller = ApplicationController(resolved_settings, resolved_dialogs)
+    return MainWindow(controller, resolved_settings)
 
 
 def run(argv: Sequence[str] | None = None) -> int:
     """Run the Qt application and return its process exit code."""
     options = build_parser().parse_args(argv)
     app = QApplication(["easypicture"])
+    app.setOrganizationName("EasyPicture")
+    app.setOrganizationDomain("local.easypicture")
     app.setApplicationName("EasyPicture")
     app.setApplicationVersion(__version__)
 
