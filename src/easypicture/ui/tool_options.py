@@ -110,6 +110,10 @@ class BucketOptionsWidget(QWidget):
         self.contiguous_check.setChecked(settings.contiguous)
         self.sample_merged_check = QCheckBox("取样所有可见图层", self)
         self.sample_merged_check.setChecked(settings.sample_merged)
+        self.edge_expansion_spin = QSpinBox(self)
+        self.edge_expansion_spin.setRange(0, 8)
+        self.edge_expansion_spin.setValue(settings.edge_expansion)
+        self.edge_expansion_spin.setSuffix(" px")
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
@@ -118,11 +122,14 @@ class BucketOptionsWidget(QWidget):
         layout.addWidget(self.connectivity_combo)
         layout.addWidget(self.contiguous_check)
         layout.addWidget(self.sample_merged_check)
+        layout.addWidget(QLabel("边缘覆盖", self))
+        layout.addWidget(self.edge_expansion_spin)
         layout.addStretch(1)
         self.tolerance_spin.valueChanged.connect(self._emit_settings)
         self.connectivity_combo.currentIndexChanged.connect(self._emit_settings)
         self.contiguous_check.toggled.connect(self._emit_settings)
         self.sample_merged_check.toggled.connect(self._emit_settings)
+        self.edge_expansion_spin.valueChanged.connect(self._emit_settings)
 
     def settings(self) -> BucketSettings:
         connectivity = int(self.connectivity_combo.currentData())
@@ -131,6 +138,7 @@ class BucketOptionsWidget(QWidget):
             connectivity=4 if connectivity == 4 else 8,
             contiguous=self.contiguous_check.isChecked(),
             sample_merged=self.sample_merged_check.isChecked(),
+            edge_expansion=self.edge_expansion_spin.value(),
         )
 
     def _emit_settings(self, _value: object = None) -> None:

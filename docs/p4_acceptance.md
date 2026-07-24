@@ -15,9 +15,11 @@
 - 已实现只降低 Alpha 且保留隐藏 RGB 的橡皮；
 - 已实现可见合成/活动层吸管，左右键分别设置前景/背景色；
 - 已实现 RGBA 容差、连续/非连续、4/8 邻域和合并取样油漆桶；
+- 已实现 0～8 px 油漆桶边缘覆盖，默认在半透明画笔边缘后方扩展 1 px；
 - 已实现后台可取消填充、延迟进度对话框及 revision 过期结果拒绝；
 - 已实现稀疏 selection 权重预留、图层锁定和透明像素锁定；
 - 已实现 B/E/I/G 工具、动态选项栏、圆形画笔光标和参数持久化；
+- 已实现 viewport 同步画笔轮廓及中键/Space 平移后的工具光标恢复；
 - 已新增 ADR-0012、ADR-0013 和 P4 固定场景基准。
 
 数位笔压感、倾斜、笔速、自定义笔尖、选区 UI、形状、文本和滤镜未进入 P4。
@@ -28,7 +30,7 @@
 uv lock --check                         PASS
 uv run ruff check .                     PASS
 uv run mypy src                         PASS (48 source files)
-uv run pytest -q                        PASS (143 tests)
+uv run pytest -q                        PASS (148 tests)
 uv run python -m easypicture --smoke-test
                                         PASS
 uv run python -m easypicture --io-smoke-test <dir>
@@ -43,10 +45,10 @@ uv run python -m easypicture --io-smoke-test <dir>
 
 | 指标 | 结果 | 状态 |
 | --- | ---: | --- |
-| 32 px 画笔事件 P95 | 3.086 ms | PASS |
-| 128 px 画笔事件 P95 | 2.711 ms | PASS |
-| 256 px 画笔事件 P95 | 8.202 ms | PASS |
-| 4096×4096 全画布填充 | 2243.521 ms | RECORDED |
+| 32 px 画笔事件 P95 | 8.543 ms | PASS |
+| 128 px 画笔事件 P95 | 5.280 ms | PASS |
+| 256 px 画笔事件 P95 | 21.748 ms | PASS |
+| 4096×4096 全画布填充 | 4785.892 ms | RECORDED |
 | 填充补丁 | 256 Tile / 64 MiB | PASS |
 
 详见 [`docs/benchmarks/p4_editing.md`](benchmarks/p4_editing.md)。

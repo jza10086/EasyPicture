@@ -98,6 +98,7 @@ def benchmark_fill() -> dict[str, int | float]:
             layer_id=document.active_layer_id,
             query=RegionQuery((0, 0)),
             color=(200, 40, 20, 255),
+            edge_expansion=1,
         ),
         CancellationToken(),
         progress,

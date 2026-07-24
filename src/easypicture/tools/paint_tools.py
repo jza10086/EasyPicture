@@ -7,9 +7,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPen
-from PySide6.QtWidgets import QGraphicsEllipseItem, QProgressDialog
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtWidgets import QProgressDialog
 
 from easypicture.imaging import (
     BrushSettings,
@@ -33,12 +33,15 @@ class BucketSettings:
     connectivity: Literal[4, 8] = 4
     contiguous: bool = True
     sample_merged: bool = False
+    edge_expansion: int = 1
 
     def __post_init__(self) -> None:
         if not 0 <= self.tolerance <= 255:
             raise ValueError("bucket tolerance must be between 0 and 255")
         if self.connectivity not in (4, 8):
             raise ValueError("bucket connectivity must be 4 or 8")
+        if not 0 <= self.edge_expansion <= 8:
+            raise ValueError("bucket edge expansion must be between 0 and 8")
 
 
 class BrushTool:
@@ -53,25 +56,16 @@ class BrushTool:
         self._context: ToolContext | None = None
         self._session: PixelEditSession | None = None
         self._stroke: BrushStrokeEngine | None = None
-        self._cursor: QGraphicsEllipseItem | None = None
 
     def activate(self, context: ToolContext) -> None:
         self._context = context
-        self._cursor = QGraphicsEllipseItem()
-        pen = QPen(QColor("#ffffff"))
-        pen.setCosmetic(True)
-        pen.setWidth(1)
-        self._cursor.setPen(pen)
-        self._cursor.setBrush(Qt.BrushStyle.NoBrush)
-        self._cursor.setVisible(False)
-        context.overlays.add(self._cursor)
-        context.canvas.viewport().setCursor(Qt.CursorShape.BlankCursor)
+        context.canvas.set_tool_cursor(Qt.CursorShape.BlankCursor)
 
     def deactivate(self) -> None:
         self._cancel()
         if self._context is not None:
-            self._context.canvas.viewport().unsetCursor()
-        self._cursor = None
+            self._context.canvas.clear_brush_cursor()
+            self._context.canvas.set_tool_cursor(None)
         self._context = None
 
     def mouse_press(self, event: QMouseEvent) -> bool:
@@ -82,6 +76,7 @@ class BrushTool:
         if document is None or commands is None:
             return False
         point = self._context.canvas.viewport_to_document(event.position().toPoint())
+        self._update_cursor(event.position(), point.x, point.y)
         if not 0 <= point.x < document.width or not 0 <= point.y < document.height:
             return False
         layer = document.active_layer
@@ -115,7 +110,7 @@ class BrushTool:
         if self._context is None:
             return False
         point = self._context.canvas.viewport_to_document(event.position().toPoint())
-        self._update_cursor(point.x, point.y)
+        self._update_cursor(event.position(), point.x, point.y)
         if self._stroke is None or self._session is None:
             return False
         self._stroke.extend(
@@ -152,15 +147,17 @@ class BrushTool:
             return (0, 0, 0, 255)
         return self._context.foreground_provider()
 
-    def _update_cursor(self, x: float, y: float) -> None:
-        if self._cursor is None or self._context is None:
+    def _update_cursor(self, position: QPointF, x: float, y: float) -> None:
+        if self._context is None:
             return
         document = self._context.document_provider()
         visible = document is not None and 0 <= x < document.width and 0 <= y < document.height
-        self._cursor.setVisible(visible)
-        if visible:
-            size = float(self._settings_provider().size)
-            self._cursor.setRect(x - size / 2.0, y - size / 2.0, size, size)
+        self._context.canvas.update_brush_cursor(
+            position,
+            float(self._settings_provider().size),
+            visible=visible,
+            synchronous=True,
+        )
 
     def _cancel(self) -> None:
         if self._session is not None:
@@ -188,11 +185,11 @@ class EyedropperTool:
 
     def activate(self, context: ToolContext) -> None:
         self._context = context
-        context.canvas.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        context.canvas.set_tool_cursor(Qt.CursorShape.CrossCursor)
 
     def deactivate(self) -> None:
         if self._context is not None:
-            self._context.canvas.viewport().unsetCursor()
+            self._context.canvas.set_tool_cursor(None)
         self._context = None
 
     def mouse_press(self, event: QMouseEvent) -> bool:
@@ -251,7 +248,7 @@ class BucketTool:
 
     def activate(self, context: ToolContext) -> None:
         self._context = context
-        context.canvas.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        context.canvas.set_tool_cursor(Qt.CursorShape.CrossCursor)
 
     def deactivate(self) -> None:
         context = self._context
@@ -259,7 +256,7 @@ class BucketTool:
         if context is not None:
             if self._handle is not None and context.set_busy is not None:
                 context.set_busy(False)
-            context.canvas.viewport().unsetCursor()
+            context.canvas.set_tool_cursor(None)
         self._context = None
 
     def mouse_press(self, event: QMouseEvent) -> bool:
@@ -292,6 +289,7 @@ class BucketTool:
             ),
             color=self._foreground(),
             sample_merged=settings.sample_merged,
+            edge_expansion=settings.edge_expansion,
         )
         handle = self._context.jobs.submit(
             lambda token, progress: calculate_fill(request, token, progress)

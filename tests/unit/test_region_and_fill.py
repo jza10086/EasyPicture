@@ -133,3 +133,46 @@ def test_fill_honors_pre_cancelled_token() -> None:
         pass
     else:
         raise AssertionError("cancelled fill must stop before producing a result")
+
+
+def test_fill_expands_behind_semtransparent_brush_edge() -> None:
+    document = Document.create(3, 1)
+    tile = np.zeros((256, 256, 4), dtype=np.uint8)
+    tile[0, 1] = (0, 0, 0, 128)
+    tile[0, 2] = (0, 0, 0, 255)
+    document.active_layer.pixels.replace_tile(0, 0, tile)
+    request = FillRequest(
+        snapshot=DocumentSnapshot.capture(document),
+        layer_id=document.active_layer_id,
+        query=RegionQuery((0, 0)),
+        color=(0, 255, 0, 255),
+        edge_expansion=1,
+    )
+
+    result = calculate_fill(request, CancellationToken(), lambda *_args: None)
+
+    after = result.updates[TileCoord(0, 0)]
+    assert tuple(after[0, 0]) == (0, 255, 0, 255)
+    assert tuple(after[0, 1]) == (0, 127, 0, 255)
+    assert tuple(after[0, 2]) == (0, 0, 0, 255)
+
+
+def test_fill_edge_expansion_does_not_cross_opaque_barrier() -> None:
+    document = Document.create(4, 1)
+    tile = np.zeros((256, 256, 4), dtype=np.uint8)
+    tile[0, 1] = (0, 0, 0, 255)
+    document.active_layer.pixels.replace_tile(0, 0, tile)
+    request = FillRequest(
+        snapshot=DocumentSnapshot.capture(document),
+        layer_id=document.active_layer_id,
+        query=RegionQuery((0, 0)),
+        color=(255, 0, 0, 255),
+        edge_expansion=2,
+    )
+
+    result = calculate_fill(request, CancellationToken(), lambda *_args: None)
+
+    after = result.updates[TileCoord(0, 0)]
+    assert tuple(after[0, 0]) == (255, 0, 0, 255)
+    assert tuple(after[0, 1]) == (0, 0, 0, 255)
+    assert tuple(after[0, 2]) == (0, 0, 0, 0)

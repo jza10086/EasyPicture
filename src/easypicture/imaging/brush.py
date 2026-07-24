@@ -94,6 +94,41 @@ def erase_alpha(destination: RGBAArray, coverage: np.ndarray) -> RGBAArray:
     return output
 
 
+def blend_color_behind(
+    foreground: RGBAArray,
+    color: RGBAColor,
+    coverage: np.ndarray,
+) -> RGBAArray:
+    """Place a constant color behind existing straight-RGBA pixels."""
+    if foreground.shape[:2] != coverage.shape:
+        raise ValueError("coverage shape must match foreground")
+    if not all(0 <= channel <= 255 for channel in color):
+        raise ValueError("RGBA channels must be between 0 and 255")
+    strength = np.clip(coverage.astype(np.float32), 0.0, 1.0)
+    background_alpha = strength * (color[3] / 255.0)
+    foreground_f = foreground.astype(np.float32) / 255.0
+    foreground_alpha = foreground_f[..., 3]
+    output_alpha = foreground_alpha + background_alpha * (1.0 - foreground_alpha)
+
+    output = foreground_f.copy()
+    nonzero = output_alpha > 0.0
+    for channel in range(3):
+        numerator = (
+            foreground_f[..., channel] * foreground_alpha
+            + (color[channel] / 255.0)
+            * background_alpha
+            * (1.0 - foreground_alpha)
+        )
+        output[..., channel] = np.divide(
+            numerator,
+            output_alpha,
+            out=output[..., channel],
+            where=nonzero,
+        )
+    output[..., 3] = output_alpha
+    return np.clip(np.rint(output * 255.0), 0, 255).astype(np.uint8)
+
+
 class BrushStrokeEngine:
     """Interpolate pointer samples and apply each generated circular dab."""
 
@@ -308,5 +343,6 @@ __all__ = [
     "BrushSurface",
     "RGBAColor",
     "blend_color",
+    "blend_color_behind",
     "erase_alpha",
 ]

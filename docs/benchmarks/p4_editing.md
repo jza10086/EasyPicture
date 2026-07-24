@@ -16,15 +16,16 @@
 
 | 指标 | 结果 | 门槛 | 状态 |
 | --- | ---: | ---: | --- |
-| 32 px 画笔事件 P95 | 3.086 ms | < 33 ms | PASS |
-| 128 px 画笔事件 P95 | 2.711 ms | < 33 ms | PASS |
-| 256 px 画笔事件 P95 | 8.202 ms | < 33 ms | PASS |
-| 4096 全画布填充 | 2243.521 ms | 记录项 | PASS |
+| 32 px 画笔事件 P95 | 8.543 ms | < 33 ms | PASS |
+| 128 px 画笔事件 P95 | 5.280 ms | < 33 ms | PASS |
+| 256 px 画笔事件 P95 | 21.748 ms | < 33 ms | PASS |
+| 4096 全画布填充 | 4785.892 ms | 记录项 | PASS |
 | 填充输出 | 256 Tile / 64 MiB | 精确 Tile 补丁 | PASS |
-| 进程 RSS 净增量 | 13.16 MiB | 记录项 | PASS |
+| 进程 RSS 净增量 | 12.51 MiB | 记录项 | PASS |
 
-填充在 Worker 中执行，参考表面达到 64 MiB 时转为临时 memmap；主线程只捕获
-copy-on-write 快照并在 revision 校验后提交结果。8192 极端场景不作为 P4 阻塞门槛。
+填充使用默认 1 px 边缘覆盖并在 Worker 中执行，参考表面达到 64 MiB 时转为临时
+memmap；主线程只捕获 copy-on-write 快照并在 revision 校验后提交结果。8192 极端
+场景不作为 P4 阻塞门槛。
 机器可读结果位于被忽略的 `build/benchmarks/p4.json`。
 
 ## 复现

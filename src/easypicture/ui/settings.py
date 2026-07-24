@@ -70,6 +70,12 @@ class AppSettings:
             connectivity=4 if connectivity != 8 else 8,
             contiguous=self._bool_value("tools/bucket/contiguous", True),
             sample_merged=self._bool_value("tools/bucket/sample_merged", False),
+            edge_expansion=self._bounded_int(
+                "tools/bucket/edge_expansion",
+                1,
+                0,
+                8,
+            ),
         )
 
     def set_bucket_settings(self, settings: BucketSettings) -> None:
@@ -77,6 +83,7 @@ class AppSettings:
         self._settings.setValue("tools/bucket/connectivity", settings.connectivity)
         self._settings.setValue("tools/bucket/contiguous", settings.contiguous)
         self._settings.setValue("tools/bucket/sample_merged", settings.sample_merged)
+        self._settings.setValue("tools/bucket/edge_expansion", settings.edge_expansion)
 
     def eyedropper_sample_merged(self) -> bool:
         return self._bool_value("tools/eyedropper/sample_merged", True)

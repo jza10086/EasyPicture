@@ -45,6 +45,7 @@ def test_main_window_enables_p4_tools_only_with_document(qtbot, tmp_path) -> Non
 
     assert all(action.isEnabled() for action in window.tool_actions.values())
     assert window.tool_actions["brush"].isChecked()
+    assert window.overlay_manager.count == 0
     window.tool_actions["bucket"].trigger()
     assert window.tool_options_panel.currentWidget() is window.tool_options_panel.bucket
 

@@ -6,7 +6,17 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent, QMouseEvent, QTransform, QWheelEvent
+from PySide6.QtGui import (
+    QColor,
+    QCursor,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPaintEvent,
+    QPen,
+    QTransform,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
 from easypicture.domain import Document, Point, RasterLayer
@@ -44,6 +54,11 @@ class CanvasView(QGraphicsView):
         self._space_pressed = False
         self._panning = False
         self._pan_last = QPoint()
+        self._tool_cursor: QCursor | None = None
+        self._brush_cursor_position: QPointF | None = None
+        self._brush_cursor_diameter = 0.0
+        self._brush_cursor_visible = False
+        self._brush_cursor_suspended = False
         self._tool_controller: ToolController | None = None
         self._fit_request_id = 0
         self.scene().setSceneRect(QRectF(-100.0, -100.0, 200.0, 200.0))
@@ -62,6 +77,35 @@ class CanvasView(QGraphicsView):
 
     def set_tool_controller(self, controller: ToolController) -> None:
         self._tool_controller = controller
+
+    def set_tool_cursor(self, cursor: Qt.CursorShape | QCursor | None) -> None:
+        self._tool_cursor = (
+            None
+            if cursor is None
+            else QCursor(cursor) if isinstance(cursor, Qt.CursorShape) else QCursor(cursor)
+        )
+        self._apply_interaction_cursor()
+
+    def update_brush_cursor(
+        self,
+        viewport_position: QPointF,
+        diameter_document: float,
+        *,
+        visible: bool,
+        synchronous: bool = True,
+    ) -> None:
+        old_rect = self._brush_cursor_rect()
+        self._brush_cursor_position = QPointF(viewport_position)
+        self._brush_cursor_diameter = max(1.0, diameter_document)
+        self._brush_cursor_visible = visible
+        self._invalidate_brush_cursor(old_rect, synchronous=synchronous)
+
+    def clear_brush_cursor(self) -> None:
+        old_rect = self._brush_cursor_rect()
+        self._brush_cursor_position = None
+        self._brush_cursor_diameter = 0.0
+        self._brush_cursor_visible = False
+        self._invalidate_brush_cursor(old_rect)
 
     def set_pixel_preview(
         self,
@@ -180,7 +224,9 @@ class CanvasView(QGraphicsView):
         mouse_grabber = QWidget.mouseGrabber()
         if mouse_grabber is self.viewport():
             self.viewport().releaseMouse()
-        self.viewport().unsetCursor()
+        self._refresh_brush_cursor_under_pointer()
+        self._set_brush_cursor_suspended(False)
+        self._apply_interaction_cursor()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -196,7 +242,8 @@ class CanvasView(QGraphicsView):
         if pan_button or space_pan:
             self._panning = True
             self._pan_last = event.position().toPoint()
-            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._set_brush_cursor_suspended(True)
+            self._apply_interaction_cursor()
             event.accept()
             return
         if self._tool_controller is not None and self._tool_controller.mouse_press(event):
@@ -225,9 +272,10 @@ class CanvasView(QGraphicsView):
             Qt.MouseButton.LeftButton,
         ):
             self._panning = False
-            self.viewport().setCursor(
-                Qt.CursorShape.OpenHandCursor if self._space_pressed else Qt.CursorShape.ArrowCursor
-            )
+            self._apply_interaction_cursor()
+            if not self._space_pressed:
+                self._refresh_brush_cursor_under_pointer()
+                self._set_brush_cursor_suspended(False)
             event.accept()
             return
         if self._tool_controller is not None and self._tool_controller.mouse_release(event):
@@ -238,8 +286,8 @@ class CanvasView(QGraphicsView):
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             self._space_pressed = True
-            if not self._panning:
-                self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            self._set_brush_cursor_suspended(True)
+            self._apply_interaction_cursor()
             event.accept()
             return
         if self._tool_controller is not None and self._tool_controller.key_press(event):
@@ -250,8 +298,10 @@ class CanvasView(QGraphicsView):
     def keyReleaseEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             self._space_pressed = False
+            self._apply_interaction_cursor()
             if not self._panning:
-                self.viewport().unsetCursor()
+                self._refresh_brush_cursor_under_pointer()
+                self._set_brush_cursor_suspended(False)
             event.accept()
             return
         if self._tool_controller is not None and self._tool_controller.key_release(event):
@@ -261,7 +311,30 @@ class CanvasView(QGraphicsView):
 
     def leaveEvent(self, event: object) -> None:
         self.cursor_document_position_changed.emit(None)
+        old_rect = self._brush_cursor_rect()
+        self._brush_cursor_visible = False
+        self._invalidate_brush_cursor(old_rect)
         super().leaveEvent(event)  # type: ignore[arg-type]
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        rect = self._brush_cursor_rect()
+        if rect.isEmpty():
+            return
+        painter = QPainter(self.viewport())
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        outer = QPen(QColor(0, 0, 0, 220))
+        outer.setWidth(3)
+        outer.setCosmetic(True)
+        painter.setPen(outer)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(rect)
+        inner = QPen(QColor(255, 255, 255, 235))
+        inner.setWidth(1)
+        inner.setCosmetic(True)
+        painter.setPen(inner)
+        painter.drawEllipse(rect)
+        painter.end()
 
     def _emit_cursor_position(self, viewport_point: QPoint) -> None:
         if self._document is None:
@@ -272,6 +345,81 @@ class CanvasView(QGraphicsView):
             self.cursor_document_position_changed.emit(point)
         else:
             self.cursor_document_position_changed.emit(None)
+
+    def _apply_interaction_cursor(self) -> None:
+        if self._panning:
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif self._space_pressed:
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+        elif self._tool_cursor is not None:
+            self.viewport().setCursor(self._tool_cursor)
+        else:
+            self.viewport().unsetCursor()
+
+    def _brush_cursor_rect(self) -> QRectF:
+        if (
+            self._brush_cursor_position is None
+            or not self._brush_cursor_visible
+            or self._brush_cursor_suspended
+        ):
+            return QRectF()
+        diameter = max(1.0, self._brush_cursor_diameter * self._zoom)
+        radius = diameter / 2.0
+        return QRectF(
+            self._brush_cursor_position.x() - radius,
+            self._brush_cursor_position.y() - radius,
+            diameter,
+            diameter,
+        )
+
+    def _invalidate_brush_cursor(
+        self,
+        old_rect: QRectF,
+        *,
+        synchronous: bool = False,
+    ) -> None:
+        new_rect = self._brush_cursor_rect()
+        if old_rect.isEmpty() and new_rect.isEmpty():
+            return
+        dirty_rects = [rect for rect in (old_rect, new_rect) if not rect.isEmpty()]
+        if len(dirty_rects) == 2 and dirty_rects[0].intersects(dirty_rects[1]):
+            dirty_rects = [dirty_rects[0].united(dirty_rects[1])]
+        viewport_rect = QRectF(self.viewport().rect())
+        for dirty in dirty_rects:
+            target = (
+                dirty.adjusted(-4.0, -4.0, 4.0, 4.0)
+                .intersected(viewport_rect)
+                .toAlignedRect()
+            )
+            if target.isEmpty():
+                continue
+            if synchronous:
+                self.viewport().repaint(target)
+            else:
+                self.viewport().update(target)
+
+    def _set_brush_cursor_suspended(self, suspended: bool) -> None:
+        if suspended == self._brush_cursor_suspended:
+            return
+        old_rect = self._brush_cursor_rect()
+        self._brush_cursor_suspended = suspended
+        self._invalidate_brush_cursor(old_rect)
+
+    def _refresh_brush_cursor_under_pointer(self) -> None:
+        if self._brush_cursor_position is None or self._document is None:
+            return
+        viewport_point = self.viewport().mapFromGlobal(QCursor.pos())
+        document_point = self.viewport_to_document(viewport_point)
+        visible = (
+            0.0 <= document_point.x < self._document.width
+            and 0.0 <= document_point.y < self._document.height
+        )
+        self.update_brush_cursor(
+            QPointF(viewport_point),
+            self._brush_cursor_diameter,
+            visible=visible,
+            synchronous=False,
+        )
 
 
 __all__ = ["CanvasView"]

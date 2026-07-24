@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+import cv2
 import numpy as np
 
-from easypicture.imaging.brush import RGBAColor, blend_color
+from easypicture.imaging.brush import RGBAColor, blend_color, blend_color_behind
 from easypicture.imaging.composite import compose_document_tile
 from easypicture.imaging.region import RegionQuery, RegionResult, find_region
 from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
@@ -31,6 +32,11 @@ class FillRequest:
     query: RegionQuery
     color: RGBAColor
     sample_merged: bool = False
+    edge_expansion: int = 0
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.edge_expansion <= 8:
+            raise ValueError("fill edge expansion must be between 0 and 8")
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,11 +71,18 @@ def calculate_fill(
             progress,
         )
         region = find_region(reference, request.query, cancellation)
+        expanded_region = _expand_region_edges(
+            region,
+            reference,
+            request.edge_expansion,
+            cancellation,
+        )
         del reference
     updates = _build_updates(
         snapshot,
         layer,
         region,
+        expanded_region,
         request.color,
         cancellation,
         progress,
@@ -168,6 +181,7 @@ def _build_updates(
     snapshot: DocumentSnapshot,
     layer: LayerSnapshot,
     region: RegionResult,
+    expanded_region: RegionResult,
     color: RGBAColor,
     cancellation: FillCancellation,
     progress: ProgressReporter,
@@ -208,13 +222,25 @@ def _build_updates(
         if document_right <= document_left or document_bottom <= document_top:
             continue
 
-        coverage = _region_rect(
+        core_coverage = _region_rect(
             region,
             document_left,
             document_top,
             document_right - document_left,
             document_bottom - document_top,
         ).astype(np.float32) / 255.0
+        expanded_coverage = (
+            core_coverage.copy()
+            if expanded_region is region
+            else _region_rect(
+                expanded_region,
+                document_left,
+                document_top,
+                document_right - document_left,
+                document_bottom - document_top,
+            ).astype(np.float32)
+            / 255.0
+        )
         if selection_active:
             from easypicture.pixels import Rect
 
@@ -226,24 +252,78 @@ def _build_updates(
                     document_bottom - document_top,
                 )
             )
-            coverage *= selection.astype(np.float32) / 255.0
-        if not np.any(coverage > 0):
+            selection_weight = selection.astype(np.float32) / 255.0
+            core_coverage *= selection_weight
+            expanded_coverage *= selection_weight
+        if not np.any(expanded_coverage > 0):
             continue
 
         before = layer.pixels.read_tile(coord.x, coord.y)
         after = before.copy(order="C")
         target_left = document_left - (layer.origin.x + layer_left)
         target_top = document_top - (layer.origin.y + layer_top)
-        target_right = target_left + coverage.shape[1]
-        target_bottom = target_top + coverage.shape[0]
+        target_right = target_left + core_coverage.shape[1]
+        target_bottom = target_top + core_coverage.shape[0]
         target = after[target_top:target_bottom, target_left:target_right]
-        target_after = blend_color(target, color, coverage)
+        target_after = blend_color(target, color, core_coverage)
+        fringe_coverage = np.clip(expanded_coverage - core_coverage, 0.0, 1.0)
+        if np.any(fringe_coverage > 0):
+            target_after = blend_color_behind(target_after, color, fringe_coverage)
         if np.array_equal(target, target_after):
             continue
         after[target_top:target_bottom, target_left:target_right] = target_after
         updates[coord] = after
         progress(len(coords) + index, len(coords) * 2, "生成像素补丁")
     return updates
+
+
+def _expand_region_edges(
+    result: RegionResult,
+    reference: RGBAArray,
+    pixels: int,
+    cancellation: FillCancellation,
+) -> RegionResult:
+    if pixels == 0:
+        return result
+    height, width = reference.shape[:2]
+    selected = np.zeros((height, width), dtype=np.uint8)
+    tile_size = DEFAULT_TILE_SIZE
+    for coord, tile in result.tiles.items():
+        left = coord.x * tile_size
+        top = coord.y * tile_size
+        valid_width = min(tile_size, width - left)
+        valid_height = min(tile_size, height - top)
+        selected[top : top + valid_height, left : left + valid_width] = tile[
+            :valid_height,
+            :valid_width,
+        ]
+    if np.all(selected):
+        return result
+    passable = reference[..., 3] < 255
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    for _iteration in range(pixels):
+        cancellation.raise_if_cancelled()
+        grown = cv2.dilate(selected, kernel, iterations=1)
+        next_selected = np.where(passable, grown, selected).astype(np.uint8)
+        if np.array_equal(next_selected, selected):
+            break
+        selected = next_selected
+
+    tiles: dict[TileCoord, np.ndarray] = {}
+    for ty in range((height + tile_size - 1) // tile_size):
+        for tx in range((width + tile_size - 1) // tile_size):
+            left = tx * tile_size
+            top = ty * tile_size
+            portion = selected[
+                top : min(top + tile_size, height),
+                left : min(left + tile_size, width),
+            ]
+            if not np.any(portion):
+                continue
+            tile = np.zeros((tile_size, tile_size), dtype=np.uint8)
+            tile[: portion.shape[0], : portion.shape[1]] = portion
+            tiles[TileCoord(tx, ty)] = tile
+    return RegionResult(tiles)
 
 
 def _region_rect(

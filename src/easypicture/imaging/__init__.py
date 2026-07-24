@@ -5,6 +5,7 @@ from easypicture.imaging.brush import (
     BrushStrokeEngine,
     RGBAColor,
     blend_color,
+    blend_color_behind,
     erase_alpha,
 )
 from easypicture.imaging.composite import compose_document_tile
@@ -21,6 +22,7 @@ __all__ = [
     "RegionQuery",
     "RegionResult",
     "blend_color",
+    "blend_color_behind",
     "calculate_fill",
     "compose_document_tile",
     "erase_alpha",

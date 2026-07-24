@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtGui import QImage, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QGraphicsRectItem
 
 from easypicture.domain import Document, PixelPoint, Point, RasterLayer, Size
@@ -188,3 +188,70 @@ def test_tool_switch_deactivates_clears_overlay_and_resets_cursor(qtbot) -> None
     assert log == ["first:activate", "first:deactivate", "second:activate"]
     assert overlays.count == 0
     assert view.viewport().cursor().shape() == Qt.CursorShape.ArrowCursor
+
+
+def test_middle_pan_restores_hidden_brush_cursor(qtbot) -> None:
+    view = CanvasView()
+    qtbot.addWidget(view)
+    view.resize(320, 240)
+    view.show()
+    view.set_document(Document.create(800, 600))
+    view.set_tool_cursor(Qt.CursorShape.BlankCursor)
+
+    qtbot.mousePress(
+        view.viewport(),
+        Qt.MouseButton.MiddleButton,
+        pos=QPoint(120, 100),
+    )
+    assert view.viewport().cursor().shape() == Qt.CursorShape.ClosedHandCursor
+    qtbot.mouseRelease(
+        view.viewport(),
+        Qt.MouseButton.MiddleButton,
+        pos=QPoint(120, 100),
+    )
+
+    assert view.viewport().cursor().shape() == Qt.CursorShape.BlankCursor
+
+
+def test_space_pan_restores_hidden_brush_cursor(qtbot) -> None:
+    view = CanvasView()
+    qtbot.addWidget(view)
+    view.show()
+    view.set_document(Document.create(200, 200))
+    view.set_tool_cursor(Qt.CursorShape.BlankCursor)
+
+    qtbot.keyPress(view, Qt.Key.Key_Space)
+    assert view.viewport().cursor().shape() == Qt.CursorShape.OpenHandCursor
+    qtbot.keyRelease(view, Qt.Key.Key_Space)
+
+    assert view.viewport().cursor().shape() == Qt.CursorShape.BlankCursor
+
+
+def test_viewport_brush_cursor_clears_previous_fast_position(qtbot) -> None:
+    view = CanvasView()
+    qtbot.addWidget(view)
+    view.resize(320, 240)
+    view.show()
+    view.set_document(Document.create(256, 256))
+    qtbot.wait(1)
+
+    baseline = view.viewport().grab().toImage().convertToFormat(
+        QImage.Format.Format_RGBA8888
+    )
+    view.update_brush_cursor(QPointF(80.0, 100.0), 24.0, visible=True)
+    first = view.viewport().grab().toImage().convertToFormat(
+        QImage.Format.Format_RGBA8888
+    )
+    for x in range(100, 221, 10):
+        view.update_brush_cursor(QPointF(float(x), 100.0), 24.0, visible=True)
+    second = view.viewport().grab().toImage().convertToFormat(
+        QImage.Format.Format_RGBA8888
+    )
+
+    def patch(image, center_x: int) -> bytes:
+        pixels = image.copy(center_x - 16, 84, 32, 32)
+        return bytes(pixels.bits())
+
+    assert patch(first, 80) != patch(baseline, 80)
+    assert patch(second, 80) == patch(baseline, 80)
+    assert patch(second, 220) != patch(baseline, 220)
