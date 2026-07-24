@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from PySide6.QtWidgets import QFrame, QVBoxLayout
+
 from easypicture.controller import ApplicationController
 from easypicture.ui.dialogs import NewDocumentSpec
 from easypicture.ui.main_window import MainWindow
@@ -18,7 +20,7 @@ def test_main_window_starts_without_document(qtbot, tmp_path) -> None:
     assert window.windowTitle().startswith("EasyPicture")
 
 
-def test_right_docks_have_distinct_panel_borders(qtbot, tmp_path) -> None:
+def test_right_docks_have_sidebar_background_spacing_and_cards(qtbot, tmp_path) -> None:
     settings = make_settings(str(tmp_path / "settings.ini"))
     controller = ApplicationController(settings, FakeDialogService())
     window = MainWindow(controller, settings)
@@ -26,8 +28,36 @@ def test_right_docks_have_distinct_panel_borders(qtbot, tmp_path) -> None:
 
     for dock in (window.layers_dock, window.color_dock, window.properties_dock):
         assert dock.property("panelRole") == "right"
+        assert "background-color: palette(midlight)" in dock.styleSheet()
         assert "border: 1px solid palette(mid)" in dock.styleSheet()
-        assert "border-bottom: 1px solid palette(mid)" in dock.styleSheet()
+        sidebar = dock.widget()
+        assert sidebar is not None
+        assert sidebar.property("panelRole") == "rightSidebar"
+        sidebar_layout = sidebar.layout()
+        assert isinstance(sidebar_layout, QVBoxLayout)
+        sidebar_margins = sidebar_layout.contentsMargins()
+        assert (
+            sidebar_margins.left(),
+            sidebar_margins.top(),
+            sidebar_margins.right(),
+            sidebar_margins.bottom(),
+        ) == (8, 6, 8, 8)
+
+        card = sidebar.findChild(QFrame, f"{dock.objectName()}Card")
+        assert card is not None
+        assert card.property("panelRole") == "dockCard"
+        card_layout = card.layout()
+        assert isinstance(card_layout, QVBoxLayout)
+        card_margins = card_layout.contentsMargins()
+        assert (
+            card_margins.left(),
+            card_margins.top(),
+            card_margins.right(),
+            card_margins.bottom(),
+        ) == (6, 6, 6, 6)
+
+    assert "QMainWindow#MainWindow::separator" in window.styleSheet()
+    assert "height: 8px" in window.styleSheet()
 
 
 def test_new_document_updates_canvas_status_and_title(qtbot, tmp_path) -> None:

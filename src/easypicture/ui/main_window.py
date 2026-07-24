@@ -36,6 +36,48 @@ from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.tool_options import ToolOptionsPanel
 
+RIGHT_SIDEBAR_STYLE = """
+QMainWindow#MainWindow::separator {
+    background-color: palette(midlight);
+    width: 8px;
+    height: 8px;
+}
+QMainWindow#MainWindow QTabBar {
+    background-color: palette(midlight);
+}
+QMainWindow#MainWindow QTabBar::tab {
+    background-color: palette(base);
+    border: 1px solid palette(mid);
+    border-bottom: 0;
+    margin: 5px 2px 0 2px;
+    padding: 5px 10px;
+}
+QMainWindow#MainWindow QTabBar::tab:selected {
+    background-color: palette(light);
+}
+"""
+
+RIGHT_DOCK_STYLE = """
+QDockWidget[panelRole="right"] {
+    background-color: palette(midlight);
+    border: 0;
+}
+QDockWidget[panelRole="right"]::title {
+    background-color: palette(base);
+    border: 1px solid palette(mid);
+    margin: 8px 8px 0 8px;
+    padding: 5px 7px;
+}
+QWidget[panelRole="rightSidebar"] {
+    background-color: palette(midlight);
+}
+QFrame[panelRole="dockCard"] {
+    background-color: palette(base);
+    border: 1px solid palette(mid);
+    border-radius: 4px;
+}
+"""
+
 
 class EmptyStateWidget(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -70,6 +112,7 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.controller.set_dialog_parent(self)
         self.setObjectName("MainWindow")
+        self.setStyleSheet(RIGHT_SIDEBAR_STYLE)
         self.resize(1100, 720)
         self._editing_busy = False
 
@@ -259,24 +302,29 @@ class MainWindow(QMainWindow):
         self.canvas_view.zoom_changed.connect(self._on_zoom_changed)
         self.canvas_view.cursor_document_position_changed.connect(self._on_cursor_position)
 
-    @staticmethod
-    def _make_dock(title: str, object_name: str, widget: QWidget) -> QDockWidget:
-        dock = QDockWidget(title)
+    def _make_dock(self, title: str, object_name: str, widget: QWidget) -> QDockWidget:
+        dock = QDockWidget(title, self)
         dock.setObjectName(object_name)
         dock.setProperty("panelRole", "right")
-        dock.setStyleSheet(
-            f"""
-            QDockWidget#{object_name} {{
-                border: 1px solid palette(mid);
-            }}
-            QDockWidget#{object_name}::title {{
-                background-color: palette(alternate-base);
-                border-bottom: 1px solid palette(mid);
-                padding: 5px 6px;
-            }}
-            """
-        )
-        dock.setWidget(widget)
+        dock.setStyleSheet(RIGHT_DOCK_STYLE)
+
+        sidebar = QWidget(dock)
+        sidebar.setObjectName(f"{object_name}Sidebar")
+        sidebar.setProperty("panelRole", "rightSidebar")
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(8, 6, 8, 8)
+        sidebar_layout.setSpacing(0)
+
+        card = QFrame(sidebar)
+        card.setObjectName(f"{object_name}Card")
+        card.setProperty("panelRole", "dockCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(6, 6, 6, 6)
+        card_layout.setSpacing(0)
+        card_layout.addWidget(widget)
+        sidebar_layout.addWidget(card)
+
+        dock.setWidget(sidebar)
         return dock
 
     def _request_new_document(self) -> None:
