@@ -10,6 +10,10 @@
 图层的临时 Tile 代入正常底到顶合成，但这些 Tile 不进入 Document、图层像素缓存、
 revision、modified 或撤销栈。
 
+预览或像素提交使合成 Tile 失效时，渲染器将旧合成标记为 stale 并继续显示；新帧按
+渐进调度生成完成后再原位替换。只有从未生成过的 Tile 才在等待期间显示棋盘格，
+避免连续画笔事件产生整块闪烁。
+
 一次按下到释放仅在结束时调用一次 `DocumentCommandService.apply_pixel_tiles()`。
 Esc、工具切换、文档替换、活动层变化或 document revision 失配会清除临时 Tile，
 不提交部分结果。提交仍由命令服务执行锁定、透明像素锁定、无变化过滤和撤销预算

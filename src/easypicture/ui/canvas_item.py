@@ -37,19 +37,21 @@ class CanvasItem(QGraphicsItem):
         _ = widget
         painter.fillRect(self.boundingRect(), self._checker)
         exposed = option.exposedRect.intersected(self.boundingRect())
-        missing: list[TileCoord] = []
+        needs_render: list[TileCoord] = []
         for coord in self._coords_for_rect(exposed):
             image = self.renderer.cached_tile(coord)
             if image is None:
-                missing.append(coord)
+                needs_render.append(coord)
                 continue
             painter.drawImage(
                 coord.x * self.renderer.tile_size,
                 coord.y * self.renderer.tile_size,
                 image,
             )
-        if missing:
-            self.renderer.request_tiles(missing, exposed.center())
+            if self.renderer.is_tile_stale(coord):
+                needs_render.append(coord)
+        if needs_render:
+            self.renderer.request_tiles(needs_render, exposed.center())
         border = QPen(QColor("#707070"))
         border.setCosmetic(True)
         border.setWidth(1)

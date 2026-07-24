@@ -54,6 +54,7 @@ class TileRenderer(QObject):
         self.tile_size = DEFAULT_TILE_SIZE
         self._source_cache: OrderedDict[SourceCacheKey, QImage] = OrderedDict()
         self._composite_cache: OrderedDict[TileCoord, QImage] = OrderedDict()
+        self._stale_composites: set[TileCoord] = set()
         self._pending_priority: dict[TileCoord, float] = {}
         self._pending_heap: list[tuple[float, int, TileCoord]] = []
         self._preview_layer_id: UUID | None = None
@@ -95,6 +96,9 @@ class TileRenderer(QObject):
     def preview_tile_count(self) -> int:
         return len(self._preview_tiles)
 
+    def is_tile_stale(self, coord: TileCoord) -> bool:
+        return coord in self._stale_composites
+
     def set_preview_tiles(
         self,
         layer_id: UUID,
@@ -114,7 +118,10 @@ class TileRenderer(QObject):
             self._preview_tiles[coord] = pixels
             changed.add(coord)
         self._preview_layer_id = layer_id
-        self.invalidate_tiles(self._document_tiles_for_layer_tiles(layer, changed))
+        self.invalidate_tiles(
+            self._document_tiles_for_layer_tiles(layer, changed),
+            preserve_previous=True,
+        )
 
     def clear_preview(self) -> None:
         if self._preview_layer_id is None:
@@ -123,7 +130,7 @@ class TileRenderer(QObject):
         affected = self._document_tiles_for_layer_tiles(layer, set(self._preview_tiles))
         self._preview_layer_id = None
         self._preview_tiles.clear()
-        self.invalidate_tiles(affected)
+        self.invalidate_tiles(affected, preserve_previous=True)
 
     def cached_tile(self, coord: TileCoord) -> QImage | None:
         image = self._composite_cache.get(coord)
@@ -136,7 +143,7 @@ class TileRenderer(QObject):
         if not self._is_document_tile(coord):
             raise ValueError("document Tile lies outside the canvas")
         cached = self.cached_tile(coord)
-        if cached is not None:
+        if cached is not None and coord not in self._stale_composites:
             return cached
 
         output = QImage(
@@ -194,6 +201,7 @@ class TileRenderer(QObject):
 
         self._composite_cache[coord] = output
         self._composite_cache.move_to_end(coord)
+        self._stale_composites.discard(coord)
         self._enforce_budget()
         return output
 
@@ -201,7 +209,9 @@ class TileRenderer(QObject):
         center_tx = center.x() / self.tile_size
         center_ty = center.y() / self.tile_size
         for coord in coords:
-            if not self._is_document_tile(coord) or coord in self._composite_cache:
+            if not self._is_document_tile(coord) or (
+                coord in self._composite_cache and coord not in self._stale_composites
+            ):
                 continue
             priority = (coord.x + 0.5 - center_tx) ** 2 + (coord.y + 0.5 - center_ty) ** 2
             previous = self._pending_priority.get(coord)
@@ -223,20 +233,31 @@ class TileRenderer(QObject):
             self.render_tile(coord)
             self.tile_ready.emit(coord)
 
-    def invalidate_tiles(self, coords: Iterable[TileCoord]) -> None:
+    def invalidate_tiles(
+        self,
+        coords: Iterable[TileCoord],
+        *,
+        preserve_previous: bool = False,
+    ) -> None:
         changed = frozenset(coords)
-        for coord in changed:
-            self._composite_cache.pop(coord, None)
+        if preserve_previous:
+            self._stale_composites.update(changed)
+        else:
+            for coord in changed:
+                self._composite_cache.pop(coord, None)
+                self._stale_composites.discard(coord)
         if changed:
             self.cache_invalidated.emit(changed)
 
     def invalidate_all_composites(self) -> None:
         self._composite_cache.clear()
+        self._stale_composites.clear()
         self.cache_invalidated.emit(None)
 
     def clear_cache(self) -> None:
         self._source_cache.clear()
         self._composite_cache.clear()
+        self._stale_composites.clear()
 
     def _process_pending(self) -> None:
         started = time.perf_counter_ns()
@@ -287,7 +308,7 @@ class TileRenderer(QObject):
                 layer_id, coord, _revision = key
                 if layer_id == event.layer_id and coord in event.layer_tiles:
                     del self._source_cache[key]
-            self.invalidate_tiles(event.document_tiles)
+            self.invalidate_tiles(event.document_tiles, preserve_previous=True)
             return
         if isinstance(event, LayerListChanged):
             current_ids = set(event.layer_ids)

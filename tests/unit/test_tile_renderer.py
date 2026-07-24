@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QPointF, QTimer
-from PySide6.QtGui import QImage
+from PySide6.QtCore import QPointF, QRectF, QTimer
+from PySide6.QtGui import QImage, QPainter
+from PySide6.QtWidgets import QStyleOptionGraphicsItem
 
 from easypicture.commands import DocumentCommandService
 from easypicture.domain import Document, PixelPoint, RasterLayer, Size
 from easypicture.pixels import TileCoord
 from easypicture.render import TileRenderer
+from easypicture.ui.canvas_item import CanvasItem
 
 
 def _solid(color: tuple[int, int, int, int]) -> np.ndarray:
@@ -163,13 +165,76 @@ def test_pixel_invalidation_keeps_unrelated_composite_and_property_clears_all() 
         {TileCoord(0, 0): _solid((70, 80, 90, 255))},
         "局部修改",
     )
-    assert renderer.cached_tile(TileCoord(0, 0)) is None
+    assert renderer.cached_tile(TileCoord(0, 0)) is first
+    assert renderer.is_tile_stale(TileCoord(0, 0))
     assert renderer.cached_tile(TileCoord(1, 0)) is second
     assert renderer.render_tile(TileCoord(0, 0)) is not first
+    assert not renderer.is_tile_stale(TileCoord(0, 0))
 
     assert service.set_layer_opacity(layer.id, 0.75)
     assert renderer.composite_cache_count == 0
     assert renderer.source_cache_count == source_count
+
+
+def test_preview_keeps_previous_frame_until_replacement_is_ready() -> None:
+    document = Document.create(256, 256)
+    service = DocumentCommandService()
+    service.attach_document(document)
+    layer = document.active_layer
+    assert service.apply_pixel_tiles(
+        layer.id,
+        {TileCoord(0, 0): _solid((0, 0, 255, 255))},
+        "底图",
+    )
+    renderer = TileRenderer(document)
+    previous = renderer.render_tile(TileCoord(0, 0))
+    preview = _solid((255, 0, 0, 255))
+
+    renderer.set_preview_tiles(layer.id, {TileCoord(0, 0): preview})
+
+    assert renderer.cached_tile(TileCoord(0, 0)) is previous
+    assert renderer.is_tile_stale(TileCoord(0, 0))
+    renderer.request_tiles([TileCoord(0, 0)], QPointF(128.0, 128.0))
+    assert renderer.pending_count == 1
+    renderer.drain_pending()
+
+    replacement = renderer.cached_tile(TileCoord(0, 0))
+    assert replacement is not None
+    assert replacement is not previous
+    assert tuple(_pixels(replacement)[0, 0]) == (255, 0, 0, 255)
+    assert not renderer.is_tile_stale(TileCoord(0, 0))
+
+
+def test_canvas_paints_stale_frame_instead_of_checkerboard(qtbot) -> None:
+    _ = qtbot
+    document = Document.create(256, 256)
+    service = DocumentCommandService()
+    service.attach_document(document)
+    layer = document.active_layer
+    assert service.apply_pixel_tiles(
+        layer.id,
+        {TileCoord(0, 0): _solid((0, 0, 255, 255))},
+        "底图",
+    )
+    renderer = TileRenderer(document)
+    renderer.render_tile(TileCoord(0, 0))
+    item = CanvasItem(document.size, renderer)
+    renderer.set_preview_tiles(
+        layer.id,
+        {TileCoord(0, 0): _solid((255, 0, 0, 255))},
+    )
+    target = QImage(256, 256, QImage.Format.Format_RGBA8888_Premultiplied)
+    target.fill(0)
+    option = QStyleOptionGraphicsItem()
+    option.exposedRect = QRectF(0.0, 0.0, 256.0, 256.0)
+    painter = QPainter(target)
+
+    item.paint(painter, option)
+    painter.end()
+
+    assert tuple(_pixels(target)[100, 100]) == (0, 0, 255, 255)
+    assert renderer.pending_count == 1
+    item.dispose()
 
 
 def test_progressive_scheduler_yields_between_tiles(qtbot) -> None:
