@@ -20,6 +20,7 @@
 - 已实现稀疏 selection 权重预留、图层锁定和透明像素锁定；
 - 已实现 B/E/I/G 工具、动态选项栏、圆形画笔光标和参数持久化；
 - 已实现 viewport 同步画笔轮廓、中键/Space 平移后的工具光标恢复，以及滚轮滚动前擦除、滚动后重绘；
+- 已实现任意缩放下将画布四边拖至视口中心，并为右侧图层、颜色及属性 Dock 增加分隔边框；
 - 已新增 ADR-0012、ADR-0013 和 P4 固定场景基准。
 
 数位笔压感、倾斜、笔速、自定义笔尖、选区 UI、形状、文本和滤镜未进入 P4。
@@ -30,7 +31,7 @@
 uv lock --check                         PASS
 uv run ruff check .                     PASS
 uv run mypy src                         PASS (48 source files)
-uv run pytest -q                        PASS (149 tests)
+uv run pytest -q                        PASS (151 tests)
 uv run python -m easypicture --smoke-test
                                         PASS
 uv run python -m easypicture --io-smoke-test <dir>

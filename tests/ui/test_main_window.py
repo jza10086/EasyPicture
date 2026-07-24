@@ -18,6 +18,18 @@ def test_main_window_starts_without_document(qtbot, tmp_path) -> None:
     assert window.windowTitle().startswith("EasyPicture")
 
 
+def test_right_docks_have_distinct_panel_borders(qtbot, tmp_path) -> None:
+    settings = make_settings(str(tmp_path / "settings.ini"))
+    controller = ApplicationController(settings, FakeDialogService())
+    window = MainWindow(controller, settings)
+    qtbot.addWidget(window)
+
+    for dock in (window.layers_dock, window.color_dock, window.properties_dock):
+        assert dock.property("panelRole") == "right"
+        assert "border: 1px solid palette(mid)" in dock.styleSheet()
+        assert "border-bottom: 1px solid palette(mid)" in dock.styleSheet()
+
+
 def test_new_document_updates_canvas_status_and_title(qtbot, tmp_path) -> None:
     settings = make_settings(str(tmp_path / "settings.ini"))
     dialogs = FakeDialogService()

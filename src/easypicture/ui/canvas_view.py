@@ -14,6 +14,7 @@ from PySide6.QtGui import (
     QPainter,
     QPaintEvent,
     QPen,
+    QResizeEvent,
     QTransform,
     QWheelEvent,
 )
@@ -32,6 +33,7 @@ class CanvasView(QGraphicsView):
     MIN_ZOOM = 0.0625
     MAX_ZOOM = 32.0
     ZOOM_STEP = 1.25
+    MIN_PAN_MARGIN = 64.0
 
     zoom_changed = Signal(float)
     cursor_document_position_changed = Signal(object)
@@ -128,6 +130,8 @@ class CanvasView(QGraphicsView):
         self._document = document
         self._canvas_item = None
         if document is None:
+            self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             self.scene().setSceneRect(QRectF(-100.0, -100.0, 200.0, 200.0))
             self.set_zoom(1.0)
             self.cursor_document_position_changed.emit(None)
@@ -136,10 +140,6 @@ class CanvasView(QGraphicsView):
         renderer = TileRenderer(document, parent=self)
         self._canvas_item = CanvasItem(document.size, renderer)
         self.scene().addItem(self._canvas_item)
-        margin = 64.0
-        self.scene().setSceneRect(
-            self._canvas_item.boundingRect().adjusted(-margin, -margin, margin, margin)
-        )
         self.set_zoom(1.0)
         self.centerOn(self._canvas_item)
 
@@ -149,13 +149,14 @@ class CanvasView(QGraphicsView):
         if anchor is None:
             anchor = self.viewport().rect().center()
         scene_anchor = self.mapToScene(anchor)
+        self._zoom = clamped
         transform = QTransform()
         transform.scale(clamped, clamped)
         self.setTransform(transform)
+        self._update_pan_bounds()
         moved_anchor = self.mapToScene(anchor)
         delta = moved_anchor - scene_anchor
         self.translate(delta.x(), delta.y())
-        self._zoom = clamped
         self.zoom_changed.emit(self._zoom)
 
     def zoom_in(self) -> None:
@@ -188,6 +189,7 @@ class CanvasView(QGraphicsView):
         if fitted != self._zoom:
             self.set_zoom(self._zoom)
         else:
+            self._update_pan_bounds()
             self.zoom_changed.emit(self._zoom)
 
     def _refine_document_fit(
@@ -235,6 +237,10 @@ class CanvasView(QGraphicsView):
             event.accept()
             return
         super().wheelEvent(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._update_pan_bounds()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
         old_rect = self._brush_cursor_rect()
@@ -387,6 +393,44 @@ class CanvasView(QGraphicsView):
             self._brush_cursor_position.y() - radius,
             diameter,
             diameter,
+        )
+
+    def _update_pan_bounds(self) -> None:
+        if self._canvas_item is None:
+            return
+
+        canvas_rect = self._canvas_item.sceneBoundingRect()
+        available = self.maximumViewportSize()
+        horizontal_fits = canvas_rect.width() * self._zoom <= available.width()
+        vertical_fits = canvas_rect.height() * self._zoom <= available.height()
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            if horizontal_fits
+            else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            if vertical_fits
+            else Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+
+        viewport_size = self.viewport().size()
+        zoom = max(self.MIN_ZOOM, self._zoom)
+        horizontal_margin = max(
+            self.MIN_PAN_MARGIN,
+            viewport_size.width() / (2.0 * zoom),
+        )
+        vertical_margin = max(
+            self.MIN_PAN_MARGIN,
+            viewport_size.height() / (2.0 * zoom),
+        )
+        self.scene().setSceneRect(
+            canvas_rect.adjusted(
+                -horizontal_margin,
+                -vertical_margin,
+                horizontal_margin,
+                vertical_margin,
+            )
         )
 
     def _invalidate_brush_cursor(

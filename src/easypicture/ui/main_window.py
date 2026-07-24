@@ -263,6 +263,19 @@ class MainWindow(QMainWindow):
     def _make_dock(title: str, object_name: str, widget: QWidget) -> QDockWidget:
         dock = QDockWidget(title)
         dock.setObjectName(object_name)
+        dock.setProperty("panelRole", "right")
+        dock.setStyleSheet(
+            f"""
+            QDockWidget#{object_name} {{
+                border: 1px solid palette(mid);
+            }}
+            QDockWidget#{object_name}::title {{
+                background-color: palette(alternate-base);
+                border-bottom: 1px solid palette(mid);
+                padding: 5px 6px;
+            }}
+            """
+        )
         dock.setWidget(widget)
         return dock
 

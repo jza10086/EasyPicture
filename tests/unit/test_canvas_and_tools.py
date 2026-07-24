@@ -71,6 +71,64 @@ def test_fit_document_recenters_after_scrollbar_layout_change(qtbot) -> None:
     assert view.zoom == 1.5
 
 
+def test_fit_document_can_pan_each_canvas_edge_to_viewport_center(qtbot) -> None:
+    view = CanvasView()
+    qtbot.addWidget(view)
+    view.resize(800, 600)
+    view.show()
+    view.set_document(Document.create(1920, 1080))
+    view.fit_document()
+    qtbot.wait(1)
+
+    horizontal = view.horizontalScrollBar()
+    vertical = view.verticalScrollBar()
+    viewport_center = view.viewport().rect().center()
+
+    assert not horizontal.isVisible()
+    assert not vertical.isVisible()
+    assert horizontal.minimum() < horizontal.maximum()
+    assert vertical.minimum() < vertical.maximum()
+
+    horizontal.setValue((horizontal.minimum() + horizontal.maximum()) // 2)
+    vertical.setValue((vertical.minimum() + vertical.maximum()) // 2)
+    qtbot.mousePress(
+        view.viewport(),
+        Qt.MouseButton.MiddleButton,
+        pos=QPoint(80, viewport_center.y()),
+    )
+    qtbot.mouseMove(view.viewport(), QPoint(740, viewport_center.y()))
+    qtbot.mouseRelease(
+        view.viewport(),
+        Qt.MouseButton.MiddleButton,
+        pos=QPoint(740, viewport_center.y()),
+    )
+    assert abs(view.mapFromScene(QPointF(0.0, 540.0)).x() - viewport_center.x()) <= 2
+
+    horizontal.setValue(horizontal.minimum())
+    assert abs(view.mapFromScene(QPointF(0.0, 540.0)).x() - viewport_center.x()) <= 2
+    horizontal.setValue(horizontal.maximum())
+    assert abs(view.mapFromScene(QPointF(1920.0, 540.0)).x() - viewport_center.x()) <= 2
+
+    vertical.setValue(vertical.minimum())
+    assert abs(view.mapFromScene(QPointF(960.0, 0.0)).y() - viewport_center.y()) <= 2
+    vertical.setValue(vertical.maximum())
+    assert abs(view.mapFromScene(QPointF(960.0, 1080.0)).y() - viewport_center.y()) <= 2
+
+    view.actual_size()
+    qtbot.wait(1)
+    large_view_center = view.viewport().rect().center()
+    assert horizontal.isVisible()
+    assert vertical.isVisible()
+    horizontal.setValue(horizontal.minimum())
+    assert abs(view.mapFromScene(QPointF(0.0, 540.0)).x() - large_view_center.x()) <= 2
+    horizontal.setValue(horizontal.maximum())
+    assert abs(view.mapFromScene(QPointF(1920.0, 540.0)).x() - large_view_center.x()) <= 2
+    vertical.setValue(vertical.minimum())
+    assert abs(view.mapFromScene(QPointF(960.0, 0.0)).y() - large_view_center.y()) <= 2
+    vertical.setValue(vertical.maximum())
+    assert abs(view.mapFromScene(QPointF(960.0, 1080.0)).y() - large_view_center.y()) <= 2
+
+
 def test_middle_mouse_pan_moves_scrollbars_without_editing(qtbot) -> None:
     view = CanvasView()
     qtbot.addWidget(view)
