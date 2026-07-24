@@ -24,6 +24,7 @@ from easypicture.persistence import (
 from easypicture.ui.dialogs import DialogService, QtDialogService
 from easypicture.ui.main_window import MainWindow
 from easypicture.ui.settings import AppSettings
+from easypicture.ui.theme import apply_dark_theme
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -70,6 +71,7 @@ def run(argv: Sequence[str] | None = None) -> int:
     app.setOrganizationDomain("local.easypicture")
     app.setApplicationName("EasyPicture")
     app.setApplicationVersion(__version__)
+    apply_dark_theme(app)
 
     window = create_window(recovery_enabled=not options.smoke_test)
     window.show()

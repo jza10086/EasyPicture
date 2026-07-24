@@ -43,7 +43,7 @@ class CanvasView(QGraphicsView):
         self._graphics_scene = QGraphicsScene(self)
         self.setScene(self._graphics_scene)
         self.setObjectName("CanvasView")
-        self.setBackgroundBrush(Qt.GlobalColor.darkGray)
+        self.setBackgroundBrush(QColor("#363636"))
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)

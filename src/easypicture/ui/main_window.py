@@ -37,44 +37,47 @@ from easypicture.ui.settings import AppSettings
 from easypicture.ui.tool_options import ToolOptionsPanel
 
 RIGHT_SIDEBAR_STYLE = """
+QMainWindow#MainWindow {
+    background-color: #202020;
+}
 QMainWindow#MainWindow::separator {
-    background-color: palette(midlight);
-    width: 8px;
-    height: 8px;
+    background-color: #151515;
+    width: 4px;
+    height: 4px;
 }
 QMainWindow#MainWindow QTabBar {
-    background-color: palette(midlight);
+    background-color: #202020;
 }
 QMainWindow#MainWindow QTabBar::tab {
-    background-color: palette(base);
-    border: 1px solid palette(mid);
-    border-bottom: 0;
-    margin: 5px 2px 0 2px;
-    padding: 5px 10px;
+    background-color: #292929;
+    border: 1px solid #151515;
+    margin: 2px 1px 0 1px;
+    padding: 4px 10px;
 }
 QMainWindow#MainWindow QTabBar::tab:selected {
-    background-color: palette(light);
+    background-color: #424242;
+    border-bottom-color: #4772b3;
 }
 """
 
 RIGHT_DOCK_STYLE = """
 QDockWidget[panelRole="right"] {
-    background-color: palette(midlight);
-    border: 0;
+    background-color: #292929;
+    border: 1px solid #151515;
 }
 QDockWidget[panelRole="right"]::title {
-    background-color: palette(base);
-    border: 1px solid palette(mid);
-    margin: 8px 8px 0 8px;
-    padding: 5px 7px;
+    color: #dddddd;
+    background-color: #303030;
+    border-bottom: 1px solid #151515;
+    padding: 5px 8px;
 }
 QWidget[panelRole="rightSidebar"] {
-    background-color: palette(midlight);
+    background-color: #292929;
 }
 QFrame[panelRole="dockCard"] {
-    background-color: palette(base);
-    border: 1px solid palette(mid);
-    border-radius: 4px;
+    background-color: #2b2b2b;
+    border: 1px solid #171717;
+    border-radius: 3px;
 }
 """
 
@@ -312,14 +315,14 @@ class MainWindow(QMainWindow):
         sidebar.setObjectName(f"{object_name}Sidebar")
         sidebar.setProperty("panelRole", "rightSidebar")
         sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(8, 6, 8, 8)
+        sidebar_layout.setContentsMargins(4, 3, 4, 4)
         sidebar_layout.setSpacing(0)
 
         card = QFrame(sidebar)
         card.setObjectName(f"{object_name}Card")
         card.setProperty("panelRole", "dockCard")
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(6, 6, 6, 6)
+        card_layout.setContentsMargins(4, 4, 4, 4)
         card_layout.setSpacing(0)
         card_layout.addWidget(widget)
         sidebar_layout.addWidget(card)

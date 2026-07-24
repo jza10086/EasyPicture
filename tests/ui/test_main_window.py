@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QFrame, QVBoxLayout
 from easypicture.controller import ApplicationController
 from easypicture.ui.dialogs import NewDocumentSpec
 from easypicture.ui.main_window import MainWindow
+from easypicture.ui.theme import DARK_STYLESHEET, dark_palette
 from tests.fakes import FakeDialogService, make_settings
 
 
@@ -28,8 +29,8 @@ def test_right_docks_have_sidebar_background_spacing_and_cards(qtbot, tmp_path) 
 
     for dock in (window.layers_dock, window.color_dock, window.properties_dock):
         assert dock.property("panelRole") == "right"
-        assert "background-color: palette(midlight)" in dock.styleSheet()
-        assert "border: 1px solid palette(mid)" in dock.styleSheet()
+        assert "background-color: #292929" in dock.styleSheet()
+        assert "border: 1px solid #151515" in dock.styleSheet()
         sidebar = dock.widget()
         assert sidebar is not None
         assert sidebar.property("panelRole") == "rightSidebar"
@@ -41,7 +42,7 @@ def test_right_docks_have_sidebar_background_spacing_and_cards(qtbot, tmp_path) 
             sidebar_margins.top(),
             sidebar_margins.right(),
             sidebar_margins.bottom(),
-        ) == (8, 6, 8, 8)
+        ) == (4, 3, 4, 4)
 
         card = sidebar.findChild(QFrame, f"{dock.objectName()}Card")
         assert card is not None
@@ -54,10 +55,21 @@ def test_right_docks_have_sidebar_background_spacing_and_cards(qtbot, tmp_path) 
             card_margins.top(),
             card_margins.right(),
             card_margins.bottom(),
-        ) == (6, 6, 6, 6)
+        ) == (4, 4, 4, 4)
 
     assert "QMainWindow#MainWindow::separator" in window.styleSheet()
-    assert "height: 8px" in window.styleSheet()
+    assert "height: 4px" in window.styleSheet()
+
+
+def test_dark_theme_uses_neutral_surfaces_and_blue_selection() -> None:
+    palette = dark_palette()
+
+    assert palette.window().color().name() == "#292929"
+    assert palette.base().color().name() == "#1f1f1f"
+    assert palette.highlight().color().name() == "#4772b3"
+    assert "QMenuBar" in DARK_STYLESHEET
+    assert "QToolBar#ToolsToolbar" in DARK_STYLESHEET
+    assert "QAbstractItemView::item:selected" in DARK_STYLESHEET
 
 
 def test_new_document_updates_canvas_status_and_title(qtbot, tmp_path) -> None:
