@@ -255,3 +255,45 @@ def test_viewport_brush_cursor_clears_previous_fast_position(qtbot) -> None:
     assert patch(first, 80) != patch(baseline, 80)
     assert patch(second, 80) == patch(baseline, 80)
     assert patch(second, 220) != patch(baseline, 220)
+
+
+def test_viewport_brush_cursor_does_not_leave_scroll_trail(qtbot) -> None:
+    view = CanvasView()
+    qtbot.addWidget(view)
+    view.resize(320, 240)
+    view.show()
+    view.set_document(Document.create(1600, 1200))
+    view.centerOn(800.0, 600.0)
+    qtbot.wait(1)
+
+    cursor_x = 160
+    cursor_y = 120
+    scroll_delta = 48
+    view.update_brush_cursor(
+        QPointF(float(cursor_x), float(cursor_y)),
+        24.0,
+        visible=True,
+    )
+    scrollbar = view.verticalScrollBar()
+    before = scrollbar.value()
+    scrollbar.setValue(before + scroll_delta)
+    assert scrollbar.value() == before + scroll_delta
+    scrolled = view.viewport().grab().toImage().convertToFormat(
+        QImage.Format.Format_RGBA8888
+    )
+
+    view.clear_brush_cursor()
+    view.viewport().repaint()
+    clean = view.viewport().grab().toImage().convertToFormat(
+        QImage.Format.Format_RGBA8888
+    )
+
+    def patch(image, center_y: int) -> bytes:
+        pixels = image.copy(cursor_x - 16, center_y - 16, 32, 32)
+        return bytes(pixels.bits())
+
+    assert patch(scrolled, cursor_y) != patch(clean, cursor_y)
+    assert patch(scrolled, cursor_y - scroll_delta) == patch(
+        clean,
+        cursor_y - scroll_delta,
+    )

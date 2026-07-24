@@ -236,6 +236,23 @@ class CanvasView(QGraphicsView):
             return
         super().wheelEvent(event)
 
+    def scrollContentsBy(self, dx: int, dy: int) -> None:
+        old_rect = self._brush_cursor_rect()
+        if old_rect.isEmpty():
+            super().scrollContentsBy(dx, dy)
+            return
+
+        # QGraphicsView normally scrolls by blitting the existing viewport
+        # pixels. The brush outline is painted above the scene, so it must be
+        # removed before that blit or its pixels are copied to a stale position.
+        self._brush_cursor_suspended = True
+        self._invalidate_brush_cursor(old_rect, synchronous=True)
+        try:
+            super().scrollContentsBy(dx, dy)
+        finally:
+            self._brush_cursor_suspended = False
+        self._invalidate_brush_cursor(QRectF(), synchronous=True)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pan_button = event.button() == Qt.MouseButton.MiddleButton
         space_pan = self._space_pressed and event.button() == Qt.MouseButton.LeftButton
