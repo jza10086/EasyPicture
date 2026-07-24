@@ -249,9 +249,12 @@ class TileRenderer(QObject):
         if changed:
             self.cache_invalidated.emit(changed)
 
-    def invalidate_all_composites(self) -> None:
-        self._composite_cache.clear()
-        self._stale_composites.clear()
+    def invalidate_all_composites(self, *, preserve_previous: bool = False) -> None:
+        if preserve_previous:
+            self._stale_composites.update(self._composite_cache)
+        else:
+            self._composite_cache.clear()
+            self._stale_composites.clear()
         self.cache_invalidated.emit(None)
 
     def clear_cache(self) -> None:
@@ -315,14 +318,14 @@ class TileRenderer(QObject):
             for key in tuple(self._source_cache):
                 if key[0] not in current_ids:
                     del self._source_cache[key]
-            self.invalidate_all_composites()
+            self.invalidate_all_composites(preserve_previous=True)
             return
         if isinstance(event, LayerPropertiesChanged) and event.properties & {
             "visible",
             "opacity",
             "origin",
         }:
-            self.invalidate_all_composites()
+            self.invalidate_all_composites(preserve_previous=True)
 
     def _enforce_budget(self) -> None:
         while self.cache_bytes > self.cache_budget_bytes:

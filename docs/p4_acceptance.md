@@ -10,7 +10,7 @@
 ## 交付结果
 
 - 已实现私有工作 Tile、正确图层顺序的实时预览和一次笔划一次提交；
-- 已实现 stale Tile 上一帧保留，渐进重绘期间不回退到棋盘格；
+- 已实现 stale Tile 上一帧保留，像素及图层状态渐进重绘期间不回退到棋盘格；
 - 已实现圆形画笔的大小、硬度、不透明度、间距和抗锯齿；
 - 已实现只降低 Alpha 且保留隐藏 RGB 的橡皮；
 - 已实现可见合成/活动层吸管，左右键分别设置前景/背景色；
@@ -28,7 +28,7 @@
 uv lock --check                         PASS
 uv run ruff check .                     PASS
 uv run mypy src                         PASS (48 source files)
-uv run pytest -q                        PASS (142 tests)
+uv run pytest -q                        PASS (143 tests)
 uv run python -m easypicture --smoke-test
                                         PASS
 uv run python -m easypicture --io-smoke-test <dir>

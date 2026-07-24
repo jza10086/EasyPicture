@@ -142,7 +142,7 @@ def test_layer_local_size_clips_edge_tile_pixels() -> None:
     assert tuple(pixels[10, 10]) == (0, 0, 0, 0)
 
 
-def test_pixel_invalidation_keeps_unrelated_composite_and_property_clears_all() -> None:
+def test_pixel_and_property_invalidation_keep_previous_frames() -> None:
     document = Document.create(512, 256)
     service = DocumentCommandService()
     service.attach_document(document)
@@ -172,7 +172,9 @@ def test_pixel_invalidation_keeps_unrelated_composite_and_property_clears_all() 
     assert not renderer.is_tile_stale(TileCoord(0, 0))
 
     assert service.set_layer_opacity(layer.id, 0.75)
-    assert renderer.composite_cache_count == 0
+    assert renderer.composite_cache_count == 2
+    assert renderer.is_tile_stale(TileCoord(0, 0))
+    assert renderer.is_tile_stale(TileCoord(1, 0))
     assert renderer.source_cache_count == source_count
 
 
@@ -234,6 +236,49 @@ def test_canvas_paints_stale_frame_instead_of_checkerboard(qtbot) -> None:
 
     assert tuple(_pixels(target)[100, 100]) == (0, 0, 255, 255)
     assert renderer.pending_count == 1
+    item.dispose()
+
+
+def test_visibility_change_keeps_full_previous_frame_until_recomposed(qtbot) -> None:
+    _ = qtbot
+    document = Document.create(256, 256)
+    service = DocumentCommandService()
+    service.attach_document(document)
+    bottom = document.active_layer
+    assert service.apply_pixel_tiles(
+        bottom.id,
+        {TileCoord(0, 0): _solid((0, 0, 255, 255))},
+        "底层",
+    )
+    assert service.create_layer()
+    top = document.active_layer
+    assert service.apply_pixel_tiles(
+        top.id,
+        {TileCoord(0, 0): _solid((255, 0, 0, 255))},
+        "顶层",
+    )
+    renderer = TileRenderer(document)
+    previous = renderer.render_tile(TileCoord(0, 0))
+    item = CanvasItem(document.size, renderer)
+
+    assert service.set_layer_visible(top.id, False)
+
+    assert renderer.cached_tile(TileCoord(0, 0)) is previous
+    assert renderer.is_tile_stale(TileCoord(0, 0))
+    target = QImage(256, 256, QImage.Format.Format_RGBA8888_Premultiplied)
+    target.fill(0)
+    option = QStyleOptionGraphicsItem()
+    option.exposedRect = QRectF(0.0, 0.0, 256.0, 256.0)
+    painter = QPainter(target)
+    item.paint(painter, option)
+    painter.end()
+    assert tuple(_pixels(target)[100, 100]) == (255, 0, 0, 255)
+
+    renderer.drain_pending()
+    replacement = renderer.cached_tile(TileCoord(0, 0))
+    assert replacement is not None
+    assert tuple(_pixels(replacement)[100, 100]) == (0, 0, 255, 255)
+    assert not renderer.is_tile_stale(TileCoord(0, 0))
     item.dispose()
 
 
