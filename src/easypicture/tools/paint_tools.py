@@ -76,7 +76,7 @@ class BrushTool:
         if document is None or commands is None:
             return False
         point = self._context.canvas.viewport_to_document(event.position().toPoint())
-        self._update_cursor(event.position(), point.x, point.y)
+        self._update_cursor(event.position())
         if not 0 <= point.x < document.width or not 0 <= point.y < document.height:
             return False
         layer = document.active_layer
@@ -110,7 +110,7 @@ class BrushTool:
         if self._context is None:
             return False
         point = self._context.canvas.viewport_to_document(event.position().toPoint())
-        self._update_cursor(event.position(), point.x, point.y)
+        self._update_cursor(event.position())
         if self._stroke is None or self._session is None:
             return False
         self._stroke.extend(
@@ -147,11 +147,11 @@ class BrushTool:
             return (0, 0, 0, 255)
         return self._context.foreground_provider()
 
-    def _update_cursor(self, position: QPointF, x: float, y: float) -> None:
+    def _update_cursor(self, position: QPointF) -> None:
         if self._context is None:
             return
         document = self._context.document_provider()
-        visible = document is not None and 0 <= x < document.width and 0 <= y < document.height
+        visible = document is not None
         self._context.canvas.update_brush_cursor(
             position,
             float(self._settings_provider().size),

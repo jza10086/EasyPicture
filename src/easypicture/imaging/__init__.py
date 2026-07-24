@@ -1,6 +1,8 @@
 """Qt-free image processing services."""
 
 from easypicture.imaging.brush import (
+    DEFAULT_BRUSH_SIZE_LIMIT,
+    MAX_BRUSH_SIZE,
     BrushSettings,
     BrushStrokeEngine,
     RGBAColor,
@@ -16,8 +18,10 @@ from easypicture.imaging.sampling import sample_document_pixel
 __all__ = [
     "BrushSettings",
     "BrushStrokeEngine",
+    "DEFAULT_BRUSH_SIZE_LIMIT",
     "FillRequest",
     "FillResult",
+    "MAX_BRUSH_SIZE",
     "RGBAColor",
     "RegionQuery",
     "RegionResult",

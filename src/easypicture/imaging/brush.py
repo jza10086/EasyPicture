@@ -13,6 +13,8 @@ import numpy as np
 from easypicture.pixels import DEFAULT_TILE_SIZE, MaskArray, RGBAArray, TileCoord
 
 type RGBAColor = tuple[int, int, int, int]
+DEFAULT_BRUSH_SIZE_LIMIT = 1024
+MAX_BRUSH_SIZE = 8192
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,8 +26,8 @@ class BrushSettings:
     antialias: bool = True
 
     def __post_init__(self) -> None:
-        if not 1 <= self.size <= 1024:
-            raise ValueError("brush size must be between 1 and 1024")
+        if not 1 <= self.size <= MAX_BRUSH_SIZE:
+            raise ValueError(f"brush size must be between 1 and {MAX_BRUSH_SIZE}")
         if not 0.0 <= self.hardness <= 1.0:
             raise ValueError("brush hardness must be between 0 and 1")
         if not 0.0 <= self.opacity <= 1.0:
@@ -338,6 +340,8 @@ def _cached_coverage(
 
 
 __all__ = [
+    "DEFAULT_BRUSH_SIZE_LIMIT",
+    "MAX_BRUSH_SIZE",
     "BrushSettings",
     "BrushStrokeEngine",
     "BrushSurface",

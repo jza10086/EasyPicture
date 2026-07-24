@@ -8,13 +8,17 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QSpinBox,
     QStackedWidget,
     QWidget,
 )
 
-from easypicture.imaging import BrushSettings
+from easypicture.imaging import (
+    DEFAULT_BRUSH_SIZE_LIMIT,
+    MAX_BRUSH_SIZE,
+    BrushSettings,
+)
 from easypicture.tools import BucketSettings
+from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.settings import AppSettings
 
 
@@ -23,7 +27,13 @@ class BrushOptionsWidget(QWidget):
 
     def __init__(self, settings: BrushSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.size_spin = self._spin(1, 1024, settings.size, " px")
+        self.size_spin = self._spin(
+            1,
+            DEFAULT_BRUSH_SIZE_LIMIT,
+            settings.size,
+            " px",
+            manual_maximum=MAX_BRUSH_SIZE,
+        )
         self.hardness_spin = self._spin(0, 100, round(settings.hardness * 100), "%")
         self.opacity_spin = self._spin(0, 100, round(settings.opacity * 100), "%")
         self.spacing_spin = self._spin(1, 200, round(settings.spacing * 100), "%")
@@ -69,12 +79,17 @@ class BrushOptionsWidget(QWidget):
         maximum: int,
         value: int,
         suffix: str,
-    ) -> QSpinBox:
-        spin = QSpinBox(self)
-        spin.setRange(minimum, maximum)
-        spin.setValue(value)
-        spin.setSuffix(suffix)
-        return spin
+        *,
+        manual_maximum: int | None = None,
+    ) -> DragValueSpinBox:
+        return DragValueSpinBox(
+            minimum,
+            maximum,
+            value,
+            manual_maximum=manual_maximum,
+            suffix=suffix,
+            parent=self,
+        )
 
 
 class EyedropperOptionsWidget(QWidget):
@@ -99,9 +114,12 @@ class BucketOptionsWidget(QWidget):
 
     def __init__(self, settings: BucketSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.tolerance_spin = QSpinBox(self)
-        self.tolerance_spin.setRange(0, 255)
-        self.tolerance_spin.setValue(settings.tolerance)
+        self.tolerance_spin = DragValueSpinBox(
+            0,
+            255,
+            settings.tolerance,
+            parent=self,
+        )
         self.connectivity_combo = QComboBox(self)
         self.connectivity_combo.addItem("4 邻域", 4)
         self.connectivity_combo.addItem("8 邻域", 8)
@@ -110,10 +128,13 @@ class BucketOptionsWidget(QWidget):
         self.contiguous_check.setChecked(settings.contiguous)
         self.sample_merged_check = QCheckBox("取样所有可见图层", self)
         self.sample_merged_check.setChecked(settings.sample_merged)
-        self.edge_expansion_spin = QSpinBox(self)
-        self.edge_expansion_spin.setRange(0, 8)
-        self.edge_expansion_spin.setValue(settings.edge_expansion)
-        self.edge_expansion_spin.setSuffix(" px")
+        self.edge_expansion_spin = DragValueSpinBox(
+            0,
+            8,
+            settings.edge_expansion,
+            suffix=" px",
+            parent=self,
+        )
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)

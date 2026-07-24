@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QMainWindow
 
 from easypicture.domain import Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
-from easypicture.imaging import BrushSettings
+from easypicture.imaging import MAX_BRUSH_SIZE, BrushSettings
 from easypicture.tools import BucketSettings
 
 DEFAULT_DOCUMENT_SIZE = Size(1920, 1080)
@@ -49,7 +49,7 @@ class AppSettings:
 
     def brush_settings(self) -> BrushSettings:
         return BrushSettings(
-            size=self._bounded_int("tools/brush/size", 32, 1, 1024),
+            size=self._bounded_int("tools/brush/size", 32, 1, MAX_BRUSH_SIZE),
             hardness=self._bounded_float("tools/brush/hardness", 0.8, 0.0, 1.0),
             opacity=self._bounded_float("tools/brush/opacity", 1.0, 0.0, 1.0),
             spacing=self._bounded_float("tools/brush/spacing", 0.15, 0.01, 2.0),

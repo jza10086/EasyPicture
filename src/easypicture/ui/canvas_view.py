@@ -470,11 +470,7 @@ class CanvasView(QGraphicsView):
         if self._brush_cursor_position is None or self._document is None:
             return
         viewport_point = self.viewport().mapFromGlobal(QCursor.pos())
-        document_point = self.viewport_to_document(viewport_point)
-        visible = (
-            0.0 <= document_point.x < self._document.width
-            and 0.0 <= document_point.y < self._document.height
-        )
+        visible = self.viewport().rect().contains(viewport_point)
         self.update_brush_cursor(
             QPointF(viewport_point),
             self._brush_cursor_diameter,
