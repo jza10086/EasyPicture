@@ -18,12 +18,13 @@ from easypicture.domain.events import (
     LayerListChanged,
     LayerPixelsChanged,
     LayerPropertiesChanged,
+    SelectionChanged,
 )
 from easypicture.domain.geometry import Size
 from easypicture.domain.layer import RasterLayer
 from easypicture.domain.selection import Selection
-from easypicture.pixels import RGBAArray, TileCoord
-from easypicture.pixels.types import validate_rgba_array
+from easypicture.pixels import MaskArray, RGBAArray, TileCoord
+from easypicture.pixels.types import validate_mask_array, validate_rgba_array
 
 MAX_DOCUMENT_DIMENSION = 8192
 MAX_DOCUMENT_LAYERS = 256
@@ -320,6 +321,65 @@ class Document:
                 layer_revision=layer.revision,
                 layer_tiles=frozenset(changed),
                 document_tiles=document_tiles,
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return frozenset(changed)
+
+    def prepare_selection_updates(
+        self,
+        updates: Mapping[TileCoord, MaskArray | None],
+    ) -> dict[TileCoord, MaskArray | None]:
+        """Validate proposed full-Tile selection writes without mutating."""
+        tile_size = self.selection.mask.tile_size
+        max_tx = (self.width - 1) // tile_size
+        max_ty = (self.height - 1) // tile_size
+        normalized: dict[TileCoord, MaskArray | None] = {}
+        for coord, proposed in updates.items():
+            if coord.x > max_tx or coord.y > max_ty:
+                raise ValueError("selection Tile lies outside the document")
+            before = self.selection.mask.read_tile(coord.x, coord.y)
+            if proposed is None:
+                candidate = np.zeros((tile_size, tile_size), dtype=np.uint8)
+            else:
+                validate_mask_array(
+                    proposed,
+                    expected_width=tile_size,
+                    expected_height=tile_size,
+                )
+                candidate = proposed.copy(order="C")
+
+            valid_width = min(tile_size, self.width - coord.x * tile_size)
+            valid_height = min(tile_size, self.height - coord.y * tile_size)
+            if valid_width < tile_size:
+                candidate[:, valid_width:] = 0
+            if valid_height < tile_size:
+                candidate[valid_height:, :] = 0
+            if np.array_equal(before, candidate):
+                continue
+            normalized[coord] = candidate if np.any(candidate) else None
+        return normalized
+
+    def replace_selection_tiles(
+        self,
+        updates: Mapping[TileCoord, MaskArray | None],
+    ) -> frozenset[TileCoord]:
+        """Apply normalized selection Tile replacements as one content change."""
+        changed: set[TileCoord] = set()
+        for coord, pixels in updates.items():
+            if self.selection.mask.replace_tile(coord.x, coord.y, pixels):
+                changed.add(coord)
+        if not changed:
+            return frozenset()
+
+        revision = self._begin_content_change()
+        self._emit(
+            SelectionChanged(
+                document_id=self.id,
+                revision=revision,
+                selection_revision=self.selection.revision,
+                tiles=frozenset(changed),
+                active=self.selection.is_active,
             )
         )
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))

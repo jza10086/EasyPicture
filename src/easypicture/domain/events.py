@@ -61,6 +61,15 @@ class LayerPixelsChanged:
     document_tiles: frozenset[TileCoord]
 
 
+@dataclass(frozen=True, slots=True)
+class SelectionChanged:
+    document_id: UUID
+    revision: int
+    selection_revision: int
+    tiles: frozenset[TileCoord]
+    active: bool
+
+
 type DocumentEvent = (
     DocumentModifiedChanged
     | DocumentPathChanged
@@ -69,6 +78,7 @@ type DocumentEvent = (
     | LayerListChanged
     | LayerPropertiesChanged
     | LayerPixelsChanged
+    | SelectionChanged
 )
 
 
@@ -86,4 +96,5 @@ __all__ = [
     "LayerListChanged",
     "LayerPixelsChanged",
     "LayerPropertiesChanged",
+    "SelectionChanged",
 ]

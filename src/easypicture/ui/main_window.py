@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QMainWindow,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QStackedWidget,
@@ -20,11 +21,31 @@ from PySide6.QtWidgets import (
 from easypicture import __version__
 from easypicture.controller import ApplicationController
 from easypicture.domain import Document, DocumentEvent, Point
+from easypicture.imaging import (
+    BACKGROUND_SELECTION_PIXEL_THRESHOLD,
+    SelectionAdjustment,
+    SelectionAdjustmentRequest,
+    SelectionBulkOperation,
+    SelectionBulkRequest,
+    SelectionCombineMode,
+    SelectionOperationResult,
+    calculate_bulk_selection,
+    calculate_selection_adjustment,
+    clear_selection_tiles,
+    combine_selection_tiles,
+    invert_selection_tiles,
+    select_all_candidate,
+)
+from easypicture.jobs import JobHandle, JobOperation, JobOutcome, JobStatus
+from easypicture.persistence import DocumentSnapshot
 from easypicture.tools import (
     BrushTool,
     BucketTool,
     EyedropperTool,
+    MagicWandSettings,
+    MagicWandTool,
     NullTool,
+    RectangleSelectionTool,
     Tool,
     ToolContext,
     ToolController,
@@ -118,6 +139,8 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(RIGHT_SIDEBAR_STYLE)
         self.resize(1100, 720)
         self._editing_busy = False
+        self._selection_job: JobHandle | None = None
+        self._selection_progress: QProgressDialog | None = None
 
         self.canvas_view = CanvasView(self)
         self.empty_state = EmptyStateWidget(self)
@@ -184,6 +207,17 @@ class MainWindow(QMainWindow):
         self.actual_size_action = QAction("100%", self)
         self.actual_size_action.setShortcut(QKeySequence("Ctrl+1"))
 
+        self.select_all_action = QAction("全选", self)
+        self.select_all_action.setShortcut(QKeySequence("Ctrl+A"))
+        self.deselect_action = QAction("取消选择", self)
+        self.deselect_action.setShortcut(QKeySequence("Ctrl+D"))
+        self.invert_selection_action = QAction("反选", self)
+        self.invert_selection_action.setShortcut(QKeySequence("Ctrl+Shift+I"))
+        self.feather_selection_action = QAction("羽化…", self)
+        self.grow_selection_action = QAction("扩展…", self)
+        self.shrink_selection_action = QAction("收缩…", self)
+        self.smooth_selection_action = QAction("平滑…", self)
+
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("文件(&F)")
         file_menu.addAction(self.new_action)
@@ -206,6 +240,16 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.fit_action)
         view_menu.addAction(self.actual_size_action)
 
+        selection_menu = self.menuBar().addMenu("选择(&S)")
+        selection_menu.addAction(self.select_all_action)
+        selection_menu.addAction(self.deselect_action)
+        selection_menu.addAction(self.invert_selection_action)
+        selection_menu.addSeparator()
+        selection_menu.addAction(self.feather_selection_action)
+        selection_menu.addAction(self.grow_selection_action)
+        selection_menu.addAction(self.shrink_selection_action)
+        selection_menu.addAction(self.smooth_selection_action)
+
     def _create_toolbars(self) -> None:
         self.tool_options = QToolBar("工具选项", self)
         self.tool_options.setObjectName("ToolOptionsToolbar")
@@ -223,6 +267,10 @@ class MainWindow(QMainWindow):
             "eraser": BrushTool(self.tool_options_panel.brush.settings, eraser=True),
             "eyedropper": EyedropperTool(self.tool_options_panel.eyedropper.sample_merged),
             "bucket": BucketTool(self.tool_options_panel.bucket.settings),
+            "rectangle_selection": RectangleSelectionTool(
+                self.tool_options_panel.rectangle_selection.mode
+            ),
+            "magic_wand": MagicWandTool(self.tool_options_panel.magic_wand.settings),
         }
         self.tool_actions: dict[str, QAction] = {}
         for name, label, shortcut in (
@@ -230,6 +278,8 @@ class MainWindow(QMainWindow):
             ("eraser", "橡皮", "E"),
             ("eyedropper", "吸管", "I"),
             ("bucket", "油漆桶", "G"),
+            ("rectangle_selection", "矩形选区", "M"),
+            ("magic_wand", "魔棒", "W"),
         ):
             action = QAction(label, self)
             action.setCheckable(True)
@@ -246,6 +296,10 @@ class MainWindow(QMainWindow):
         self.tool_options_panel.bucket_settings_changed.connect(self._save_bucket_settings)
         self.tool_options_panel.eyedropper_settings_changed.connect(
             self._save_eyedropper_settings
+        )
+        self.tool_options_panel.selection_mode_changed.connect(self._save_selection_mode)
+        self.tool_options_panel.magic_wand_settings_changed.connect(
+            self._save_magic_wand_settings
         )
         self.tool_actions["brush"].setChecked(True)
         self._activate_tool("brush")
@@ -292,6 +346,33 @@ class MainWindow(QMainWindow):
         self.zoom_out_action.triggered.connect(self.canvas_view.zoom_out)
         self.fit_action.triggered.connect(self.canvas_view.fit_document)
         self.actual_size_action.triggered.connect(self.canvas_view.actual_size)
+        self.select_all_action.triggered.connect(self._select_all)
+        self.deselect_action.triggered.connect(self._deselect)
+        self.invert_selection_action.triggered.connect(self._invert_selection)
+        self.feather_selection_action.triggered.connect(
+            lambda _checked=False: self._adjust_selection(
+                SelectionAdjustment.FEATHER,
+                "羽化选区",
+            )
+        )
+        self.grow_selection_action.triggered.connect(
+            lambda _checked=False: self._adjust_selection(
+                SelectionAdjustment.GROW,
+                "扩展选区",
+            )
+        )
+        self.shrink_selection_action.triggered.connect(
+            lambda _checked=False: self._adjust_selection(
+                SelectionAdjustment.SHRINK,
+                "收缩选区",
+            )
+        )
+        self.smooth_selection_action.triggered.connect(
+            lambda _checked=False: self._adjust_selection(
+                SelectionAdjustment.SMOOTH,
+                "平滑选区",
+            )
+        )
         undo_stack = self.controller.commands.undo_stack
         self.undo_action.triggered.connect(lambda _checked=False: undo_stack.undo())
         self.redo_action.triggered.connect(lambda _checked=False: undo_stack.redo())
@@ -349,6 +430,11 @@ class MainWindow(QMainWindow):
         self.controller.request_export_png(self)
 
     def _on_document_changed(self, document: Document | None) -> None:
+        if self._selection_job is not None:
+            self._selection_job.cancel()
+            self._selection_job = None
+            self._close_selection_progress()
+            self._editing_busy = False
         self.tool_controller.reset_active_tool()
         self.canvas_view.set_document(document)
         self.layer_panel.set_document(document)
@@ -373,6 +459,7 @@ class MainWindow(QMainWindow):
         else:
             self.document_size_label.setText(f"{document.width} × {document.height} px")
         self._update_undo_actions()
+        self._update_selection_actions()
         self._update_window_title()
 
     def _activate_tool(self, tool_name: str) -> None:
@@ -408,6 +495,16 @@ class MainWindow(QMainWindow):
         self.settings.set_eyedropper_sample_merged(sample_merged)
         self.settings.sync()
 
+    def _save_selection_mode(self, mode: object) -> None:
+        if isinstance(mode, SelectionCombineMode):
+            self.settings.set_selection_combine_mode(mode)
+            self.settings.sync()
+
+    def _save_magic_wand_settings(self, settings: object) -> None:
+        if isinstance(settings, MagicWandSettings):
+            self.settings.set_magic_wand_settings(settings)
+            self.settings.sync()
+
     def _set_editing_busy(self, busy: bool) -> None:
         self._editing_busy = busy
         has_document = self.controller.document is not None
@@ -415,10 +512,193 @@ class MainWindow(QMainWindow):
             action.setEnabled(has_document and not busy)
         self.tool_options_panel.setEnabled(has_document and not busy)
         self.layer_panel.setEnabled(not busy)
+        self._update_selection_actions()
 
     def _on_document_event(self, event: DocumentEvent) -> None:
         self.layer_panel.handle_event(event)
         self._update_window_title()
+        self._update_selection_actions()
+
+    def _select_all(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        if document.width * document.height > BACKGROUND_SELECTION_PIXEL_THRESHOLD:
+            request = SelectionBulkRequest(
+                DocumentSnapshot.capture(document),
+                SelectionBulkOperation.SELECT_ALL,
+            )
+            self._start_selection_job(
+                lambda token, progress: calculate_bulk_selection(
+                    request,
+                    token,
+                    progress,
+                ),
+                "全选",
+            )
+            return
+        candidate = select_all_candidate(document.size)
+        updates = combine_selection_tiles(
+            document.selection.mask,
+            candidate,
+            document.size,
+            SelectionCombineMode.REPLACE,
+        )
+        self.controller.commands.apply_selection_tiles(updates, "全选")
+
+    def _deselect(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        self.controller.commands.apply_selection_tiles(
+            clear_selection_tiles(document.selection.mask),
+            "取消选择",
+        )
+
+    def _invert_selection(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy or not document.selection.is_active:
+            return
+        if document.width * document.height > BACKGROUND_SELECTION_PIXEL_THRESHOLD:
+            request = SelectionBulkRequest(
+                DocumentSnapshot.capture(document),
+                SelectionBulkOperation.INVERT,
+            )
+            self._start_selection_job(
+                lambda token, progress: calculate_bulk_selection(
+                    request,
+                    token,
+                    progress,
+                ),
+                "反选",
+            )
+            return
+        self.controller.commands.apply_selection_tiles(
+            invert_selection_tiles(document.selection.mask, document.size),
+            "反选",
+        )
+
+    def _adjust_selection(
+        self,
+        operation: SelectionAdjustment,
+        label: str,
+    ) -> None:
+        document = self.controller.document
+        if (
+            document is None
+            or self._editing_busy
+            or not document.selection.is_active
+            or self._selection_job is not None
+        ):
+            return
+        maximum = 1024 if operation in {
+            SelectionAdjustment.GROW,
+            SelectionAdjustment.SHRINK,
+        } else 256
+        radius = self.controller.dialogs.request_selection_radius(
+            self,
+            label,
+            maximum,
+        )
+        if radius is None:
+            return
+        request = SelectionAdjustmentRequest(
+            DocumentSnapshot.capture(document),
+            operation,
+            radius,
+        )
+        self._start_selection_job(
+            lambda token, progress: calculate_selection_adjustment(
+                request,
+                token,
+                progress,
+            ),
+            label,
+        )
+
+    def _start_selection_job(
+        self,
+        operation: JobOperation,
+        label: str,
+    ) -> None:
+        if self._selection_job is not None:
+            return
+        handle = self.controller.jobs.submit(operation)
+        self._selection_job = handle
+        dialog = QProgressDialog(f"正在{label}…", "取消", 0, 0, self)
+        dialog.setWindowTitle(label)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setMinimumDuration(150)
+        dialog.setAutoClose(False)
+        dialog.canceled.connect(handle.cancel)
+        handle.progress.connect(
+            lambda value, maximum_value, message: self._update_selection_progress(
+                dialog,
+                value,
+                maximum_value,
+                message,
+            )
+        )
+        self._selection_progress = dialog
+        self._set_editing_busy(True)
+        handle.finished.connect(lambda outcome: self._on_selection_adjusted(outcome, label))
+
+    @staticmethod
+    def _update_selection_progress(
+        dialog: QProgressDialog,
+        value: int,
+        maximum: int,
+        message: str,
+    ) -> None:
+        dialog.setLabelText(message)
+        dialog.setMaximum(maximum)
+        dialog.setValue(value)
+
+    def _on_selection_adjusted(self, outcome: JobOutcome, label: str) -> None:
+        self._close_selection_progress()
+        self._selection_job = None
+        self._set_editing_busy(False)
+        if outcome.status is JobStatus.CANCELLED:
+            self.statusBar().showMessage(f"已取消{label}")
+            return
+        if outcome.status is JobStatus.FAILED:
+            self.statusBar().showMessage(f"{label}失败：{outcome.error}")
+            return
+        if not isinstance(outcome.value, SelectionOperationResult):
+            self.statusBar().showMessage(f"{label}失败：无效的任务结果")
+            return
+        result = outcome.value
+        document = self.controller.document
+        if (
+            document is None
+            or document.id != result.document_id
+            or document.revision != result.revision
+        ):
+            self.statusBar().showMessage(f"文档已变化，已丢弃过期{label}结果")
+            return
+        if not self.controller.commands.apply_selection_tiles(result.updates, label):
+            self.statusBar().showMessage(f"{label}未产生变化")
+
+    def _close_selection_progress(self) -> None:
+        if self._selection_progress is not None:
+            self._selection_progress.close()
+            self._selection_progress.deleteLater()
+            self._selection_progress = None
+
+    def _update_selection_actions(self) -> None:
+        document = self.controller.document
+        has_document = document is not None
+        active = has_document and document.selection.is_active if document is not None else False
+        self.select_all_action.setEnabled(has_document and not self._editing_busy)
+        for action in (
+            self.deselect_action,
+            self.invert_selection_action,
+            self.feather_selection_action,
+            self.grow_selection_action,
+            self.shrink_selection_action,
+            self.smooth_selection_action,
+        ):
+            action.setEnabled(active and not self._editing_busy)
 
     def _update_undo_actions(self, *_args: object) -> None:
         stack = self.controller.commands.undo_stack

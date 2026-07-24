@@ -7,6 +7,7 @@ from PIL import Image
 from PySide6.QtWidgets import QWidget
 
 from easypicture.controller import ApplicationController
+from easypicture.pixels import TileCoord
 from easypicture.ui.dialogs import (
     NewDocumentSpec,
     RecoveryDecision,
@@ -265,3 +266,39 @@ def test_recovery_draft_round_trip(qtbot, tmp_path: Path) -> None:
     assert restored.document is not None
     assert restored.document.modified
     assert restored.document.display_name == "Untitled"
+
+
+def test_selection_change_schedules_recovery_and_restores_mask(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    recovery_dir = tmp_path / "selection-recovery"
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(32, 32)
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=recovery_dir,
+        recovery_interval_ms=10,
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    mask = np.zeros((256, 256), dtype=np.uint8)
+    mask[4, 5] = 127
+
+    assert controller.commands.apply_selection_tiles(
+        {TileCoord(0, 0): mask},
+        "测试选区",
+    )
+    qtbot.waitUntil(controller.recovery_path.exists, timeout=5000)
+
+    restore_dialogs = FakeDialogService()
+    restore_dialogs.recovery_decision = RecoveryDecision.RESTORE
+    restored = ApplicationController(
+        make_settings(str(tmp_path / "restored-settings.ini")),
+        restore_dialogs,
+        recovery_dir=recovery_dir,
+    )
+    assert restored.offer_recovery(parent)
+    assert restored.document is not None
+    assert restored.document.selection.mask.read_tile(0, 0)[4, 5] == 127
+    assert restored.document.modified

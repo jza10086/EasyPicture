@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QInputDialog,
     QMessageBox,
     QSpinBox,
     QVBoxLayout,
@@ -101,6 +102,13 @@ class DialogService(Protocol):
         required_bytes: int,
         budget_bytes: int,
     ) -> None: ...
+
+    def request_selection_radius(
+        self,
+        parent: QWidget,
+        title: str,
+        maximum: int,
+    ) -> int | None: ...
 
 
 class NewDocumentDialog(QDialog):
@@ -306,6 +314,23 @@ class QtDialogService:
                 f"超过 {budget_bytes / (1024 * 1024):.0f} MiB 上限，因此未执行。"
             ),
         )
+
+    def request_selection_radius(
+        self,
+        parent: QWidget,
+        title: str,
+        maximum: int,
+    ) -> int | None:
+        value, accepted = QInputDialog.getInt(
+            parent,
+            title,
+            "半径（像素）",
+            1,
+            1,
+            maximum,
+            1,
+        )
+        return value if accepted else None
 
 
 __all__ = [

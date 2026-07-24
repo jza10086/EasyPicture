@@ -22,6 +22,7 @@ class RegionQuery:
     tolerance: int = 0
     connectivity: Literal[4, 8] = 4
     contiguous: bool = True
+    include_alpha: bool = True
 
     def __post_init__(self) -> None:
         if not 0 <= self.tolerance <= 255:
@@ -50,7 +51,8 @@ def find_region(
         cancellation.raise_if_cancelled()
 
     target = reference[seed_y, seed_x].astype(np.int16)
-    difference = np.abs(reference.astype(np.int16) - target)
+    channels = 4 if query.include_alpha else 3
+    difference = np.abs(reference[..., :channels].astype(np.int16) - target[:channels])
     candidate = np.max(difference, axis=2) <= query.tolerance
     if cancellation is not None:
         cancellation.raise_if_cancelled()

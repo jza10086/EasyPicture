@@ -18,6 +18,7 @@ from easypicture.domain import (
     LayerListChanged,
     LayerPixelsChanged,
     LayerPropertiesChanged,
+    SelectionChanged,
 )
 from easypicture.domain.document import Unsubscribe
 from easypicture.jobs import JobHandle, JobOutcome, JobRunner, JobStatus
@@ -324,6 +325,7 @@ class ApplicationController(QObject):
                     LayerListChanged,
                     LayerPixelsChanged,
                     LayerPropertiesChanged,
+                    SelectionChanged,
                 ),
             )
         ):

@@ -31,6 +31,7 @@ class FakeDialogService:
         self.recovery_decision = RecoveryDecision.KEEP
         self.errors: list[tuple[str, str]] = []
         self.warnings: list[tuple[str, tuple[str, ...]]] = []
+        self.selection_radius: int | None = None
 
     def request_new_document(
         self,
@@ -125,6 +126,15 @@ class FakeDialogService:
     ) -> None:
         _ = parent
         self.undo_too_large_calls.append((required_bytes, budget_bytes))
+
+    def request_selection_radius(
+        self,
+        parent: QWidget,
+        title: str,
+        maximum: int,
+    ) -> int | None:
+        _ = parent, title, maximum
+        return self.selection_radius
 
 
 def make_settings(path: str) -> AppSettings:

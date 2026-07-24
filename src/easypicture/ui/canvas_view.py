@@ -24,6 +24,7 @@ from easypicture.domain import Document, Point, RasterLayer
 from easypicture.pixels import RGBAArray, TileCoord
 from easypicture.render import TileRenderer
 from easypicture.ui.canvas_item import CanvasItem
+from easypicture.ui.selection_overlay import SelectionOverlayItem
 
 if TYPE_CHECKING:
     from easypicture.tools.controller import ToolController
@@ -52,6 +53,7 @@ class CanvasView(QGraphicsView):
 
         self._document: Document | None = None
         self._canvas_item: CanvasItem | None = None
+        self._selection_overlay: SelectionOverlayItem | None = None
         self._zoom = 1.0
         self._space_pressed = False
         self._panning = False
@@ -124,6 +126,10 @@ class CanvasView(QGraphicsView):
             renderer.clear_preview()
 
     def set_document(self, document: Document | None) -> None:
+        if self._selection_overlay is not None:
+            self._selection_overlay.dispose()
+            self.scene().removeItem(self._selection_overlay)
+            self._selection_overlay = None
         if self._canvas_item is not None:
             self._canvas_item.dispose()
             self.scene().removeItem(self._canvas_item)
@@ -140,6 +146,8 @@ class CanvasView(QGraphicsView):
         renderer = TileRenderer(document, parent=self)
         self._canvas_item = CanvasItem(document.size, renderer)
         self.scene().addItem(self._canvas_item)
+        self._selection_overlay = SelectionOverlayItem(document, self)
+        self.scene().addItem(self._selection_overlay)
         self.set_zoom(1.0)
         self.centerOn(self._canvas_item)
 

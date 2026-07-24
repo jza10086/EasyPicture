@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from easypicture.pixels import RGBAArray
-from easypicture.pixels.types import validate_rgba_array
+from easypicture.pixels import MaskArray, RGBAArray
+from easypicture.pixels.types import validate_mask_array, validate_rgba_array
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,7 +18,7 @@ class PatchHandle:
     codec: str
     stored_bytes: int
     uncompressed_bytes: int
-    shape: tuple[int, int, int] | None
+    shape: tuple[int, ...] | None
 
 
 class UndoPatchStore:
@@ -39,15 +39,31 @@ class UndoPatchStore:
 
     def capture(self, pixels: RGBAArray | None) -> PatchHandle:
         if pixels is None:
-            return PatchHandle(
-                key=None,
-                allocated=False,
-                codec="missing",
-                stored_bytes=0,
-                uncompressed_bytes=0,
-                shape=None,
-            )
+            return self._missing_handle()
         validate_rgba_array(pixels)
+        return self._capture_array(pixels)
+
+    def capture_mask(self, pixels: MaskArray | None) -> PatchHandle:
+        if pixels is None:
+            return self._missing_handle()
+        validate_mask_array(pixels)
+        return self._capture_array(pixels)
+
+    @staticmethod
+    def _missing_handle() -> PatchHandle:
+        return PatchHandle(
+            key=None,
+            allocated=False,
+            codec="missing",
+            stored_bytes=0,
+            uncompressed_bytes=0,
+            shape=None,
+        )
+
+    def _capture_array(
+        self,
+        pixels: np.ndarray[tuple[int, ...], np.dtype[np.uint8]],
+    ) -> PatchHandle:
         raw = pixels.tobytes(order="C")
         compressed = zlib.compress(raw, level=1)
         if len(compressed) < len(raw):
@@ -66,7 +82,7 @@ class UndoPatchStore:
             codec=codec,
             stored_bytes=len(payload),
             uncompressed_bytes=len(raw),
-            shape=(int(pixels.shape[0]), int(pixels.shape[1]), 4),
+            shape=tuple(int(value) for value in pixels.shape),
         )
 
     def restore(self, handle: PatchHandle) -> RGBAArray | None:

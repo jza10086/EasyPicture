@@ -16,8 +16,9 @@ from easypicture.imaging import (
     DEFAULT_BRUSH_SIZE_LIMIT,
     MAX_BRUSH_SIZE,
     BrushSettings,
+    SelectionCombineMode,
 )
-from easypicture.tools import BucketSettings
+from easypicture.tools import BucketSettings, MagicWandSettings
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.settings import AppSettings
 
@@ -166,22 +167,131 @@ class BucketOptionsWidget(QWidget):
         self.settings_changed.emit(self.settings())
 
 
+def _add_selection_modes(combo: QComboBox, current: SelectionCombineMode) -> None:
+    for label, mode in (
+        ("替换", SelectionCombineMode.REPLACE),
+        ("添加", SelectionCombineMode.ADD),
+        ("减去", SelectionCombineMode.SUBTRACT),
+        ("相交", SelectionCombineMode.INTERSECT),
+    ):
+        combo.addItem(label, mode.value)
+    combo.setCurrentIndex(max(0, combo.findData(current.value)))
+
+
+class RectangleSelectionOptionsWidget(QWidget):
+    settings_changed = Signal(object)
+
+    def __init__(
+        self,
+        mode: SelectionCombineMode,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.mode_combo = QComboBox(self)
+        _add_selection_modes(self.mode_combo, mode)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.addWidget(QLabel("模式", self))
+        layout.addWidget(self.mode_combo)
+        layout.addStretch(1)
+        self.mode_combo.currentIndexChanged.connect(self._emit_mode)
+
+    def mode(self) -> SelectionCombineMode:
+        return SelectionCombineMode(str(self.mode_combo.currentData()))
+
+    def set_mode(self, mode: SelectionCombineMode) -> None:
+        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(mode.value)))
+
+    def _emit_mode(self, _index: int) -> None:
+        self.settings_changed.emit(self.mode())
+
+
+class MagicWandOptionsWidget(QWidget):
+    settings_changed = Signal(object)
+
+    def __init__(
+        self,
+        settings: MagicWandSettings,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.mode_combo = QComboBox(self)
+        _add_selection_modes(self.mode_combo, settings.mode)
+        self.tolerance_spin = DragValueSpinBox(0, 255, settings.tolerance, parent=self)
+        self.connectivity_combo = QComboBox(self)
+        self.connectivity_combo.addItem("4 邻域", 4)
+        self.connectivity_combo.addItem("8 邻域", 8)
+        self.connectivity_combo.setCurrentIndex(0 if settings.connectivity == 4 else 1)
+        self.contiguous_check = QCheckBox("连续区域", self)
+        self.contiguous_check.setChecked(settings.contiguous)
+        self.sample_merged_check = QCheckBox("取样所有可见图层", self)
+        self.sample_merged_check.setChecked(settings.sample_merged)
+        self.include_alpha_check = QCheckBox("包含 Alpha", self)
+        self.include_alpha_check.setChecked(settings.include_alpha)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        layout.addWidget(QLabel("模式", self))
+        layout.addWidget(self.mode_combo)
+        layout.addWidget(QLabel("容差", self))
+        layout.addWidget(self.tolerance_spin)
+        layout.addWidget(self.connectivity_combo)
+        layout.addWidget(self.contiguous_check)
+        layout.addWidget(self.sample_merged_check)
+        layout.addWidget(self.include_alpha_check)
+        layout.addStretch(1)
+        self.mode_combo.currentIndexChanged.connect(self._emit_settings)
+        self.tolerance_spin.valueChanged.connect(self._emit_settings)
+        self.connectivity_combo.currentIndexChanged.connect(self._emit_settings)
+        self.contiguous_check.toggled.connect(self._emit_settings)
+        self.sample_merged_check.toggled.connect(self._emit_settings)
+        self.include_alpha_check.toggled.connect(self._emit_settings)
+
+    def settings(self) -> MagicWandSettings:
+        connectivity = int(self.connectivity_combo.currentData())
+        return MagicWandSettings(
+            tolerance=self.tolerance_spin.value(),
+            connectivity=4 if connectivity == 4 else 8,
+            contiguous=self.contiguous_check.isChecked(),
+            sample_merged=self.sample_merged_check.isChecked(),
+            include_alpha=self.include_alpha_check.isChecked(),
+            mode=SelectionCombineMode(str(self.mode_combo.currentData())),
+        )
+
+    def set_mode(self, mode: SelectionCombineMode) -> None:
+        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(mode.value)))
+
+    def _emit_settings(self, _value: object = None) -> None:
+        self.settings_changed.emit(self.settings())
+
+
 class ToolOptionsPanel(QStackedWidget):
     brush_settings_changed = Signal(object)
     bucket_settings_changed = Signal(object)
     eyedropper_settings_changed = Signal(bool)
+    selection_mode_changed = Signal(object)
+    magic_wand_settings_changed = Signal(object)
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.brush = BrushOptionsWidget(settings.brush_settings(), self)
         self.eyedropper = EyedropperOptionsWidget(settings.eyedropper_sample_merged(), self)
         self.bucket = BucketOptionsWidget(settings.bucket_settings(), self)
+        self.rectangle_selection = RectangleSelectionOptionsWidget(
+            settings.selection_combine_mode(),
+            self,
+        )
+        self.magic_wand = MagicWandOptionsWidget(settings.magic_wand_settings(), self)
         self.addWidget(self.brush)
         self.addWidget(self.eyedropper)
         self.addWidget(self.bucket)
+        self.addWidget(self.rectangle_selection)
+        self.addWidget(self.magic_wand)
         self.brush.settings_changed.connect(self.brush_settings_changed)
         self.bucket.settings_changed.connect(self.bucket_settings_changed)
         self.eyedropper.settings_changed.connect(self.eyedropper_settings_changed)
+        self.rectangle_selection.settings_changed.connect(self._selection_mode_from_rectangle)
+        self.magic_wand.settings_changed.connect(self._magic_wand_settings_changed)
 
     def show_tool(self, tool_name: str) -> None:
         if tool_name in {"brush", "eraser"}:
@@ -190,11 +300,28 @@ class ToolOptionsPanel(QStackedWidget):
             self.setCurrentWidget(self.eyedropper)
         elif tool_name == "bucket":
             self.setCurrentWidget(self.bucket)
+        elif tool_name == "rectangle_selection":
+            self.setCurrentWidget(self.rectangle_selection)
+        elif tool_name == "magic_wand":
+            self.setCurrentWidget(self.magic_wand)
+
+    def _selection_mode_from_rectangle(self, mode: object) -> None:
+        if isinstance(mode, SelectionCombineMode):
+            self.magic_wand.set_mode(mode)
+            self.selection_mode_changed.emit(mode)
+
+    def _magic_wand_settings_changed(self, settings: object) -> None:
+        if isinstance(settings, MagicWandSettings):
+            self.rectangle_selection.set_mode(settings.mode)
+            self.selection_mode_changed.emit(settings.mode)
+            self.magic_wand_settings_changed.emit(settings)
 
 
 __all__ = [
     "BrushOptionsWidget",
     "BucketOptionsWidget",
     "EyedropperOptionsWidget",
+    "MagicWandOptionsWidget",
+    "RectangleSelectionOptionsWidget",
     "ToolOptionsPanel",
 ]

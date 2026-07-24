@@ -8,8 +8,8 @@ from PySide6.QtWidgets import QMainWindow
 
 from easypicture.domain import Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
-from easypicture.imaging import MAX_BRUSH_SIZE, BrushSettings
-from easypicture.tools import BucketSettings
+from easypicture.imaging import MAX_BRUSH_SIZE, BrushSettings, SelectionCombineMode
+from easypicture.tools import BucketSettings, MagicWandSettings
 
 DEFAULT_DOCUMENT_SIZE = Size(1920, 1080)
 DEFAULT_FOREGROUND = QColor("#000000")
@@ -90,6 +90,40 @@ class AppSettings:
 
     def set_eyedropper_sample_merged(self, sample_merged: bool) -> None:
         self._settings.setValue("tools/eyedropper/sample_merged", sample_merged)
+
+    def selection_combine_mode(self) -> SelectionCombineMode:
+        value = str(
+            self._settings.value(
+                "tools/selection/combine_mode",
+                SelectionCombineMode.REPLACE.value,
+            )
+        )
+        try:
+            return SelectionCombineMode(value)
+        except ValueError:
+            return SelectionCombineMode.REPLACE
+
+    def set_selection_combine_mode(self, mode: SelectionCombineMode) -> None:
+        self._settings.setValue("tools/selection/combine_mode", mode.value)
+
+    def magic_wand_settings(self) -> MagicWandSettings:
+        connectivity = self._bounded_int("tools/magic_wand/connectivity", 4, 4, 8)
+        return MagicWandSettings(
+            tolerance=self._bounded_int("tools/magic_wand/tolerance", 0, 0, 255),
+            connectivity=4 if connectivity != 8 else 8,
+            contiguous=self._bool_value("tools/magic_wand/contiguous", True),
+            sample_merged=self._bool_value("tools/magic_wand/sample_merged", False),
+            include_alpha=self._bool_value("tools/magic_wand/include_alpha", True),
+            mode=self.selection_combine_mode(),
+        )
+
+    def set_magic_wand_settings(self, settings: MagicWandSettings) -> None:
+        self._settings.setValue("tools/magic_wand/tolerance", settings.tolerance)
+        self._settings.setValue("tools/magic_wand/connectivity", settings.connectivity)
+        self._settings.setValue("tools/magic_wand/contiguous", settings.contiguous)
+        self._settings.setValue("tools/magic_wand/sample_merged", settings.sample_merged)
+        self._settings.setValue("tools/magic_wand/include_alpha", settings.include_alpha)
+        self.set_selection_combine_mode(settings.mode)
 
     def restore_window(self, window: QMainWindow) -> None:
         geometry = self._settings.value("window/geometry")

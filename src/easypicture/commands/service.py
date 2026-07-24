@@ -11,7 +11,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 from easypicture.commands.patch_store import PatchHandle, UndoPatchStore
 from easypicture.domain import Document, RasterLayer
 from easypicture.domain.document import MAX_DOCUMENT_LAYERS
-from easypicture.pixels import RGBAArray, TileCoord
+from easypicture.pixels import MaskArray, RGBAArray, TileCoord
 
 DEFAULT_UNDO_BUDGET_BYTES = 1024 * 1024 * 1024
 DEFAULT_UNDO_LIMIT = 100
@@ -147,6 +147,43 @@ class _PixelPatchCommand(_DocumentCommand):
             for patch in self.patches
         }
         self.document.replace_layer_tiles(self.layer_id, updates)
+
+    def redo(self) -> None:
+        self._apply(use_after=True)
+
+    def undo(self) -> None:
+        self._apply(use_after=False)
+
+    def release_payload(self) -> None:
+        if self._released:
+            return
+        for patch in self.patches:
+            self.patch_store.release(patch.before)
+            self.patch_store.release(patch.after)
+        super().release_payload()
+
+
+class _SelectionPatchCommand(_DocumentCommand):
+    def __init__(
+        self,
+        document: Document,
+        patches: tuple[_TilePatch, ...],
+        patch_store: UndoPatchStore,
+        text: str,
+    ) -> None:
+        storage_bytes = sum(
+            patch.before.stored_bytes + patch.after.stored_bytes for patch in patches
+        )
+        super().__init__(document, text, storage_bytes=storage_bytes)
+        self.patches = patches
+        self.patch_store = patch_store
+
+    def _apply(self, *, use_after: bool) -> None:
+        updates = {
+            patch.coord: self.patch_store.restore(patch.after if use_after else patch.before)
+            for patch in self.patches
+        }
+        self.document.replace_selection_tiles(updates)
 
     def redo(self) -> None:
         self._apply(use_after=True)
@@ -361,6 +398,42 @@ class DocumentCommandService:
                 tuple(patches),
                 self.patch_store,
                 label.strip() or "像素变更",
+            )
+        )
+
+    def apply_selection_tiles(
+        self,
+        updates: Mapping[TileCoord, MaskArray | None],
+        label: str,
+    ) -> bool:
+        document = self._require_document()
+        try:
+            normalized = document.prepare_selection_updates(updates)
+        except TypeError, ValueError:
+            return False
+        if not normalized:
+            return False
+        selection = document.selection.mask
+        patches: list[_TilePatch] = []
+        for coord, after_pixels in normalized.items():
+            before_pixels = (
+                selection.read_tile(coord.x, coord.y)
+                if selection.has_tile(coord.x, coord.y)
+                else None
+            )
+            patches.append(
+                _TilePatch(
+                    coord=coord,
+                    before=self.patch_store.capture_mask(before_pixels),
+                    after=self.patch_store.capture_mask(after_pixels),
+                )
+            )
+        return self._push(
+            _SelectionPatchCommand(
+                document,
+                tuple(patches),
+                self.patch_store,
+                label.strip() or "选区变更",
             )
         )
 
