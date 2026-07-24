@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QKeySequence
 from PySide6.QtWidgets import (
     QDockWidget,
     QFrame,
@@ -20,12 +20,21 @@ from PySide6.QtWidgets import (
 from easypicture import __version__
 from easypicture.controller import ApplicationController
 from easypicture.domain import Document, DocumentEvent, Point
-from easypicture.tools import NullTool, ToolContext, ToolController
+from easypicture.tools import (
+    BrushTool,
+    BucketTool,
+    EyedropperTool,
+    NullTool,
+    Tool,
+    ToolContext,
+    ToolController,
+)
 from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_panel import ColorPanel
 from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.settings import AppSettings
+from easypicture.ui.tool_options import ToolOptionsPanel
 
 
 class EmptyStateWidget(QFrame):
@@ -62,6 +71,7 @@ class MainWindow(QMainWindow):
         self.controller.set_dialog_parent(self)
         self.setObjectName("MainWindow")
         self.resize(1100, 720)
+        self._editing_busy = False
 
         self.canvas_view = CanvasView(self)
         self.empty_state = EmptyStateWidget(self)
@@ -75,6 +85,13 @@ class MainWindow(QMainWindow):
             canvas=self.canvas_view,
             overlays=self.overlay_manager,
             document_provider=lambda: self.controller.document,
+            commands=self.controller.commands,
+            foreground_provider=self._foreground_rgba,
+            set_foreground=self._set_foreground_rgba,
+            set_background=self._set_background_rgba,
+            jobs=self.controller.jobs,
+            set_busy=self._set_editing_busy,
+            status=self.controller.status_message.emit,
         )
         self.tool_controller = ToolController(self.tool_context, NullTool())
         self.canvas_view.set_tool_controller(self.tool_controller)
@@ -146,16 +163,46 @@ class MainWindow(QMainWindow):
     def _create_toolbars(self) -> None:
         self.tool_options = QToolBar("工具选项", self)
         self.tool_options.setObjectName("ToolOptionsToolbar")
-        self.tool_options.addWidget(QLabel("P3：暂无正式编辑工具", self.tool_options))
+        self.tool_options_panel = ToolOptionsPanel(self.settings, self.tool_options)
+        self.tool_options.addWidget(self.tool_options_panel)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.tool_options)
 
         self.tools_toolbar = QToolBar("工具", self)
         self.tools_toolbar.setObjectName("ToolsToolbar")
         self.tools_toolbar.setOrientation(Qt.Orientation.Vertical)
-        pointer_action = self.tools_toolbar.addAction("指针")
-        pointer_action.setCheckable(True)
-        pointer_action.setChecked(True)
+        self.tool_action_group = QActionGroup(self)
+        self.tool_action_group.setExclusive(True)
+        self._tools: dict[str, Tool] = {
+            "brush": BrushTool(self.tool_options_panel.brush.settings),
+            "eraser": BrushTool(self.tool_options_panel.brush.settings, eraser=True),
+            "eyedropper": EyedropperTool(self.tool_options_panel.eyedropper.sample_merged),
+            "bucket": BucketTool(self.tool_options_panel.bucket.settings),
+        }
+        self.tool_actions: dict[str, QAction] = {}
+        for name, label, shortcut in (
+            ("brush", "画笔", "B"),
+            ("eraser", "橡皮", "E"),
+            ("eyedropper", "吸管", "I"),
+            ("bucket", "油漆桶", "G"),
+        ):
+            action = QAction(label, self)
+            action.setCheckable(True)
+            action.setShortcut(QKeySequence(shortcut))
+            action.setData(name)
+            action.triggered.connect(
+                lambda _checked=False, tool_name=name: self._activate_tool(tool_name)
+            )
+            self.tool_action_group.addAction(action)
+            self.tools_toolbar.addAction(action)
+            self.tool_actions[name] = action
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tools_toolbar)
+        self.tool_options_panel.brush_settings_changed.connect(self._save_brush_settings)
+        self.tool_options_panel.bucket_settings_changed.connect(self._save_bucket_settings)
+        self.tool_options_panel.eyedropper_settings_changed.connect(
+            self._save_eyedropper_settings
+        )
+        self.tool_actions["brush"].setChecked(True)
+        self._activate_tool("brush")
 
     def _create_docks(self) -> None:
         self.layer_panel = LayerPanel(self.controller.commands, self)
@@ -238,6 +285,7 @@ class MainWindow(QMainWindow):
         self.controller.request_export_png(self)
 
     def _on_document_changed(self, document: Document | None) -> None:
+        self.tool_controller.reset_active_tool()
         self.canvas_view.set_document(document)
         self.layer_panel.set_document(document)
         has_document = document is not None
@@ -253,12 +301,56 @@ class MainWindow(QMainWindow):
             self.actual_size_action,
         ):
             action.setEnabled(has_document)
+        for action in self.tool_actions.values():
+            action.setEnabled(has_document and not self._editing_busy)
+        self.tool_options_panel.setEnabled(has_document and not self._editing_busy)
         if document is None:
             self.document_size_label.setText("无文档")
         else:
             self.document_size_label.setText(f"{document.width} × {document.height} px")
         self._update_undo_actions()
         self._update_window_title()
+
+    def _activate_tool(self, tool_name: str) -> None:
+        tool = self._tools[tool_name]
+        self.tool_controller.set_tool(tool)
+        self.tool_options_panel.show_tool(tool_name)
+
+    def _foreground_rgba(self) -> tuple[int, int, int, int]:
+        color = self.color_panel.foreground
+        return color.red(), color.green(), color.blue(), color.alpha()
+
+    def _set_foreground_rgba(self, color: tuple[int, int, int, int]) -> None:
+        self.color_panel.set_foreground(QColor.fromRgb(*color))
+
+    def _set_background_rgba(self, color: tuple[int, int, int, int]) -> None:
+        self.color_panel.set_background(QColor.fromRgb(*color))
+
+    def _save_brush_settings(self, settings: object) -> None:
+        from easypicture.imaging import BrushSettings
+
+        if isinstance(settings, BrushSettings):
+            self.settings.set_brush_settings(settings)
+            self.settings.sync()
+
+    def _save_bucket_settings(self, settings: object) -> None:
+        from easypicture.tools import BucketSettings
+
+        if isinstance(settings, BucketSettings):
+            self.settings.set_bucket_settings(settings)
+            self.settings.sync()
+
+    def _save_eyedropper_settings(self, sample_merged: bool) -> None:
+        self.settings.set_eyedropper_sample_merged(sample_merged)
+        self.settings.sync()
+
+    def _set_editing_busy(self, busy: bool) -> None:
+        self._editing_busy = busy
+        has_document = self.controller.document is not None
+        for action in self.tool_actions.values():
+            action.setEnabled(has_document and not busy)
+        self.tool_options_panel.setEnabled(has_document and not busy)
+        self.layer_panel.setEnabled(not busy)
 
     def _on_document_event(self, event: DocumentEvent) -> None:
         self.layer_panel.handle_event(event)

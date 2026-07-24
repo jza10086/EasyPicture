@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QKeyEvent, QMouseEvent, QTransform, QWheelEvent
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
 from easypicture.domain import Document, Point, RasterLayer
+from easypicture.pixels import RGBAArray, TileCoord
 from easypicture.render import TileRenderer
 from easypicture.ui.canvas_item import CanvasItem
 
@@ -60,6 +62,20 @@ class CanvasView(QGraphicsView):
 
     def set_tool_controller(self, controller: ToolController) -> None:
         self._tool_controller = controller
+
+    def set_pixel_preview(
+        self,
+        layer_id: UUID,
+        updates: dict[TileCoord, RGBAArray],
+    ) -> None:
+        renderer = self.renderer
+        if renderer is not None:
+            renderer.set_preview_tiles(layer_id, updates)
+
+    def clear_pixel_preview(self) -> None:
+        renderer = self.renderer
+        if renderer is not None:
+            renderer.clear_preview()
 
     def set_document(self, document: Document | None) -> None:
         if self._canvas_item is not None:

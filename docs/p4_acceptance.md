@@ -1,0 +1,81 @@
+# P4 画笔、橡皮、吸管与油漆桶验收
+
+- 日期：2026-07-24
+- 自动验收：Passed
+- 人工验收：Pending
+- 输入范围：鼠标
+- 画笔上限：1024 px
+- 区域容差：straight RGBA 最大通道差
+
+## 交付结果
+
+- 已实现私有工作 Tile、正确图层顺序的实时预览和一次笔划一次提交；
+- 已实现圆形画笔的大小、硬度、不透明度、间距和抗锯齿；
+- 已实现只降低 Alpha 且保留隐藏 RGB 的橡皮；
+- 已实现可见合成/活动层吸管，左右键分别设置前景/背景色；
+- 已实现 RGBA 容差、连续/非连续、4/8 邻域和合并取样油漆桶；
+- 已实现后台可取消填充、延迟进度对话框及 revision 过期结果拒绝；
+- 已实现稀疏 selection 权重预留、图层锁定和透明像素锁定；
+- 已实现 B/E/I/G 工具、动态选项栏、圆形画笔光标和参数持久化；
+- 已新增 ADR-0012、ADR-0013 和 P4 固定场景基准。
+
+数位笔压感、倾斜、笔速、自定义笔尖、选区 UI、形状、文本和滤镜未进入 P4。
+
+## 自动验收
+
+```text
+uv lock --check                         PASS
+uv run ruff check .                     PASS
+uv run mypy src                         PASS (48 source files)
+uv run pytest -q                        PASS (140 tests)
+uv run python -m easypicture --smoke-test
+                                        PASS
+uv run python -m easypicture --io-smoke-test <dir>
+                                        PASS
+```
+
+新增测试覆盖 dab 插值、跨 9 Tile、透明合成、隐藏 RGB、选区权重、RGBA 容差、
+4/8 邻域、连续/非连续区域、活动层/合并取样、取消、过期会话、预览图层顺序、
+一笔一命令、零值稀疏选区及工具设置持久化。P0～P3 原有 119 项测试继续通过。
+
+## 性能验收
+
+| 指标 | 结果 | 状态 |
+| --- | ---: | --- |
+| 32 px 画笔事件 P95 | 3.086 ms | PASS |
+| 128 px 画笔事件 P95 | 2.711 ms | PASS |
+| 256 px 画笔事件 P95 | 8.202 ms | PASS |
+| 4096×4096 全画布填充 | 2243.521 ms | RECORDED |
+| 填充补丁 | 256 Tile / 64 MiB | PASS |
+
+详见 [`docs/benchmarks/p4_editing.md`](benchmarks/p4_editing.md)。
+
+## Standalone 验收
+
+- Nuitka 4.1.3、MSVC 14.5 构建成功；
+- `EasyPicture.exe` 约 22.27 MiB；
+- standalone 目录约 223.88 MiB，共 81 个文件；
+- 已包含 P4 首次实际调用的 OpenCV 运行库；
+- PATH 仅保留 Windows 系统目录时，窗口 smoke 与 `.limg`/PNG I/O smoke 均返回 0。
+
+Nuitka 仍提示 Python 3.14 支持属于实验性。OpenCV 被正式纳入运行闭包后，目录体积
+相对 P3 增加；这属于 standalone 依赖成本，不影响程序运行时的轻量项目内存目标。
+
+## 待人工验收
+
+1. 检查不同大小、硬度、透明度和间距的快速连续笔划；
+2. 验证橡皮显示棋盘格且不会留下白色；
+3. 验证吸管左右键及可见结果/当前层取样；
+4. 验证油漆桶容差、连续模式、8 邻域和合并取样；
+5. 验证锁定、透明像素锁定和一笔一次撤销；
+6. 在缩放、平移及多图层遮挡下检查实时预览；
+7. 重启后确认工具参数恢复。
+
+## 复现命令
+
+```powershell
+.\scripts\check.ps1
+.\scripts\benchmark-p4.ps1
+.\scripts\package.ps1
+.\scripts\smoke-standalone.ps1
+```

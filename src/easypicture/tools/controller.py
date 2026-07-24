@@ -26,6 +26,12 @@ class ToolController:
         self._active_tool = tool
         self._active_tool.activate(self.context)
 
+    def reset_active_tool(self) -> None:
+        self._active_tool.deactivate()
+        self.context.overlays.clear()
+        self.context.canvas.cancel_interaction()
+        self._active_tool.activate(self.context)
+
     def mouse_press(self, event: QMouseEvent) -> bool:
         return self._active_tool.mouse_press(event)
 

@@ -21,5 +21,10 @@ class Selection:
     def revision(self) -> int:
         return self.mask.revision
 
+    @property
+    def is_active(self) -> bool:
+        """An empty sparse mask means editing is unconstrained."""
+        return self.mask.has_nonzero_data
+
 
 __all__ = ["Selection"]

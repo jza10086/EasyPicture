@@ -21,6 +21,7 @@ from easypicture.domain import (
 )
 from easypicture.domain.document import Unsubscribe
 from easypicture.pixels import DEFAULT_TILE_SIZE, TileCoord
+from easypicture.pixels.types import RGBAArray, validate_rgba_array
 from easypicture.render.qimage_bridge import rgba_tile_to_qimage
 
 DEFAULT_RENDER_CACHE_BYTES = 256 * 1024 * 1024
@@ -55,6 +56,8 @@ class TileRenderer(QObject):
         self._composite_cache: OrderedDict[TileCoord, QImage] = OrderedDict()
         self._pending_priority: dict[TileCoord, float] = {}
         self._pending_heap: list[tuple[float, int, TileCoord]] = []
+        self._preview_layer_id: UUID | None = None
+        self._preview_tiles: dict[TileCoord, RGBAArray] = {}
         self._serial = 0
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -87,6 +90,40 @@ class TileRenderer(QObject):
         self._pending_priority.clear()
         self._pending_heap.clear()
         self.clear_cache()
+
+    @property
+    def preview_tile_count(self) -> int:
+        return len(self._preview_tiles)
+
+    def set_preview_tiles(
+        self,
+        layer_id: UUID,
+        updates: dict[TileCoord, RGBAArray],
+    ) -> None:
+        """Install non-authoritative working Tiles for an in-progress edit."""
+        layer = self.document.layer_by_id(layer_id)
+        if self._preview_layer_id is not None and self._preview_layer_id != layer_id:
+            self.clear_preview()
+        changed: set[TileCoord] = set()
+        for coord, pixels in updates.items():
+            validate_rgba_array(
+                pixels,
+                expected_width=self.tile_size,
+                expected_height=self.tile_size,
+            )
+            self._preview_tiles[coord] = pixels
+            changed.add(coord)
+        self._preview_layer_id = layer_id
+        self.invalidate_tiles(self._document_tiles_for_layer_tiles(layer, changed))
+
+    def clear_preview(self) -> None:
+        if self._preview_layer_id is None:
+            return
+        layer = self.document.layer_by_id(self._preview_layer_id)
+        affected = self._document_tiles_for_layer_tiles(layer, set(self._preview_tiles))
+        self._preview_layer_id = None
+        self._preview_tiles.clear()
+        self.invalidate_tiles(affected)
 
     def cached_tile(self, coord: TileCoord) -> QImage | None:
         image = self._composite_cache.get(coord)
@@ -141,9 +178,14 @@ class TileRenderer(QObject):
             painter.setOpacity(layer.opacity)
             for layer_ty in range(first_ty, last_ty + 1):
                 for layer_tx in range(first_tx, last_tx + 1):
-                    if not layer.pixels.has_tile(layer_tx, layer_ty):
+                    layer_coord = TileCoord(layer_tx, layer_ty)
+                    has_preview = (
+                        layer.id == self._preview_layer_id
+                        and layer_coord in self._preview_tiles
+                    )
+                    if not has_preview and not layer.pixels.has_tile(layer_tx, layer_ty):
                         continue
-                    source = self._source_image(layer, TileCoord(layer_tx, layer_ty))
+                    source = self._source_image(layer, layer_coord)
                     destination_x = layer.origin.x + layer_tx * self.tile_size - document_left
                     destination_y = layer.origin.y + layer_ty * self.tile_size - document_top
                     painter.drawImage(destination_x, destination_y, source)
@@ -223,6 +265,10 @@ class TileRenderer(QObject):
         return None
 
     def _source_image(self, layer: RasterLayer, coord: TileCoord) -> QImage:
+        if layer.id == self._preview_layer_id:
+            preview = self._preview_tiles.get(coord)
+            if preview is not None:
+                return rgba_tile_to_qimage(preview)
         revision = layer.pixels.tile_revision(coord.x, coord.y)
         key = (layer.id, coord, revision)
         cached = self._source_cache.get(key)
@@ -271,6 +317,30 @@ class TileRenderer(QObject):
             coord.x * self.tile_size < self.document.width
             and coord.y * self.tile_size < self.document.height
         )
+
+    def _document_tiles_for_layer_tiles(
+        self,
+        layer: RasterLayer,
+        layer_tiles: set[TileCoord],
+    ) -> frozenset[TileCoord]:
+        result: set[TileCoord] = set()
+        for coord in layer_tiles:
+            left = max(0, layer.origin.x + coord.x * self.tile_size)
+            top = max(0, layer.origin.y + coord.y * self.tile_size)
+            right = min(
+                self.document.width,
+                layer.origin.x + min(layer.size.width, (coord.x + 1) * self.tile_size),
+            )
+            bottom = min(
+                self.document.height,
+                layer.origin.y + min(layer.size.height, (coord.y + 1) * self.tile_size),
+            )
+            if right <= left or bottom <= top:
+                continue
+            for ty in range(top // self.tile_size, (bottom - 1) // self.tile_size + 1):
+                for tx in range(left // self.tile_size, (right - 1) // self.tile_size + 1):
+                    result.add(TileCoord(tx, ty))
+        return frozenset(result)
 
     @staticmethod
     def _layer_overlap(

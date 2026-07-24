@@ -15,6 +15,18 @@ def test_missing_mask_tile_is_zero_read_only_and_sparse() -> None:
     assert not tile.flags.writeable
     assert np.count_nonzero(tile) == 0
     assert store.allocated_tile_count == 0
+    assert not store.has_nonzero_data
+
+
+def test_allocated_zero_mask_does_not_count_as_selection_content() -> None:
+    store = MaskTileStore(tile_size=4)
+    store.writable_tile(0, 0)
+
+    assert store.allocated_tile_count == 1
+    assert not store.has_nonzero_data
+
+    store.writable_tile(0, 0)[1, 1] = 1
+    assert store.has_nonzero_data
 
 
 def test_mask_copy_on_write_preserves_snapshot() -> None:

@@ -41,6 +41,10 @@ class MaskTileStore:
     def allocated_bytes(self) -> int:
         return sum(tile.nbytes for tile in self._tiles.values())
 
+    @property
+    def has_nonzero_data(self) -> bool:
+        return any(np.any(tile) for tile in self._tiles.values())
+
     def tile_revision(self, tx: int, ty: int) -> int:
         coord = TileCoord(tx, ty)
         return self._tile_revisions.get(coord, 0)

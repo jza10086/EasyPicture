@@ -1,0 +1,290 @@
+"""Background-safe paint-bucket computation over immutable snapshots."""
+
+from __future__ import annotations
+
+import tempfile
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+from uuid import UUID
+
+import numpy as np
+
+from easypicture.imaging.brush import RGBAColor, blend_color
+from easypicture.imaging.composite import compose_document_tile
+from easypicture.imaging.region import RegionQuery, RegionResult, find_region
+from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
+from easypicture.pixels import DEFAULT_TILE_SIZE, RGBAArray, TileCoord
+
+type ProgressReporter = Callable[[int, int, str], None]
+
+
+class FillCancellation(Protocol):
+    def raise_if_cancelled(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class FillRequest:
+    snapshot: DocumentSnapshot
+    layer_id: UUID
+    query: RegionQuery
+    color: RGBAColor
+    sample_merged: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class FillResult:
+    document_id: UUID
+    revision: int
+    layer_id: UUID
+    updates: Mapping[TileCoord, RGBAArray]
+
+
+def calculate_fill(
+    request: FillRequest,
+    cancellation: FillCancellation,
+    progress: ProgressReporter,
+) -> FillResult:
+    """Find a region and return full active-layer Tile replacements."""
+    snapshot = request.snapshot
+    layer = _layer_by_id(snapshot, request.layer_id)
+    seed_x, seed_y = request.query.seed
+    if not 0 <= seed_x < snapshot.size.width or not 0 <= seed_y < snapshot.size.height:
+        raise ValueError("fill seed lies outside the document")
+
+    byte_count = snapshot.size.width * snapshot.size.height * 4
+    with tempfile.TemporaryDirectory(prefix="easypicture-fill-") as temp_dir:
+        reference = _create_reference(
+            snapshot,
+            layer,
+            request.sample_merged,
+            byte_count,
+            Path(temp_dir),
+            cancellation,
+            progress,
+        )
+        region = find_region(reference, request.query, cancellation)
+        del reference
+    updates = _build_updates(
+        snapshot,
+        layer,
+        region,
+        request.color,
+        cancellation,
+        progress,
+    )
+    return FillResult(
+        document_id=snapshot.document_id,
+        revision=snapshot.revision,
+        layer_id=layer.id,
+        updates=updates,
+    )
+
+
+def _create_reference(
+    snapshot: DocumentSnapshot,
+    layer: LayerSnapshot,
+    sample_merged: bool,
+    byte_count: int,
+    temp_dir: Path,
+    cancellation: FillCancellation,
+    progress: ProgressReporter,
+) -> RGBAArray:
+    shape = (snapshot.size.height, snapshot.size.width, 4)
+    if byte_count >= 64 * 1024 * 1024:
+        reference: RGBAArray = np.memmap(
+            temp_dir / "reference.rgba",
+            dtype=np.uint8,
+            mode="w+",
+            shape=shape,
+        )
+        reference[:] = 0
+    else:
+        reference = np.zeros(shape, dtype=np.uint8)
+
+    tile_size = DEFAULT_TILE_SIZE
+    columns = (snapshot.size.width + tile_size - 1) // tile_size
+    rows = (snapshot.size.height + tile_size - 1) // tile_size
+    total = columns * rows
+    completed = 0
+    for ty in range(rows):
+        for tx in range(columns):
+            cancellation.raise_if_cancelled()
+            document_left = tx * tile_size
+            document_top = ty * tile_size
+            valid_width = min(tile_size, snapshot.size.width - document_left)
+            valid_height = min(tile_size, snapshot.size.height - document_top)
+            if sample_merged:
+                source = compose_document_tile(snapshot, TileCoord(tx, ty))
+                reference[
+                    document_top : document_top + valid_height,
+                    document_left : document_left + valid_width,
+                ] = source[:valid_height, :valid_width]
+            else:
+                _copy_layer_to_document_tile(
+                    reference,
+                    layer,
+                    document_left,
+                    document_top,
+                    valid_width,
+                    valid_height,
+                )
+            completed += 1
+            progress(completed, total * 2, "分析填充区域")
+    return reference
+
+
+def _copy_layer_to_document_tile(
+    reference: RGBAArray,
+    layer: LayerSnapshot,
+    document_left: int,
+    document_top: int,
+    width: int,
+    height: int,
+) -> None:
+    document_right = document_left + width
+    document_bottom = document_top + height
+    overlap_left = max(document_left, layer.origin.x)
+    overlap_top = max(document_top, layer.origin.y)
+    overlap_right = min(document_right, layer.origin.x + layer.size.width)
+    overlap_bottom = min(document_bottom, layer.origin.y + layer.size.height)
+    if overlap_right <= overlap_left or overlap_bottom <= overlap_top:
+        return
+    from easypicture.pixels import Rect
+
+    source = layer.pixels.read_region(
+        Rect(
+            overlap_left - layer.origin.x,
+            overlap_top - layer.origin.y,
+            overlap_right - overlap_left,
+            overlap_bottom - overlap_top,
+        )
+    )
+    reference[overlap_top:overlap_bottom, overlap_left:overlap_right] = source
+
+
+def _build_updates(
+    snapshot: DocumentSnapshot,
+    layer: LayerSnapshot,
+    region: RegionResult,
+    color: RGBAColor,
+    cancellation: FillCancellation,
+    progress: ProgressReporter,
+) -> dict[TileCoord, RGBAArray]:
+    tile_size = DEFAULT_TILE_SIZE
+    first_layer_x = max(0, -layer.origin.x)
+    first_layer_y = max(0, -layer.origin.y)
+    last_layer_x = min(layer.size.width, snapshot.size.width - layer.origin.x)
+    last_layer_y = min(layer.size.height, snapshot.size.height - layer.origin.y)
+    if last_layer_x <= first_layer_x or last_layer_y <= first_layer_y:
+        return {}
+
+    first_tx = first_layer_x // tile_size
+    first_ty = first_layer_y // tile_size
+    last_tx = (last_layer_x - 1) // tile_size
+    last_ty = (last_layer_y - 1) // tile_size
+    coords = [
+        TileCoord(tx, ty)
+        for ty in range(first_ty, last_ty + 1)
+        for tx in range(first_tx, last_tx + 1)
+    ]
+    updates: dict[TileCoord, RGBAArray] = {}
+    selection_active = snapshot.selection.has_nonzero_data
+    for index, coord in enumerate(coords, start=1):
+        cancellation.raise_if_cancelled()
+        layer_left = coord.x * tile_size
+        layer_top = coord.y * tile_size
+        document_left = max(0, layer.origin.x + layer_left)
+        document_top = max(0, layer.origin.y + layer_top)
+        document_right = min(
+            snapshot.size.width,
+            layer.origin.x + min(layer.size.width, layer_left + tile_size),
+        )
+        document_bottom = min(
+            snapshot.size.height,
+            layer.origin.y + min(layer.size.height, layer_top + tile_size),
+        )
+        if document_right <= document_left or document_bottom <= document_top:
+            continue
+
+        coverage = _region_rect(
+            region,
+            document_left,
+            document_top,
+            document_right - document_left,
+            document_bottom - document_top,
+        ).astype(np.float32) / 255.0
+        if selection_active:
+            from easypicture.pixels import Rect
+
+            selection = snapshot.selection.read_region(
+                Rect(
+                    document_left,
+                    document_top,
+                    document_right - document_left,
+                    document_bottom - document_top,
+                )
+            )
+            coverage *= selection.astype(np.float32) / 255.0
+        if not np.any(coverage > 0):
+            continue
+
+        before = layer.pixels.read_tile(coord.x, coord.y)
+        after = before.copy(order="C")
+        target_left = document_left - (layer.origin.x + layer_left)
+        target_top = document_top - (layer.origin.y + layer_top)
+        target_right = target_left + coverage.shape[1]
+        target_bottom = target_top + coverage.shape[0]
+        target = after[target_top:target_bottom, target_left:target_right]
+        target_after = blend_color(target, color, coverage)
+        if np.array_equal(target, target_after):
+            continue
+        after[target_top:target_bottom, target_left:target_right] = target_after
+        updates[coord] = after
+        progress(len(coords) + index, len(coords) * 2, "生成像素补丁")
+    return updates
+
+
+def _region_rect(
+    result: RegionResult,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    output = np.zeros((height, width), dtype=np.uint8)
+    tile_size = DEFAULT_TILE_SIZE
+    first_tx = x // tile_size
+    first_ty = y // tile_size
+    last_tx = (x + width - 1) // tile_size
+    last_ty = (y + height - 1) // tile_size
+    for ty in range(first_ty, last_ty + 1):
+        for tx in range(first_tx, last_tx + 1):
+            tile = result.tiles.get(TileCoord(tx, ty))
+            if tile is None:
+                continue
+            tile_left = tx * tile_size
+            tile_top = ty * tile_size
+            overlap_left = max(x, tile_left)
+            overlap_top = max(y, tile_top)
+            overlap_right = min(x + width, tile_left + tile_size)
+            overlap_bottom = min(y + height, tile_top + tile_size)
+            output[
+                overlap_top - y : overlap_bottom - y,
+                overlap_left - x : overlap_right - x,
+            ] = tile[
+                overlap_top - tile_top : overlap_bottom - tile_top,
+                overlap_left - tile_left : overlap_right - tile_left,
+            ]
+    return output
+
+
+def _layer_by_id(snapshot: DocumentSnapshot, layer_id: UUID) -> LayerSnapshot:
+    for layer in snapshot.layers:
+        if layer.id == layer_id:
+            return layer
+    raise ValueError("fill layer does not belong to the document")
+
+
+__all__ = ["FillRequest", "FillResult", "calculate_fill"]

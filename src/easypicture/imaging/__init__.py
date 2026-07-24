@@ -1,5 +1,29 @@
 """Qt-free image processing services."""
 
+from easypicture.imaging.brush import (
+    BrushSettings,
+    BrushStrokeEngine,
+    RGBAColor,
+    blend_color,
+    erase_alpha,
+)
 from easypicture.imaging.composite import compose_document_tile
+from easypicture.imaging.fill import FillRequest, FillResult, calculate_fill
+from easypicture.imaging.region import RegionQuery, RegionResult, find_region
+from easypicture.imaging.sampling import sample_document_pixel
 
-__all__ = ["compose_document_tile"]
+__all__ = [
+    "BrushSettings",
+    "BrushStrokeEngine",
+    "FillRequest",
+    "FillResult",
+    "RGBAColor",
+    "RegionQuery",
+    "RegionResult",
+    "blend_color",
+    "calculate_fill",
+    "compose_document_tile",
+    "erase_alpha",
+    "find_region",
+    "sample_document_pixel",
+]

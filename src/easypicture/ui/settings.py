@@ -8,6 +8,8 @@ from PySide6.QtWidgets import QMainWindow
 
 from easypicture.domain import Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
+from easypicture.imaging import BrushSettings
+from easypicture.tools import BucketSettings
 
 DEFAULT_DOCUMENT_SIZE = Size(1920, 1080)
 DEFAULT_FOREGROUND = QColor("#000000")
@@ -45,6 +47,43 @@ class AppSettings:
     def set_background_color(self, color: QColor) -> None:
         self._settings.setValue("colors/background", color.name(QColor.NameFormat.HexArgb))
 
+    def brush_settings(self) -> BrushSettings:
+        return BrushSettings(
+            size=self._bounded_int("tools/brush/size", 32, 1, 1024),
+            hardness=self._bounded_float("tools/brush/hardness", 0.8, 0.0, 1.0),
+            opacity=self._bounded_float("tools/brush/opacity", 1.0, 0.0, 1.0),
+            spacing=self._bounded_float("tools/brush/spacing", 0.15, 0.01, 2.0),
+            antialias=self._bool_value("tools/brush/antialias", True),
+        )
+
+    def set_brush_settings(self, settings: BrushSettings) -> None:
+        self._settings.setValue("tools/brush/size", settings.size)
+        self._settings.setValue("tools/brush/hardness", settings.hardness)
+        self._settings.setValue("tools/brush/opacity", settings.opacity)
+        self._settings.setValue("tools/brush/spacing", settings.spacing)
+        self._settings.setValue("tools/brush/antialias", settings.antialias)
+
+    def bucket_settings(self) -> BucketSettings:
+        connectivity = self._bounded_int("tools/bucket/connectivity", 4, 4, 8)
+        return BucketSettings(
+            tolerance=self._bounded_int("tools/bucket/tolerance", 0, 0, 255),
+            connectivity=4 if connectivity != 8 else 8,
+            contiguous=self._bool_value("tools/bucket/contiguous", True),
+            sample_merged=self._bool_value("tools/bucket/sample_merged", False),
+        )
+
+    def set_bucket_settings(self, settings: BucketSettings) -> None:
+        self._settings.setValue("tools/bucket/tolerance", settings.tolerance)
+        self._settings.setValue("tools/bucket/connectivity", settings.connectivity)
+        self._settings.setValue("tools/bucket/contiguous", settings.contiguous)
+        self._settings.setValue("tools/bucket/sample_merged", settings.sample_merged)
+
+    def eyedropper_sample_merged(self) -> bool:
+        return self._bool_value("tools/eyedropper/sample_merged", True)
+
+    def set_eyedropper_sample_merged(self, sample_merged: bool) -> None:
+        self._settings.setValue("tools/eyedropper/sample_merged", sample_merged)
+
     def restore_window(self, window: QMainWindow) -> None:
         geometry = self._settings.value("window/geometry")
         state = self._settings.value("window/state")
@@ -72,6 +111,34 @@ class AppSettings:
         value = self._settings.value(key, default.name(QColor.NameFormat.HexArgb))
         color = QColor(str(value))
         return color if color.isValid() else QColor(default)
+
+    def _bounded_int(self, key: str, default: int, minimum: int, maximum: int) -> int:
+        return min(maximum, max(minimum, self._int_value(key, default)))
+
+    def _bounded_float(
+        self,
+        key: str,
+        default: float,
+        minimum: float,
+        maximum: float,
+    ) -> float:
+        value = self._settings.value(key, default)
+        try:
+            parsed = float(str(value))
+        except TypeError, ValueError:
+            parsed = default
+        return min(maximum, max(minimum, parsed))
+
+    def _bool_value(self, key: str, default: bool) -> bool:
+        value = self._settings.value(key, default)
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        return default
 
 
 __all__ = [

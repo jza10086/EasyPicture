@@ -11,6 +11,9 @@ from PySide6.QtGui import QKeyEvent, QMouseEvent
 from easypicture.domain import Document
 
 if TYPE_CHECKING:
+    from easypicture.commands import DocumentCommandService
+    from easypicture.imaging import RGBAColor
+    from easypicture.jobs import JobRunner
     from easypicture.ui.canvas_view import CanvasView
     from easypicture.ui.overlays import OverlayManager
 
@@ -20,6 +23,13 @@ class ToolContext:
     canvas: CanvasView
     overlays: OverlayManager
     document_provider: Callable[[], Document | None]
+    commands: DocumentCommandService | None = None
+    foreground_provider: Callable[[], RGBAColor] | None = None
+    set_foreground: Callable[[RGBAColor], None] | None = None
+    set_background: Callable[[RGBAColor], None] | None = None
+    jobs: JobRunner | None = None
+    set_busy: Callable[[bool], None] | None = None
+    status: Callable[[str], None] | None = None
 
 
 class Tool(Protocol):
