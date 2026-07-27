@@ -14,6 +14,7 @@ def test_settings_round_trip_size_and_colors(tmp_path) -> None:
     first.set_last_document_size(Size(1234, 567))
     first.set_foreground_color(QColor("#123456"))
     first.set_background_color(QColor("#abcdef"))
+    first.set_selection_outline_style(QColor("#35a7ff"), 4)
     first.sync()
 
     second = make_settings(path)
@@ -21,6 +22,8 @@ def test_settings_round_trip_size_and_colors(tmp_path) -> None:
     assert second.last_document_size() == Size(1234, 567)
     assert second.foreground_color().name() == "#123456"
     assert second.background_color().name() == "#abcdef"
+    assert second.selection_outline_color().name() == "#35a7ff"
+    assert second.selection_outline_width() == 4
 
 
 def test_invalid_settings_fall_back_to_defaults(tmp_path) -> None:
@@ -28,9 +31,13 @@ def test_invalid_settings_fall_back_to_defaults(tmp_path) -> None:
     settings._settings.setValue("new_document/width", 0)  # noqa: SLF001
     settings._settings.setValue("new_document/height", 9000)  # noqa: SLF001
     settings._settings.setValue("colors/foreground", "invalid")  # noqa: SLF001
+    settings._settings.setValue("selection/outline_color", "invalid")  # noqa: SLF001
+    settings._settings.setValue("selection/outline_width", 99)  # noqa: SLF001
 
     assert settings.last_document_size() == Size(1920, 1080)
     assert settings.foreground_color().name() == "#000000"
+    assert settings.selection_outline_color().name() == "#f28c28"
+    assert settings.selection_outline_width() == 8
 
 
 def test_color_panel_persists_without_modifying_document(qtbot, tmp_path) -> None:

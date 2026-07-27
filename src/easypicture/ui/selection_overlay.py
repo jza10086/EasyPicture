@@ -1,34 +1,43 @@
-"""Persistent zoom-independent marching-ants selection outline."""
+"""Persistent zoom-independent solid selection outline."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 
-import cv2
 import numpy as np
-from PySide6.QtCore import QObject, QRectF, Qt, QTimer
+from PySide6.QtCore import QObject, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from easypicture.domain import Document, DocumentEvent, SelectionChanged
 from easypicture.pixels import Rect, TileCoord
+from easypicture.ui.selection_style import (
+    DEFAULT_SELECTION_OUTLINE_COLOR,
+    DEFAULT_SELECTION_OUTLINE_WIDTH,
+    MAX_SELECTION_OUTLINE_WIDTH,
+)
 
 
 class SelectionOverlayItem(QGraphicsItem):
     """Draw selection contours without becoming part of document pixels."""
 
-    def __init__(self, document: Document, timer_parent: QObject) -> None:
+    def __init__(
+        self,
+        document: Document,
+        timer_parent: QObject,
+        color: QColor | None = None,
+        width: float = DEFAULT_SELECTION_OUTLINE_WIDTH,
+    ) -> None:
         super().__init__()
+        _ = timer_parent
         self.document = document
+        self._color = QColor(color or DEFAULT_SELECTION_OUTLINE_COLOR)
+        self._color.setAlpha(255)
+        self._width = min(float(MAX_SELECTION_OUTLINE_WIDTH), max(1.0, width))
         self.setZValue(9_000.0)
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
         self._paths: dict[TileCoord, QPainterPath] = {}
-        self._phase = 0.0
         self._unsubscribe: Callable[[], None] = document.subscribe(self._on_document_event)
-        self._timer = QTimer(timer_parent)
-        self._timer.setInterval(100)
-        self._timer.timeout.connect(self._advance)
-        self._sync_timer()
 
     def boundingRect(self) -> QRectF:
         return QRectF(0.0, 0.0, float(self.document.width), float(self.document.height))
@@ -45,8 +54,7 @@ class SelectionOverlayItem(QGraphicsItem):
         exposed = option.exposedRect.intersected(self.boundingRect())
         if exposed.isEmpty():
             return
-        black = self._pen(QColor(0, 0, 0, 230), self._phase)
-        white = self._pen(QColor(255, 255, 255, 245), self._phase + 4.0)
+        outline = self._pen(self._color, self._width)
         tile_size = self.document.selection.mask.tile_size
         for coord, _tile in self.document.selection.mask.iter_allocated_tiles():
             tile_rect = QRectF(
@@ -64,27 +72,41 @@ class SelectionOverlayItem(QGraphicsItem):
             if path.isEmpty():
                 continue
             painter.save()
-            painter.setClipRect(tile_rect)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(black)
-            painter.drawPath(path)
-            painter.setPen(white)
+            painter.setPen(outline)
             painter.drawPath(path)
             painter.restore()
 
     def dispose(self) -> None:
-        self._timer.stop()
-        self._timer.timeout.disconnect(self._advance)
         self._unsubscribe()
         self._paths.clear()
 
+    @property
+    def outline_color(self) -> QColor:
+        return QColor(self._color)
+
+    @property
+    def outline_width(self) -> float:
+        return self._width
+
+    def set_style(self, color: QColor, width: float) -> None:
+        resolved_color = QColor(color)
+        resolved_color.setAlpha(255)
+        resolved_width = min(float(MAX_SELECTION_OUTLINE_WIDTH), max(1.0, width))
+        if resolved_color == self._color and resolved_width == self._width:
+            return
+        self._color = resolved_color
+        self._width = resolved_width
+        self.update()
+
     @staticmethod
-    def _pen(color: QColor, offset: float) -> QPen:
+    def _pen(color: QColor, width: float) -> QPen:
         pen = QPen(color)
         pen.setCosmetic(True)
-        pen.setWidth(1)
-        pen.setDashPattern([4.0, 4.0])
-        pen.setDashOffset(offset)
+        pen.setWidthF(width)
+        pen.setStyle(Qt.PenStyle.SolidLine)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         return pen
 
     def _build_path(self, coord: TileCoord) -> QPainterPath:
@@ -92,10 +114,14 @@ class SelectionOverlayItem(QGraphicsItem):
         tile_size = store.tile_size
         left = coord.x * tile_size
         top = coord.y * tile_size
+        width = min(tile_size, self.document.width - left)
+        height = min(tile_size, self.document.height - top)
+        if width <= 0 or height <= 0:
+            return QPainterPath()
         halo_left = max(0, left - 1)
         halo_top = max(0, top - 1)
-        halo_right = min(self.document.width, left + tile_size + 1)
-        halo_bottom = min(self.document.height, top + tile_size + 1)
+        halo_right = min(self.document.width, left + width + 1)
+        halo_bottom = min(self.document.height, top + height + 1)
         mask = store.read_region(
             Rect(
                 halo_left,
@@ -104,32 +130,67 @@ class SelectionOverlayItem(QGraphicsItem):
                 halo_bottom - halo_top,
             )
         )
-        binary = np.ascontiguousarray(mask >= 128, dtype=np.uint8)
-        if not np.any(binary):
+        padded = np.zeros((height + 2, width + 2), dtype=np.bool_)
+        target_left = halo_left - left + 1
+        target_top = halo_top - top + 1
+        padded[
+            target_top : target_top + mask.shape[0],
+            target_left : target_left + mask.shape[1],
+        ] = mask >= 128
+        core = padded[1 : height + 1, 1 : width + 1]
+        if not np.any(core):
             return QPainterPath()
-        touches_document_edge = (
-            halo_left == 0
-            or halo_top == 0
-            or halo_right == self.document.width
-            or halo_bottom == self.document.height
-        )
-        if np.all(binary) and not touches_document_edge:
-            return QPainterPath()
-        contours, _hierarchy = cv2.findContours(
-            binary,
-            cv2.RETR_LIST,
-            cv2.CHAIN_APPROX_SIMPLE,
-        )
+
+        top_edges = core & ~padded[0:height, 1 : width + 1]
+        bottom_edges = core & ~padded[2 : height + 2, 1 : width + 1]
+        left_edges = core & ~padded[1 : height + 1, 0:width]
+        right_edges = core & ~padded[1 : height + 1, 2 : width + 2]
         path = QPainterPath()
-        for contour in contours:
-            if len(contour) == 0:
-                continue
-            first = contour[0, 0]
-            path.moveTo(float(first[0] + halo_left), float(first[1] + halo_top))
-            for point in contour[1:, 0]:
-                path.lineTo(float(point[0] + halo_left), float(point[1] + halo_top))
-            path.closeSubpath()
+        self._append_horizontal_edges(path, top_edges, left, top, offset_y=0)
+        self._append_horizontal_edges(path, bottom_edges, left, top, offset_y=1)
+        self._append_vertical_edges(path, left_edges, left, top, offset_x=0)
+        self._append_vertical_edges(path, right_edges, left, top, offset_x=1)
         return path
+
+    @classmethod
+    def _append_horizontal_edges(
+        cls,
+        path: QPainterPath,
+        edges: np.ndarray,
+        left: int,
+        top: int,
+        *,
+        offset_y: int,
+    ) -> None:
+        for row_index, row in enumerate(edges):
+            y = float(top + row_index + offset_y)
+            for start, end in cls._true_runs(row):
+                path.moveTo(float(left + start), y)
+                path.lineTo(float(left + end), y)
+
+    @classmethod
+    def _append_vertical_edges(
+        cls,
+        path: QPainterPath,
+        edges: np.ndarray,
+        left: int,
+        top: int,
+        *,
+        offset_x: int,
+    ) -> None:
+        for column_index, column in enumerate(edges.T):
+            x = float(left + column_index + offset_x)
+            for start, end in cls._true_runs(column):
+                path.moveTo(x, float(top + start))
+                path.lineTo(x, float(top + end))
+
+    @staticmethod
+    def _true_runs(flags: np.ndarray) -> Iterator[tuple[int, int]]:
+        bordered = np.zeros(flags.size + 2, dtype=np.bool_)
+        bordered[1:-1] = flags
+        transitions = np.flatnonzero(bordered[1:] != bordered[:-1])
+        for start, end in zip(transitions[0::2], transitions[1::2], strict=True):
+            yield int(start), int(end)
 
     def _on_document_event(self, event: DocumentEvent) -> None:
         if not isinstance(event, SelectionChanged):
@@ -155,20 +216,9 @@ class SelectionOverlayItem(QGraphicsItem):
                     tile_size,
                 ).intersected(self.boundingRect())
             )
-        self._sync_timer()
-
-    def _sync_timer(self) -> None:
-        if self.document.selection.is_active:
-            if not self._timer.isActive():
-                self._timer.start()
-        else:
-            self._timer.stop()
+        if not self.document.selection.is_active:
             self._paths.clear()
             self.update()
-
-    def _advance(self) -> None:
-        self._phase = (self._phase + 1.0) % 8.0
-        self.update()
 
 
 __all__ = ["SelectionOverlayItem"]

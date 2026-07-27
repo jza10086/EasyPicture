@@ -1,0 +1,13 @@
+"""Shared defaults and limits for selection outline appearance."""
+
+from PySide6.QtGui import QColor
+
+DEFAULT_SELECTION_OUTLINE_COLOR = QColor("#f28c28")
+DEFAULT_SELECTION_OUTLINE_WIDTH = 1
+MAX_SELECTION_OUTLINE_WIDTH = 8
+
+__all__ = [
+    "DEFAULT_SELECTION_OUTLINE_COLOR",
+    "DEFAULT_SELECTION_OUTLINE_WIDTH",
+    "MAX_SELECTION_OUTLINE_WIDTH",
+]

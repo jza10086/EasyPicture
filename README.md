@@ -5,7 +5,8 @@ EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当�
 合成、图层与像素撤销、常用图片导入、`.limg` 项目保存/恢复、自动恢复、PNG 导出，
 画笔、橡皮、吸管、油漆桶，以及矩形、魔棒和可调整的统一选区系统。
 
-套索、变换、形状、文本和完整格式导出尚未实现。
+套索、变换、形状、文本和完整格式导出尚未实现。P5 及其 Blender 风格深色界面、
+可配置选区轮廓和统一数值输入控件已经完成人工验收，下一阶段为 P6A 自由变换。
 
 ## 环境
 
@@ -42,4 +43,5 @@ uv run python -m easypicture --io-smoke-test .cache\io-smoke
 
 总体技术评估和开发路线见
 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段结果见
-[`docs/p5_acceptance.md`](docs/p5_acceptance.md)。
+[`docs/p5_acceptance.md`](docs/p5_acceptance.md)。界面输入控件约定见
+[`docs/ui_design_principles.md`](docs/ui_design_principles.md)。

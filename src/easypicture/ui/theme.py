@@ -96,6 +96,9 @@ QComboBox {
     padding: 2px 4px;
     min-height: 19px;
 }
+QComboBox {
+    padding-right: 22px;
+}
 QLineEdit:focus,
 QSpinBox:focus,
 QDoubleSpinBox:focus,
@@ -110,6 +113,18 @@ QDoubleSpinBox::down-button {
     background-color: #343434;
     border: 0;
     border-left: 1px solid #151515;
+}
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 20px;
+    background-color: transparent;
+    border: 0;
+}
+QComboBox::down-arrow {
+    image: none;
+    width: 0;
+    height: 0;
 }
 QAbstractItemView {
     background-color: #1f1f1f;

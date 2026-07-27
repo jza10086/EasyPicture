@@ -14,15 +14,14 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
-    QInputDialog,
     QMessageBox,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from easypicture.domain import Document, Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
+from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,15 +116,20 @@ class NewDocumentDialog(QDialog):
         self.setWindowTitle("新建文档")
         self.setModal(True)
 
-        self.width_spin = QSpinBox(self)
-        self.width_spin.setRange(1, MAX_DOCUMENT_DIMENSION)
-        self.width_spin.setValue(default_size.width)
-        self.width_spin.setSuffix(" px")
-
-        self.height_spin = QSpinBox(self)
-        self.height_spin.setRange(1, MAX_DOCUMENT_DIMENSION)
-        self.height_spin.setValue(default_size.height)
-        self.height_spin.setSuffix(" px")
+        self.width_spin = DragValueSpinBox(
+            1,
+            MAX_DOCUMENT_DIMENSION,
+            default_size.width,
+            suffix=" px",
+            parent=self,
+        )
+        self.height_spin = DragValueSpinBox(
+            1,
+            MAX_DOCUMENT_DIMENSION,
+            default_size.height,
+            suffix=" px",
+            parent=self,
+        )
 
         form = QFormLayout()
         form.addRow("宽度", self.width_spin)
@@ -144,6 +148,45 @@ class NewDocumentDialog(QDialog):
 
     def specification(self) -> NewDocumentSpec:
         return NewDocumentSpec(self.width_spin.value(), self.height_spin.value())
+
+
+class SelectionRadiusDialog(QDialog):
+    """Request a selection adjustment radius with proportional dragging."""
+
+    def __init__(
+        self,
+        title: str,
+        maximum: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.radius_spin = DragValueSpinBox(
+            1,
+            maximum,
+            1,
+            suffix=" px",
+            parent=self,
+        )
+        self.radius_spin.setMinimumWidth(180)
+
+        form = QFormLayout()
+        form.addRow("半径", self.radius_spin)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel,
+            parent=self,
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(form)
+        layout.addWidget(buttons)
+
+    @property
+    def radius(self) -> int:
+        return self.radius_spin.value()
 
 
 class QtDialogService:
@@ -321,16 +364,10 @@ class QtDialogService:
         title: str,
         maximum: int,
     ) -> int | None:
-        value, accepted = QInputDialog.getInt(
-            parent,
-            title,
-            "半径（像素）",
-            1,
-            1,
-            maximum,
-            1,
-        )
-        return value if accepted else None
+        dialog = SelectionRadiusDialog(title, maximum, parent)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.radius
 
 
 __all__ = [
@@ -339,5 +376,6 @@ __all__ = [
     "NewDocumentSpec",
     "QtDialogService",
     "RecoveryDecision",
+    "SelectionRadiusDialog",
     "UnsavedDecision",
 ]

@@ -5,6 +5,7 @@ from PySide6.QtTest import QTest
 
 from easypicture.controller import ApplicationController
 from easypicture.ui.dialogs import NewDocumentSpec
+from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.main_window import MainWindow
 from tests.fakes import FakeDialogService, make_settings
 
@@ -64,6 +65,7 @@ def test_layer_panel_shows_top_layer_first_and_buttons_are_undoable(qtbot, tmp_p
 def test_layer_edit_visibility_opacity_and_locks_round_trip(qtbot, tmp_path) -> None:
     window, controller = _window_with_document(qtbot, tmp_path)
     panel = window.layer_panel
+    assert isinstance(panel.opacity_spin, DragValueSpinBox)
     document = controller.document
     assert document is not None
     index = panel.model.index(0, 0)

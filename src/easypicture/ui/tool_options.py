@@ -5,9 +5,9 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QStackedWidget,
     QWidget,
 )
@@ -19,6 +19,7 @@ from easypicture.imaging import (
     SelectionCombineMode,
 )
 from easypicture.tools import BucketSettings, MagicWandSettings
+from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.settings import AppSettings
 
@@ -121,7 +122,7 @@ class BucketOptionsWidget(QWidget):
             settings.tolerance,
             parent=self,
         )
-        self.connectivity_combo = QComboBox(self)
+        self.connectivity_combo = BlenderComboBox(self)
         self.connectivity_combo.addItem("4 邻域", 4)
         self.connectivity_combo.addItem("8 邻域", 8)
         self.connectivity_combo.setCurrentIndex(0 if settings.connectivity == 4 else 1)
@@ -167,7 +168,10 @@ class BucketOptionsWidget(QWidget):
         self.settings_changed.emit(self.settings())
 
 
-def _add_selection_modes(combo: QComboBox, current: SelectionCombineMode) -> None:
+def _add_selection_modes(
+    combo: BlenderComboBox,
+    current: SelectionCombineMode,
+) -> None:
     for label, mode in (
         ("替换", SelectionCombineMode.REPLACE),
         ("添加", SelectionCombineMode.ADD),
@@ -180,6 +184,7 @@ def _add_selection_modes(combo: QComboBox, current: SelectionCombineMode) -> Non
 
 class RectangleSelectionOptionsWidget(QWidget):
     settings_changed = Signal(object)
+    deselect_requested = Signal()
 
     def __init__(
         self,
@@ -187,14 +192,18 @@ class RectangleSelectionOptionsWidget(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.mode_combo = QComboBox(self)
+        self.mode_combo = BlenderComboBox(self)
         _add_selection_modes(self.mode_combo, mode)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.addWidget(QLabel("模式", self))
         layout.addWidget(self.mode_combo)
+        self.deselect_button = QPushButton("取消选区", self)
+        self.deselect_button.setToolTip("取消选区限制，后续编辑作用于整个画布")
+        layout.addWidget(self.deselect_button)
         layout.addStretch(1)
         self.mode_combo.currentIndexChanged.connect(self._emit_mode)
+        self.deselect_button.clicked.connect(self.deselect_requested)
 
     def mode(self) -> SelectionCombineMode:
         return SelectionCombineMode(str(self.mode_combo.currentData()))
@@ -208,6 +217,7 @@ class RectangleSelectionOptionsWidget(QWidget):
 
 class MagicWandOptionsWidget(QWidget):
     settings_changed = Signal(object)
+    deselect_requested = Signal()
 
     def __init__(
         self,
@@ -215,10 +225,10 @@ class MagicWandOptionsWidget(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.mode_combo = QComboBox(self)
+        self.mode_combo = BlenderComboBox(self)
         _add_selection_modes(self.mode_combo, settings.mode)
         self.tolerance_spin = DragValueSpinBox(0, 255, settings.tolerance, parent=self)
-        self.connectivity_combo = QComboBox(self)
+        self.connectivity_combo = BlenderComboBox(self)
         self.connectivity_combo.addItem("4 邻域", 4)
         self.connectivity_combo.addItem("8 邻域", 8)
         self.connectivity_combo.setCurrentIndex(0 if settings.connectivity == 4 else 1)
@@ -239,6 +249,9 @@ class MagicWandOptionsWidget(QWidget):
         layout.addWidget(self.contiguous_check)
         layout.addWidget(self.sample_merged_check)
         layout.addWidget(self.include_alpha_check)
+        self.deselect_button = QPushButton("取消选区", self)
+        self.deselect_button.setToolTip("取消选区限制，后续编辑作用于整个画布")
+        layout.addWidget(self.deselect_button)
         layout.addStretch(1)
         self.mode_combo.currentIndexChanged.connect(self._emit_settings)
         self.tolerance_spin.valueChanged.connect(self._emit_settings)
@@ -246,6 +259,7 @@ class MagicWandOptionsWidget(QWidget):
         self.contiguous_check.toggled.connect(self._emit_settings)
         self.sample_merged_check.toggled.connect(self._emit_settings)
         self.include_alpha_check.toggled.connect(self._emit_settings)
+        self.deselect_button.clicked.connect(self.deselect_requested)
 
     def settings(self) -> MagicWandSettings:
         connectivity = int(self.connectivity_combo.currentData())
@@ -271,6 +285,7 @@ class ToolOptionsPanel(QStackedWidget):
     eyedropper_settings_changed = Signal(bool)
     selection_mode_changed = Signal(object)
     magic_wand_settings_changed = Signal(object)
+    deselect_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -292,6 +307,9 @@ class ToolOptionsPanel(QStackedWidget):
         self.eyedropper.settings_changed.connect(self.eyedropper_settings_changed)
         self.rectangle_selection.settings_changed.connect(self._selection_mode_from_rectangle)
         self.magic_wand.settings_changed.connect(self._magic_wand_settings_changed)
+        self.rectangle_selection.deselect_requested.connect(self.deselect_requested)
+        self.magic_wand.deselect_requested.connect(self.deselect_requested)
+        self.set_selection_active(False)
 
     def show_tool(self, tool_name: str) -> None:
         if tool_name in {"brush", "eraser"}:
@@ -304,6 +322,10 @@ class ToolOptionsPanel(QStackedWidget):
             self.setCurrentWidget(self.rectangle_selection)
         elif tool_name == "magic_wand":
             self.setCurrentWidget(self.magic_wand)
+
+    def set_selection_active(self, active: bool) -> None:
+        self.rectangle_selection.deselect_button.setEnabled(active)
+        self.magic_wand.deselect_button.setEnabled(active)
 
     def _selection_mode_from_rectangle(self, mode: object) -> None:
         if isinstance(mode, SelectionCombineMode):

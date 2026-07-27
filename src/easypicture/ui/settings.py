@@ -10,6 +10,11 @@ from easypicture.domain import Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
 from easypicture.imaging import MAX_BRUSH_SIZE, BrushSettings, SelectionCombineMode
 from easypicture.tools import BucketSettings, MagicWandSettings
+from easypicture.ui.selection_style import (
+    DEFAULT_SELECTION_OUTLINE_COLOR,
+    DEFAULT_SELECTION_OUTLINE_WIDTH,
+    MAX_SELECTION_OUTLINE_WIDTH,
+)
 
 DEFAULT_DOCUMENT_SIZE = Size(1920, 1080)
 DEFAULT_FOREGROUND = QColor("#000000")
@@ -46,6 +51,34 @@ class AppSettings:
 
     def set_background_color(self, color: QColor) -> None:
         self._settings.setValue("colors/background", color.name(QColor.NameFormat.HexArgb))
+
+    def selection_outline_color(self) -> QColor:
+        color = self._color_value(
+            "selection/outline_color",
+            DEFAULT_SELECTION_OUTLINE_COLOR,
+        )
+        color.setAlpha(255)
+        return color
+
+    def selection_outline_width(self) -> int:
+        return self._bounded_int(
+            "selection/outline_width",
+            DEFAULT_SELECTION_OUTLINE_WIDTH,
+            1,
+            MAX_SELECTION_OUTLINE_WIDTH,
+        )
+
+    def set_selection_outline_style(self, color: QColor, width: int) -> None:
+        opaque = QColor(color)
+        opaque.setAlpha(255)
+        self._settings.setValue(
+            "selection/outline_color",
+            opaque.name(QColor.NameFormat.HexRgb),
+        )
+        self._settings.setValue(
+            "selection/outline_width",
+            min(MAX_SELECTION_OUTLINE_WIDTH, max(1, width)),
+        )
 
     def brush_settings(self) -> BrushSettings:
         return BrushSettings(
@@ -187,4 +220,7 @@ __all__ = [
     "DEFAULT_BACKGROUND",
     "DEFAULT_DOCUMENT_SIZE",
     "DEFAULT_FOREGROUND",
+    "DEFAULT_SELECTION_OUTLINE_COLOR",
+    "DEFAULT_SELECTION_OUTLINE_WIDTH",
+    "MAX_SELECTION_OUTLINE_WIDTH",
 ]

@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QListView,
     QPushButton,
-    QSpinBox,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -38,6 +37,7 @@ from easypicture.domain import (
     LayerPropertiesChanged,
     RasterLayer,
 )
+from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 
 LAYER_MIME_TYPE = "application/x-easypicture-layer-id"
 _INVALID_INDEX = QModelIndex()
@@ -389,11 +389,8 @@ class LayerPanel(QWidget):
         ):
             button_layout.addWidget(button)
 
-        self.opacity_spin = QSpinBox(self)
+        self.opacity_spin = DragValueSpinBox(0, 100, 100, suffix="%", parent=self)
         self.opacity_spin.setObjectName("LayerOpacity")
-        self.opacity_spin.setRange(0, 100)
-        self.opacity_spin.setSuffix("%")
-        self.opacity_spin.setKeyboardTracking(False)
         self.locked_check = QCheckBox("锁定图层", self)
         self.alpha_locked_check = QCheckBox("锁定透明像素", self)
         properties = QFormLayout()

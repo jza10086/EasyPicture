@@ -5,6 +5,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QKeySequence
 from PySide6.QtWidgets import (
+    QDialog,
     QDockWidget,
     QFrame,
     QLabel,
@@ -54,6 +55,7 @@ from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_panel import ColorPanel
 from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.overlays import OverlayManager
+from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.tool_options import ToolOptionsPanel
 
@@ -143,6 +145,10 @@ class MainWindow(QMainWindow):
         self._selection_progress: QProgressDialog | None = None
 
         self.canvas_view = CanvasView(self)
+        self.canvas_view.set_selection_outline_style(
+            self.settings.selection_outline_color(),
+            self.settings.selection_outline_width(),
+        )
         self.empty_state = EmptyStateWidget(self)
         self.central_stack = QStackedWidget(self)
         self.central_stack.addWidget(self.empty_state)
@@ -197,6 +203,7 @@ class MainWindow(QMainWindow):
         self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         self.undo_action.setEnabled(False)
         self.redo_action.setEnabled(False)
+        self.preferences_action = QAction("全局设置…", self)
 
         self.zoom_in_action = QAction("放大", self)
         self.zoom_in_action.setShortcut(QKeySequence.StandardKey.ZoomIn)
@@ -233,6 +240,8 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("编辑(&E)")
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.preferences_action)
 
         view_menu = self.menuBar().addMenu("视图(&V)")
         view_menu.addAction(self.zoom_in_action)
@@ -301,6 +310,7 @@ class MainWindow(QMainWindow):
         self.tool_options_panel.magic_wand_settings_changed.connect(
             self._save_magic_wand_settings
         )
+        self.tool_options_panel.deselect_requested.connect(self._deselect)
         self.tool_actions["brush"].setChecked(True)
         self._activate_tool("brush")
 
@@ -342,6 +352,7 @@ class MainWindow(QMainWindow):
         self.save_as_action.triggered.connect(self._request_save_as_document)
         self.export_action.triggered.connect(self._request_export_png)
         self.exit_action.triggered.connect(self.close)
+        self.preferences_action.triggered.connect(self._show_preferences)
         self.zoom_in_action.triggered.connect(self.canvas_view.zoom_in)
         self.zoom_out_action.triggered.connect(self.canvas_view.zoom_out)
         self.fit_action.triggered.connect(self.canvas_view.fit_document)
@@ -504,6 +515,24 @@ class MainWindow(QMainWindow):
         if isinstance(settings, MagicWandSettings):
             self.settings.set_magic_wand_settings(settings)
             self.settings.sync()
+
+    def _show_preferences(self) -> None:
+        dialog = PreferencesDialog(
+            self.settings.selection_outline_color(),
+            self.settings.selection_outline_width(),
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.settings.set_selection_outline_style(
+            dialog.selection_color,
+            dialog.selection_width,
+        )
+        self.settings.sync()
+        self.canvas_view.set_selection_outline_style(
+            dialog.selection_color,
+            dialog.selection_width,
+        )
 
     def _set_editing_busy(self, busy: bool) -> None:
         self._editing_busy = busy
@@ -690,6 +719,7 @@ class MainWindow(QMainWindow):
         has_document = document is not None
         active = has_document and document.selection.is_active if document is not None else False
         self.select_all_action.setEnabled(has_document and not self._editing_busy)
+        self.tool_options_panel.set_selection_active(active and not self._editing_busy)
         for action in (
             self.deselect_action,
             self.invert_selection_action,

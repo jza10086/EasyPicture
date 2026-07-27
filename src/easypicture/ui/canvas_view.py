@@ -25,6 +25,11 @@ from easypicture.pixels import RGBAArray, TileCoord
 from easypicture.render import TileRenderer
 from easypicture.ui.canvas_item import CanvasItem
 from easypicture.ui.selection_overlay import SelectionOverlayItem
+from easypicture.ui.selection_style import (
+    DEFAULT_SELECTION_OUTLINE_COLOR,
+    DEFAULT_SELECTION_OUTLINE_WIDTH,
+    MAX_SELECTION_OUTLINE_WIDTH,
+)
 
 if TYPE_CHECKING:
     from easypicture.tools.controller import ToolController
@@ -54,6 +59,8 @@ class CanvasView(QGraphicsView):
         self._document: Document | None = None
         self._canvas_item: CanvasItem | None = None
         self._selection_overlay: SelectionOverlayItem | None = None
+        self._selection_outline_color = QColor(DEFAULT_SELECTION_OUTLINE_COLOR)
+        self._selection_outline_width = float(DEFAULT_SELECTION_OUTLINE_WIDTH)
         self._zoom = 1.0
         self._space_pressed = False
         self._panning = False
@@ -81,6 +88,20 @@ class CanvasView(QGraphicsView):
 
     def set_tool_controller(self, controller: ToolController) -> None:
         self._tool_controller = controller
+
+    def set_selection_outline_style(self, color: QColor, width: float) -> None:
+        resolved_color = QColor(color)
+        resolved_color.setAlpha(255)
+        self._selection_outline_color = resolved_color
+        self._selection_outline_width = min(
+            float(MAX_SELECTION_OUTLINE_WIDTH),
+            max(1.0, width),
+        )
+        if self._selection_overlay is not None:
+            self._selection_overlay.set_style(
+                self._selection_outline_color,
+                self._selection_outline_width,
+            )
 
     def set_tool_cursor(self, cursor: Qt.CursorShape | QCursor | None) -> None:
         self._tool_cursor = (
@@ -146,7 +167,12 @@ class CanvasView(QGraphicsView):
         renderer = TileRenderer(document, parent=self)
         self._canvas_item = CanvasItem(document.size, renderer)
         self.scene().addItem(self._canvas_item)
-        self._selection_overlay = SelectionOverlayItem(document, self)
+        self._selection_overlay = SelectionOverlayItem(
+            document,
+            self,
+            self._selection_outline_color,
+            self._selection_outline_width,
+        )
         self.scene().addItem(self._selection_overlay)
         self.set_zoom(1.0)
         self.centerOn(self._canvas_item)
