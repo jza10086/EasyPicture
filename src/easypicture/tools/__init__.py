@@ -15,6 +15,7 @@ from easypicture.tools.selection_tools import (
     RectangleSelectionTool,
     mode_from_modifiers,
 )
+from easypicture.tools.transform_tool import TransformParameters, TransformTool
 
 __all__ = [
     "BrushTool",
@@ -29,5 +30,7 @@ __all__ = [
     "Tool",
     "ToolContext",
     "ToolController",
+    "TransformParameters",
+    "TransformTool",
     "mode_from_modifiers",
 ]

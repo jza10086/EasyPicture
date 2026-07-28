@@ -3,7 +3,7 @@
 - 状态：拟执行
 - 日期：2026-07-24
 - 依据：用户提供的《轻量化图像处理应用技术栈说明》
-- 当前仓库：P0～P5 已验收，下一阶段为 P6A 自由变换
+- 当前仓库：P0～P6R 已完成自动及人工验收；P6A 验收后的交互改进等待定向复核
 
 ## 1. 执行结论
 
@@ -51,7 +51,7 @@
 - 16 位、浮点、HDR、CMYK 编辑；
 - 专业软打样和多工作色彩空间；
 - 矢量图层、文字图层、调整图层；
-- GPU 合成；
+- GPU 图像算法和 GPU 计算画笔（显示合成已在 P6R 使用 OpenGL）；
 - 插件系统、脚本市场；
 - 批量处理和 `pyvips` 集成；
 - 多文档全局撤销组；
@@ -73,7 +73,7 @@
 | --- | --- | --- |
 | Python | 3.14 x64 | 固定小版本范围，避免开发机与打包机漂移 |
 | UI | PySide6 + Qt Widgets | `QMainWindow`、Dock、Action、快捷键 |
-| 画布 | `QGraphicsView` + 单一 `CanvasItem` | 图层不是独立 `QGraphicsPixmapItem` |
+| 画布 | `QGraphicsView` + `QOpenGLWidget` viewport | 完整帧 GPU 显示，软件后端可回退 |
 | 权威像素 | NumPy `uint8`、C-contiguous、straight RGBA | 每块 256×256，边缘块可更小 |
 | 选区 | NumPy `uint8` 单通道分块蒙版 | 0～255，可表示羽化 |
 | 显示缓存 | `QImage.Format_RGBA8888_Premultiplied` | 仅存在于渲染层，不进入领域模型 |
@@ -487,10 +487,18 @@ flowchart LR
 
 ### P6：自由变换、裁切、缩放与几何图形，56～80 小时
 
+P6A/P6R 实现状态：**自由变换、浮动选区与 GPU 完整帧显示已完成自动及人工验收；
+会话内分步撤销、右键复位、属性布局和数值灵敏度属于验收后改进。** 实现结果见
+[`docs/p6a_acceptance.md`](p6a_acceptance.md) 和
+[`docs/p6r_acceptance.md`](p6r_acceptance.md)。
+
 任务：
 
-- 变换 Overlay、八手柄、中心点；
-- 平移、旋转、缩放、倾斜；
+- 变换 Overlay、八个边/角手柄、四个外置旋转手柄和中心点；
+- 平移、旋转、单边/规则缩放及不规则四角编辑；
+- 属性面板四角精确坐标；
+- 属性面板中心点精确坐标；
+- 变换会话内按操作分步撤销/重做，最终提交仍为一个文档命令；
 - 预览矩阵与最终重采样分离；
 - Esc 取消、Enter 提交；
 - 浮动选区的显式状态机；

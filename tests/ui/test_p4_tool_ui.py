@@ -20,6 +20,7 @@ from easypicture.ui.drag_value_spinbox import (
     DragValueSpinBox,
     NumericEditState,
     NumericPropertySpec,
+    configure_numeric_drag_sensitivity,
 )
 from easypicture.ui.main_window import MainWindow
 from tests.fakes import FakeDialogService, make_settings
@@ -89,6 +90,18 @@ def test_drag_value_spinbox_scales_by_range_and_shift_precision(qtbot) -> None:
     assert large.drag_delta_for_pixels(25) == pytest.approx(250.0)
     assert small.drag_delta_for_pixels(25, fine=True) == pytest.approx(0.25)
     assert large.drag_delta_for_pixels(25, fine=True) == pytest.approx(25.0)
+
+
+def test_drag_value_spinbox_uses_independent_global_sensitivities(qtbot) -> None:
+    configure_numeric_drag_sensitivity(0.02, 0.0005)
+    try:
+        spin = DragValueSpinBox(0, 100, 50)
+        qtbot.addWidget(spin)
+
+        assert spin.drag_delta_for_pixels(10) == pytest.approx(20.0)
+        assert spin.drag_delta_for_pixels(10, fine=True) == pytest.approx(0.5)
+    finally:
+        configure_numeric_drag_sensitivity(0.01, 0.001)
 
 
 def test_drag_value_click_enters_text_mode_and_evaluates_expression(qtbot) -> None:

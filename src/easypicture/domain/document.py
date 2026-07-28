@@ -20,10 +20,10 @@ from easypicture.domain.events import (
     LayerPropertiesChanged,
     SelectionChanged,
 )
-from easypicture.domain.geometry import Size
+from easypicture.domain.geometry import PixelPoint, Size
 from easypicture.domain.layer import RasterLayer
 from easypicture.domain.selection import Selection
-from easypicture.pixels import MaskArray, RGBAArray, TileCoord
+from easypicture.pixels import DEFAULT_TILE_SIZE, MaskArray, RGBAArray, TileCoord
 from easypicture.pixels.types import validate_mask_array, validate_rgba_array
 
 MAX_DOCUMENT_DIMENSION = 8192
@@ -385,6 +385,106 @@ class Document:
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
         return frozenset(changed)
 
+    def apply_raster_transform(
+        self,
+        layer_id: UUID,
+        *,
+        size: Size,
+        origin: PixelPoint,
+        layer_updates: Mapping[TileCoord, RGBAArray | None],
+        selection_updates: Mapping[TileCoord, MaskArray | None],
+    ) -> bool:
+        """Atomically apply transformed geometry, pixels and selection patches."""
+        if size.width > MAX_DOCUMENT_DIMENSION or size.height > MAX_DOCUMENT_DIMENSION:
+            raise ValueError("transformed layer dimensions exceed the project limit")
+        if abs(origin.x) > MAX_DOCUMENT_DIMENSION * 4 or abs(origin.y) > MAX_DOCUMENT_DIMENSION * 4:
+            raise ValueError("transformed layer origin exceeds the project limit")
+        layer = self.layer_by_id(layer_id)
+        old_size = layer.size
+        old_origin = layer.origin
+        geometry_changed = old_size != size or old_origin != origin
+
+        pixel_changes: dict[TileCoord, RGBAArray | None] = {}
+        max_tx = (size.width - 1) // DEFAULT_TILE_SIZE
+        max_ty = (size.height - 1) // DEFAULT_TILE_SIZE
+        for coord, pixels in layer_updates.items():
+            if coord.x > max_tx or coord.y > max_ty:
+                if pixels is not None:
+                    raise ValueError("transformed pixel Tile lies outside the layer")
+            elif pixels is not None:
+                validate_rgba_array(
+                    pixels,
+                    expected_width=DEFAULT_TILE_SIZE,
+                    expected_height=DEFAULT_TILE_SIZE,
+                )
+            before = (
+                layer.pixels.read_tile(coord.x, coord.y)
+                if layer.pixels.has_tile(coord.x, coord.y)
+                else None
+            )
+            if before is None and pixels is None:
+                continue
+            if before is not None and pixels is not None and np.array_equal(before, pixels):
+                continue
+            pixel_changes[coord] = pixels
+
+        selection_changes = self.prepare_selection_updates(selection_updates)
+        if not geometry_changed and not pixel_changes and not selection_changes:
+            return False
+
+        old_document_tiles = self._document_tiles_for_layer_bounds(old_origin, old_size)
+        layer.size = size
+        layer.origin = origin
+        for coord, pixels in pixel_changes.items():
+            layer.pixels.replace_tile(coord.x, coord.y, pixels)
+        if pixel_changes or geometry_changed:
+            layer.record_pixel_change()
+        for coord, pixels in selection_changes.items():
+            self.selection.mask.replace_tile(coord.x, coord.y, pixels)
+
+        revision = self._begin_content_change()
+        if geometry_changed:
+            properties = {
+                name
+                for name, before, after in (
+                    ("size", old_size, size),
+                    ("origin", old_origin, origin),
+                )
+                if before != after
+            }
+            self._emit(
+                LayerPropertiesChanged(
+                    document_id=self.id,
+                    revision=revision,
+                    layer_id=layer_id,
+                    properties=frozenset(properties),
+                )
+            )
+        if pixel_changes or geometry_changed:
+            new_document_tiles = self._document_tiles_for_layer_bounds(origin, size)
+            self._emit(
+                LayerPixelsChanged(
+                    document_id=self.id,
+                    revision=revision,
+                    layer_id=layer_id,
+                    layer_revision=layer.revision,
+                    layer_tiles=frozenset(pixel_changes),
+                    document_tiles=old_document_tiles | new_document_tiles,
+                )
+            )
+        if selection_changes:
+            self._emit(
+                SelectionChanged(
+                    document_id=self.id,
+                    revision=revision,
+                    selection_revision=self.selection.revision,
+                    tiles=frozenset(selection_changes),
+                    active=self.selection.is_active,
+                )
+            )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
     def _begin_content_change(self) -> int:
         self._revision += 1
         if not self._modified:
@@ -477,6 +577,23 @@ class Document:
                 for tx in range(first_tx, last_tx + 1):
                     result.add(TileCoord(tx, ty))
         return frozenset(result)
+
+    def _document_tiles_for_layer_bounds(
+        self,
+        origin: PixelPoint,
+        size: Size,
+    ) -> frozenset[TileCoord]:
+        left = max(0, origin.x)
+        top = max(0, origin.y)
+        right = min(self.width, origin.x + size.width)
+        bottom = min(self.height, origin.y + size.height)
+        if right <= left or bottom <= top:
+            return frozenset()
+        return frozenset(
+            TileCoord(tx, ty)
+            for ty in range(top // DEFAULT_TILE_SIZE, (bottom - 1) // DEFAULT_TILE_SIZE + 1)
+            for tx in range(left // DEFAULT_TILE_SIZE, (right - 1) // DEFAULT_TILE_SIZE + 1)
+        )
 
     def _emit_layer_list_changed(self, revision: int) -> None:
         self._emit(

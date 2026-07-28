@@ -17,10 +17,15 @@ from easypicture.imaging import (
     MAX_BRUSH_SIZE,
     BrushSettings,
     SelectionCombineMode,
+    TransformInterpolation,
 )
 from easypicture.tools import BucketSettings, MagicWandSettings
 from easypicture.ui.blender_combo_box import BlenderComboBox
-from easypicture.ui.drag_value_spinbox import DragValueSpinBox
+from easypicture.ui.drag_value_spinbox import (
+    DragValueDoubleSpinBox,
+    DragValueSpinBox,
+    NumericEditState,
+)
 from easypicture.ui.settings import AppSettings
 
 
@@ -279,6 +284,146 @@ class MagicWandOptionsWidget(QWidget):
         self.settings_changed.emit(self.settings())
 
 
+class TransformOptionsWidget(QWidget):
+    options_changed = Signal()
+    parameters_changed = Signal(object)
+    parameter_edit_started = Signal(str)
+    parameter_edit_finished = Signal()
+    parameter_edit_canceled = Signal()
+    commit_requested = Signal()
+    cancel_requested = Signal()
+
+    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._syncing = False
+        self.interpolation_combo = BlenderComboBox(self)
+        for label, interpolation in (
+            ("最近邻", TransformInterpolation.NEAREST),
+            ("双线性", TransformInterpolation.LINEAR),
+            ("双三次", TransformInterpolation.CUBIC),
+            ("Lanczos", TransformInterpolation.LANCZOS),
+        ):
+            self.interpolation_combo.addItem(label, interpolation.value)
+        self.interpolation_combo.setCurrentIndex(
+            max(
+                0,
+                self.interpolation_combo.findData(
+                    settings.transform_interpolation().value
+                ),
+            )
+        )
+        self.irregular_check = QCheckBox("不规则编辑", self)
+        self.irregular_check.setChecked(settings.transform_irregular_edit())
+        self._pivot = (0.0, 0.0)
+        self.width_spin = self._double(1.0, 8192.0, 1.0, " px")
+        self.height_spin = self._double(1.0, 8192.0, 1.0, " px")
+        self.rotation_spin = self._double(
+            -180.0,
+            180.0,
+            0.0,
+            "°",
+            -36000.0,
+            36000.0,
+        )
+        self.apply_button = QPushButton("应用", self)
+        self.cancel_button = QPushButton("取消", self)
+        self._last_parameters = self.parameters()
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        for label, widget in (
+            ("插值", self.interpolation_combo),
+            ("W", self.width_spin),
+            ("H", self.height_spin),
+            ("旋转", self.rotation_spin),
+        ):
+            layout.addWidget(QLabel(label, self))
+            layout.addWidget(widget)
+        layout.addWidget(self.irregular_check)
+        layout.addWidget(self.apply_button)
+        layout.addWidget(self.cancel_button)
+        layout.addStretch(1)
+        self.interpolation_combo.currentIndexChanged.connect(self.options_changed)
+        self.irregular_check.toggled.connect(self.options_changed)
+        for field, label in zip(
+            self.parameter_fields,
+            ("宽度", "高度", "旋转"),
+            strict=True,
+        ):
+            field.valueChanged.connect(self._emit_parameters)
+            field.interactionStarted.connect(
+                lambda label=label: self.parameter_edit_started.emit(label)
+            )
+            field.editingFinished.connect(self.parameter_edit_finished)
+            field.interactionCanceled.connect(self.parameter_edit_canceled)
+        self.apply_button.clicked.connect(self.commit_requested)
+        self.cancel_button.clicked.connect(self.cancel_requested)
+
+    @property
+    def parameter_fields(self) -> tuple[DragValueDoubleSpinBox, ...]:
+        return (
+            self.width_spin,
+            self.height_spin,
+            self.rotation_spin,
+        )
+
+    def interpolation(self) -> TransformInterpolation:
+        return TransformInterpolation(str(self.interpolation_combo.currentData()))
+
+    def irregular_edit(self) -> bool:
+        return self.irregular_check.isChecked()
+
+    def parameters(self) -> tuple[float, float, float, float, float]:
+        return (
+            self._pivot[0],
+            self._pivot[1],
+            self.width_spin.value(),
+            self.height_spin.value(),
+            self.rotation_spin.value(),
+        )
+
+    def set_parameters(
+        self,
+        values: tuple[float, float, float, float, float],
+    ) -> None:
+        self._syncing = True
+        try:
+            self._pivot = (values[0], values[1])
+            for field, value in zip(self.parameter_fields, values[2:], strict=True):
+                if field.interaction_state is NumericEditState.IDLE:
+                    field.setValue(value)
+            self._last_parameters = values
+        finally:
+            self._syncing = False
+
+    def _emit_parameters(self, _value: float) -> None:
+        if self._syncing:
+            return
+        values = list(self.parameters())
+        resolved = tuple(values)
+        self._last_parameters = resolved  # type: ignore[assignment]
+        self.parameters_changed.emit(resolved)
+
+    def _double(
+        self,
+        soft_minimum: float,
+        soft_maximum: float,
+        value: float,
+        suffix: str,
+        hard_minimum: float | None = None,
+        hard_maximum: float | None = None,
+    ) -> DragValueDoubleSpinBox:
+        return DragValueDoubleSpinBox(
+            soft_minimum,
+            soft_maximum,
+            value,
+            manual_minimum=hard_minimum,
+            manual_maximum=hard_maximum,
+            suffix=suffix,
+            parent=self,
+        )
+
+
 class ToolOptionsPanel(QStackedWidget):
     brush_settings_changed = Signal(object)
     bucket_settings_changed = Signal(object)
@@ -286,6 +431,13 @@ class ToolOptionsPanel(QStackedWidget):
     selection_mode_changed = Signal(object)
     magic_wand_settings_changed = Signal(object)
     deselect_requested = Signal()
+    transform_options_changed = Signal()
+    transform_parameters_changed = Signal(object)
+    transform_parameter_edit_started = Signal(str)
+    transform_parameter_edit_finished = Signal()
+    transform_parameter_edit_canceled = Signal()
+    transform_commit_requested = Signal()
+    transform_cancel_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -297,16 +449,31 @@ class ToolOptionsPanel(QStackedWidget):
             self,
         )
         self.magic_wand = MagicWandOptionsWidget(settings.magic_wand_settings(), self)
+        self.transform = TransformOptionsWidget(settings, self)
         self.addWidget(self.brush)
         self.addWidget(self.eyedropper)
         self.addWidget(self.bucket)
         self.addWidget(self.rectangle_selection)
         self.addWidget(self.magic_wand)
+        self.addWidget(self.transform)
         self.brush.settings_changed.connect(self.brush_settings_changed)
         self.bucket.settings_changed.connect(self.bucket_settings_changed)
         self.eyedropper.settings_changed.connect(self.eyedropper_settings_changed)
         self.rectangle_selection.settings_changed.connect(self._selection_mode_from_rectangle)
         self.magic_wand.settings_changed.connect(self._magic_wand_settings_changed)
+        self.transform.options_changed.connect(self.transform_options_changed)
+        self.transform.parameters_changed.connect(self.transform_parameters_changed)
+        self.transform.parameter_edit_started.connect(
+            self.transform_parameter_edit_started
+        )
+        self.transform.parameter_edit_finished.connect(
+            self.transform_parameter_edit_finished
+        )
+        self.transform.parameter_edit_canceled.connect(
+            self.transform_parameter_edit_canceled
+        )
+        self.transform.commit_requested.connect(self.transform_commit_requested)
+        self.transform.cancel_requested.connect(self.transform_cancel_requested)
         self.rectangle_selection.deselect_requested.connect(self.deselect_requested)
         self.magic_wand.deselect_requested.connect(self.deselect_requested)
         self.set_selection_active(False)
@@ -322,6 +489,8 @@ class ToolOptionsPanel(QStackedWidget):
             self.setCurrentWidget(self.rectangle_selection)
         elif tool_name == "magic_wand":
             self.setCurrentWidget(self.magic_wand)
+        elif tool_name == "transform":
+            self.setCurrentWidget(self.transform)
 
     def set_selection_active(self, active: bool) -> None:
         self.rectangle_selection.deselect_button.setEnabled(active)
@@ -345,5 +514,6 @@ __all__ = [
     "EyedropperOptionsWidget",
     "MagicWandOptionsWidget",
     "RectangleSelectionOptionsWidget",
+    "TransformOptionsWidget",
     "ToolOptionsPanel",
 ]

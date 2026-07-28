@@ -23,12 +23,19 @@ from PySide6.QtGui import (
     QResizeEvent,
     QValidator,
 )
-from PySide6.QtWidgets import QApplication, QLineEdit, QSizePolicy, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QHBoxLayout,
+    QLineEdit,
+    QSizePolicy,
+    QWidget,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 DEFAULT_RANGE_FRACTION_PER_PIXEL = 0.01
+DEFAULT_FINE_RANGE_FRACTION_PER_PIXEL = 0.001
 FINE_DRAG_MULTIPLIER = 0.1
 DRAG_THRESHOLD = 3
 _EXPRESSION_CHARACTERS = re.compile(r"^[0-9eE+\-*/().\s]*$")
@@ -36,6 +43,37 @@ _EXPRESSION_CHARACTERS = re.compile(r"^[0-9eE+\-*/().\s]*$")
 _BACKGROUND_COLOR = QColor("#1f1f1f")
 _FILL_COLOR = QColor("#365f91")
 _BORDER_COLOR = QColor("#151515")
+
+
+@dataclass(frozen=True, slots=True)
+class NumericDragSensitivity:
+    """Application-wide numeric drag fractions of the property's soft range."""
+
+    normal: float = DEFAULT_RANGE_FRACTION_PER_PIXEL
+    fine: float = DEFAULT_FINE_RANGE_FRACTION_PER_PIXEL
+
+    def __post_init__(self) -> None:
+        if (
+            not math.isfinite(self.normal)
+            or not math.isfinite(self.fine)
+            or self.normal <= 0.0
+            or self.fine <= 0.0
+        ):
+            raise ValueError("numeric drag sensitivities must be finite and positive")
+
+
+_numeric_drag_sensitivity = NumericDragSensitivity()
+
+
+def configure_numeric_drag_sensitivity(normal: float, fine: float) -> None:
+    """Apply application-wide drag sensitivity to default-configured fields."""
+
+    global _numeric_drag_sensitivity
+    _numeric_drag_sensitivity = NumericDragSensitivity(float(normal), float(fine))
+
+
+def numeric_drag_sensitivity() -> NumericDragSensitivity:
+    return _numeric_drag_sensitivity
 
 
 class NumericEditState(Enum):
@@ -60,7 +98,8 @@ class NumericPropertySpec:
     hard_maximum: int
     step: int = 1
     suffix: str = ""
-    range_fraction_per_pixel: float = DEFAULT_RANGE_FRACTION_PER_PIXEL
+    range_fraction_per_pixel: float | None = None
+    fine_range_fraction_per_pixel: float | None = None
 
     def __post_init__(self) -> None:
         if self.soft_minimum > self.soft_maximum:
@@ -71,8 +110,16 @@ class NumericPropertySpec:
             raise ValueError("hard maximum must not be less than soft maximum")
         if self.step <= 0:
             raise ValueError("step must be positive")
-        if self.range_fraction_per_pixel <= 0.0:
+        if (
+            self.range_fraction_per_pixel is not None
+            and self.range_fraction_per_pixel <= 0.0
+        ):
             raise ValueError("range fraction per pixel must be positive")
+        if (
+            self.fine_range_fraction_per_pixel is not None
+            and self.fine_range_fraction_per_pixel <= 0.0
+        ):
+            raise ValueError("fine range fraction per pixel must be positive")
 
 
 @dataclass(slots=True)
@@ -105,6 +152,8 @@ class DragValueSpinBox(QWidget):
 
     valueChanged = Signal(int)
     editingFinished = Signal()
+    interactionStarted = Signal()
+    interactionCanceled = Signal()
 
     def __init__(
         self,
@@ -115,10 +164,15 @@ class DragValueSpinBox(QWidget):
         manual_minimum: int | None = None,
         manual_maximum: int | None = None,
         suffix: str = "",
-        range_fraction_per_pixel: float = DEFAULT_RANGE_FRACTION_PER_PIXEL,
+        range_fraction_per_pixel: float | None = None,
+        fine_range_fraction_per_pixel: float | None = None,
+        display_divisor: int = 1,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        if display_divisor <= 0:
+            raise ValueError("display divisor must be positive")
+        self._display_divisor = display_divisor
         hard_minimum = drag_minimum if manual_minimum is None else manual_minimum
         hard_maximum = drag_maximum if manual_maximum is None else manual_maximum
         self._spec = NumericPropertySpec(
@@ -128,6 +182,7 @@ class DragValueSpinBox(QWidget):
             hard_maximum=hard_maximum,
             suffix=suffix,
             range_fraction_per_pixel=range_fraction_per_pixel,
+            fine_range_fraction_per_pixel=fine_range_fraction_per_pixel,
         )
         self._value = self._clamp_hard(value)
         self._state = NumericEditState.IDLE
@@ -187,7 +242,20 @@ class DragValueSpinBox(QWidget):
 
     @property
     def range_fraction_per_pixel(self) -> float:
-        return self._spec.range_fraction_per_pixel
+        configured = numeric_drag_sensitivity()
+        return (
+            configured.normal
+            if self._spec.range_fraction_per_pixel is None
+            else self._spec.range_fraction_per_pixel
+        )
+
+    @property
+    def fine_range_fraction_per_pixel(self) -> float:
+        if self._spec.fine_range_fraction_per_pixel is not None:
+            return self._spec.fine_range_fraction_per_pixel
+        if self._spec.range_fraction_per_pixel is not None:
+            return self._spec.range_fraction_per_pixel * FINE_DRAG_MULTIPLIER
+        return numeric_drag_sensitivity().fine
 
     def value(self) -> int:
         return self._value
@@ -237,8 +305,12 @@ class DragValueSpinBox(QWidget):
         """Return the value delta for a horizontal drag distance."""
 
         extent = self.drag_maximum - self.drag_minimum
-        precision = FINE_DRAG_MULTIPLIER if fine else 1.0
-        return pixels * extent * self.range_fraction_per_pixel * precision
+        fraction = (
+            self.fine_range_fraction_per_pixel
+            if fine
+            else self.range_fraction_per_pixel
+        )
+        return pixels * extent * fraction
 
     def validate(
         self,
@@ -310,6 +382,7 @@ class DragValueSpinBox(QWidget):
                 press_position=position,
                 drag_anchor_value=float(self._value),
             )
+            self.interactionStarted.emit()
             self._set_state(NumericEditState.WAIT_DRAG)
             self.grabMouse()
             event.accept()
@@ -389,6 +462,7 @@ class DragValueSpinBox(QWidget):
                 press_position=QCursor.pos(),
                 drag_anchor_value=float(self._value),
             )
+            self.interactionStarted.emit()
             self._set_state(NumericEditState.TEXT_EDITING)
             self._editor.setFocus(Qt.FocusReason.ShortcutFocusReason)
             self._editor.selectAll()
@@ -608,7 +682,12 @@ class DragValueSpinBox(QWidget):
         )
 
     def _format_value(self, value: int) -> str:
-        return f"{value}{self.suffix()}"
+        if self._display_divisor == 1:
+            formatted = str(value)
+        else:
+            decimals = max(0, round(math.log10(self._display_divisor)))
+            formatted = f"{value / self._display_divisor:.{decimals}f}"
+        return f"{formatted}{self.suffix()}"
 
     def _restore_display_text(self) -> None:
         self._editor.setText(self._format_value(self._value))
@@ -635,6 +714,8 @@ class DragValueSpinBox(QWidget):
         self.clearFocus()
         if valid:
             self.editingFinished.emit()
+        else:
+            self.interactionCanceled.emit()
 
     def _finish_drag(self, *, commit: bool) -> None:
         if self._state is not NumericEditState.DRAGGING:
@@ -653,6 +734,7 @@ class DragValueSpinBox(QWidget):
 
     def _abort_interaction(self, *, restore_value: bool) -> None:
         session = self._session
+        had_interaction = session is not None
         if restore_value and session is not None:
             self._set_value_internal(session.start_value)
         self._release_mouse()
@@ -662,6 +744,8 @@ class DragValueSpinBox(QWidget):
         self._restore_display_text()
         self._set_state(NumericEditState.IDLE)
         self.clearFocus()
+        if had_interaction:
+            self.interactionCanceled.emit()
 
     def _begin_right_cancel(self) -> None:
         left_pending = self._state in (
@@ -678,6 +762,7 @@ class DragValueSpinBox(QWidget):
         self._cancel_cleanup = _CancelCleanup(left_release_pending=left_pending)
         self._set_state(NumericEditState.WAIT_RIGHT_RELEASE)
         self.clearFocus()
+        self.interactionCanceled.emit()
 
     def _finish_cancel_cleanup_if_ready(self) -> None:
         cleanup = self._cancel_cleanup
@@ -742,7 +827,7 @@ class DragValueSpinBox(QWidget):
             result = self._evaluate_expression_tree(tree)
         except (ArithmeticError, SyntaxError, ValueError):
             return None
-        return self._clamp_hard(round(result))
+        return self._clamp_hard(round(result * self._display_divisor))
 
     @classmethod
     def _evaluate_expression_tree(cls, tree: ast.Expression) -> float:
@@ -783,11 +868,116 @@ class DragValueSpinBox(QWidget):
         return evaluate(tree.body)
 
 
+class DragValueDoubleSpinBox(QWidget):
+    """Floating-point facade over the proven integer interaction state machine."""
+
+    valueChanged = Signal(float)
+    editingFinished = Signal()
+    interactionStarted = Signal()
+    interactionCanceled = Signal()
+
+    def __init__(
+        self,
+        drag_minimum: float,
+        drag_maximum: float,
+        value: float,
+        *,
+        manual_minimum: float | None = None,
+        manual_maximum: float | None = None,
+        suffix: str = "",
+        decimals: int = 2,
+        range_fraction_per_pixel: float | None = None,
+        fine_range_fraction_per_pixel: float | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        if not 0 <= decimals <= 6:
+            raise ValueError("decimals must be between 0 and 6")
+        self._factor: int = 10**decimals
+        self._field: DragValueSpinBox = DragValueSpinBox(
+            round(drag_minimum * self._factor),
+            round(drag_maximum * self._factor),
+            round(value * self._factor),
+            manual_minimum=(
+                None if manual_minimum is None else round(manual_minimum * self._factor)
+            ),
+            manual_maximum=(
+                None if manual_maximum is None else round(manual_maximum * self._factor)
+            ),
+            suffix=suffix,
+            range_fraction_per_pixel=range_fraction_per_pixel,
+            fine_range_fraction_per_pixel=fine_range_fraction_per_pixel,
+            display_divisor=self._factor,
+            parent=self,
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(self._field)
+        self.setFocusProxy(self._field)
+        self.setSizePolicy(self._field.sizePolicy())
+        self._field.valueChanged.connect(
+            lambda scaled: self.valueChanged.emit(scaled / self._factor)
+        )
+        self._field.editingFinished.connect(self.editingFinished)
+        self._field.interactionStarted.connect(self.interactionStarted)
+        self._field.interactionCanceled.connect(self.interactionCanceled)
+
+    @property
+    def interaction_state(self) -> NumericEditState:
+        return self._field.interaction_state
+
+    def value(self) -> float:
+        return float(self._field.value()) / self._factor
+
+    def setValue(self, value: float) -> None:
+        self._field.setValue(round(value * self._factor))
+
+    def minimum(self) -> float:
+        return float(self._field.minimum()) / self._factor
+
+    def maximum(self) -> float:
+        return float(self._field.maximum()) / self._factor
+
+    def setRange(self, minimum: float, maximum: float) -> None:
+        self._field.setRange(
+            round(minimum * self._factor),
+            round(maximum * self._factor),
+        )
+
+    def suffix(self) -> str:
+        return self._field.suffix()
+
+    def setSuffix(self, suffix: str) -> None:
+        self._field.setSuffix(suffix)
+
+    def lineEdit(self) -> QLineEdit:
+        return self._field.lineEdit()
+
+    def drag_delta_for_pixels(self, pixels: int, *, fine: bool = False) -> float:
+        return float(self._field.drag_delta_for_pixels(pixels, fine=fine)) / self._factor
+
+    def validate(
+        self,
+        text: str,
+        position: int,
+    ) -> tuple[QValidator.State, str, int]:
+        return self._field.validate(text, position)
+
+    def valueFromText(self, text: str) -> float:
+        return float(self._field.valueFromText(text)) / self._factor
+
+
 __all__ = [
+    "DEFAULT_FINE_RANGE_FRACTION_PER_PIXEL",
     "DEFAULT_RANGE_FRACTION_PER_PIXEL",
     "DRAG_THRESHOLD",
+    "DragValueDoubleSpinBox",
     "DragValueSpinBox",
     "FINE_DRAG_MULTIPLIER",
+    "NumericDragSensitivity",
     "NumericEditState",
     "NumericPropertySpec",
+    "configure_numeric_drag_sensitivity",
+    "numeric_drag_sensitivity",
 ]

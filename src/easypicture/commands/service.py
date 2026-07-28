@@ -6,11 +6,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
+import numpy as np
 from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from easypicture.commands.patch_store import PatchHandle, UndoPatchStore
-from easypicture.domain import Document, RasterLayer
+from easypicture.domain import Document, PixelPoint, RasterLayer, Size
 from easypicture.domain.document import MAX_DOCUMENT_LAYERS
+from easypicture.imaging.transform import RasterTransformResult
 from easypicture.pixels import MaskArray, RGBAArray, TileCoord
 
 DEFAULT_UNDO_BUDGET_BYTES = 1024 * 1024 * 1024
@@ -195,6 +197,66 @@ class _SelectionPatchCommand(_DocumentCommand):
         if self._released:
             return
         for patch in self.patches:
+            self.patch_store.release(patch.before)
+            self.patch_store.release(patch.after)
+        super().release_payload()
+
+
+class _RasterTransformCommand(_DocumentCommand):
+    def __init__(
+        self,
+        document: Document,
+        layer_id: UUID,
+        before_size: Size,
+        after_size: Size,
+        before_origin: PixelPoint,
+        after_origin: PixelPoint,
+        layer_patches: tuple[_TilePatch, ...],
+        selection_patches: tuple[_TilePatch, ...],
+        patch_store: UndoPatchStore,
+        text: str,
+    ) -> None:
+        storage_bytes = sum(
+            patch.before.stored_bytes + patch.after.stored_bytes
+            for patch in layer_patches + selection_patches
+        )
+        super().__init__(document, text, storage_bytes=storage_bytes)
+        self.layer_id = layer_id
+        self.before_size = before_size
+        self.after_size = after_size
+        self.before_origin = before_origin
+        self.after_origin = after_origin
+        self.layer_patches = layer_patches
+        self.selection_patches = selection_patches
+        self.patch_store = patch_store
+
+    def _apply(self, *, use_after: bool) -> None:
+        layer_updates = {
+            patch.coord: self.patch_store.restore(patch.after if use_after else patch.before)
+            for patch in self.layer_patches
+        }
+        selection_updates = {
+            patch.coord: self.patch_store.restore(patch.after if use_after else patch.before)
+            for patch in self.selection_patches
+        }
+        self.document.apply_raster_transform(
+            self.layer_id,
+            size=self.after_size if use_after else self.before_size,
+            origin=self.after_origin if use_after else self.before_origin,
+            layer_updates=layer_updates,
+            selection_updates=selection_updates,
+        )
+
+    def redo(self) -> None:
+        self._apply(use_after=True)
+
+    def undo(self) -> None:
+        self._apply(use_after=False)
+
+    def release_payload(self) -> None:
+        if self._released:
+            return
+        for patch in self.layer_patches + self.selection_patches:
             self.patch_store.release(patch.before)
             self.patch_store.release(patch.after)
         super().release_payload()
@@ -434,6 +496,117 @@ class DocumentCommandService:
                 tuple(patches),
                 self.patch_store,
                 label.strip() or "选区变更",
+            )
+        )
+
+    def apply_raster_transform(
+        self,
+        result: RasterTransformResult,
+        label: str = "自由变换",
+    ) -> bool:
+        document = self._require_document()
+        if (
+            result.document_id != document.id
+            or result.source_revision != document.revision
+        ):
+            return False
+        try:
+            layer = document.layer_by_id(result.layer_id)
+        except ValueError:
+            return False
+        if layer.locked or layer.alpha_locked:
+            return False
+        if (
+            result.layer_size.width > 8192
+            or result.layer_size.height > 8192
+            or abs(result.layer_origin.x) > 8192 * 4
+            or abs(result.layer_origin.y) > 8192 * 4
+        ):
+            return False
+
+        layer_patches: list[_TilePatch] = []
+        selection_patches: list[_TilePatch] = []
+        try:
+            before_layer_coords = {
+                coord for coord, _pixels in layer.pixels.iter_allocated_tiles()
+            }
+            for coord in sorted(
+                before_layer_coords | set(result.layer_tiles),
+                key=lambda item: (item.y, item.x),
+            ):
+                before = (
+                    layer.pixels.read_tile(coord.x, coord.y)
+                    if coord in before_layer_coords
+                    else None
+                )
+                after = result.layer_tiles.get(coord)
+                if before is None and after is None:
+                    continue
+                if before is not None and after is not None and np.array_equal(before, after):
+                    continue
+                layer_patches.append(
+                    _TilePatch(
+                        coord,
+                        self.patch_store.capture(before),
+                        self.patch_store.capture(after),
+                    )
+                )
+
+            if document.selection.is_active or result.selection_tiles:
+                before_selection_coords = {
+                    coord
+                    for coord, _pixels in document.selection.mask.iter_allocated_tiles()
+                }
+                for coord in sorted(
+                    before_selection_coords | set(result.selection_tiles),
+                    key=lambda item: (item.y, item.x),
+                ):
+                    before_mask = (
+                        document.selection.mask.read_tile(coord.x, coord.y)
+                        if coord in before_selection_coords
+                        else None
+                    )
+                    after_mask = result.selection_tiles.get(coord)
+                    if before_mask is None and after_mask is None:
+                        continue
+                    if (
+                        before_mask is not None
+                        and after_mask is not None
+                        and np.array_equal(before_mask, after_mask)
+                    ):
+                        continue
+                    selection_patches.append(
+                        _TilePatch(
+                            coord,
+                            self.patch_store.capture_mask(before_mask),
+                            self.patch_store.capture_mask(after_mask),
+                        )
+                    )
+        except (TypeError, ValueError):
+            for patch in layer_patches + selection_patches:
+                self.patch_store.release(patch.before)
+                self.patch_store.release(patch.after)
+            return False
+
+        if (
+            not layer_patches
+            and not selection_patches
+            and layer.size == result.layer_size
+            and layer.origin == result.layer_origin
+        ):
+            return False
+        return self._push(
+            _RasterTransformCommand(
+                document,
+                result.layer_id,
+                layer.size,
+                result.layer_size,
+                layer.origin,
+                result.layer_origin,
+                tuple(layer_patches),
+                tuple(selection_patches),
+                self.patch_store,
+                label.strip() or "自由变换",
             )
         )
 

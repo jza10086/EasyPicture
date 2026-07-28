@@ -1,6 +1,6 @@
 # ADR-0008：QPainter Tile 合成与渐进渲染
 
-- 状态：Accepted
+- 状态：Superseded by ADR-0018
 - 日期：2026-07-23
 
 ## 决策
@@ -33,3 +33,6 @@ Tile，即使单 Tile 足够快也会造成明显冻结，因此必须渐进调�
 - P3 导出不能从显示缓存读取权威像素；
 - 当前调度器只在主线程分时执行，不属于后台 JobRunner；
 - 缓存规则或 QPainter 合成边界变化必须重新运行 P2 golden 和密集层基准。
+
+P6R 已移除最终合成 Tile、stale frame 和渐进合成队列。本文仅保留为 P2～P6A
+历史实现记录；当前显示链规则以 ADR-0018 为准。

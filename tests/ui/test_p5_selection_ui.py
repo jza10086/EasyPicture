@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from PySide6.QtCore import QObject, QPointF, Qt
 from PySide6.QtGui import QColor
 
@@ -7,6 +8,7 @@ from easypicture.controller import ApplicationController
 from easypicture.domain import Document
 from easypicture.imaging import SelectionCombineMode, select_all_candidate
 from easypicture.pixels import TileCoord
+from easypicture.render import RenderBackendKind
 from easypicture.tools import MagicWandSettings, mode_from_modifiers
 from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.dialogs import (
@@ -116,13 +118,22 @@ def test_selection_outline_style_updates_without_modifying_document(qtbot, tmp_p
 
 
 def test_selection_preferences_use_drag_value_input(qtbot) -> None:
-    dialog = PreferencesDialog(QColor("#f28c28"), 3)
+    dialog = PreferencesDialog(
+        QColor("#f28c28"),
+        3,
+        RenderBackendKind.SOFTWARE,
+        numeric_drag_sensitivity=0.02,
+        numeric_fine_drag_sensitivity=0.0005,
+    )
     qtbot.addWidget(dialog)
 
     assert isinstance(dialog.selection_width_spin, DragValueSpinBox)
     assert dialog.selection_width_spin.drag_minimum == 1
     assert dialog.selection_width_spin.drag_maximum == 8
     assert dialog.selection_width == 3
+    assert dialog.render_backend is RenderBackendKind.SOFTWARE
+    assert dialog.numeric_drag_sensitivity == pytest.approx(0.02)
+    assert dialog.numeric_fine_drag_sensitivity == pytest.approx(0.0005)
 
 
 def test_document_dimensions_and_selection_radius_use_drag_inputs(qtbot) -> None:

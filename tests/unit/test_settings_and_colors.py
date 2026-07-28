@@ -4,6 +4,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QMainWindow
 
 from easypicture.domain import Document, Size
+from easypicture.render import RenderBackendKind
 from easypicture.ui.color_panel import ColorPanel
 from tests.fakes import FakeDialogService, make_settings
 
@@ -15,6 +16,8 @@ def test_settings_round_trip_size_and_colors(tmp_path) -> None:
     first.set_foreground_color(QColor("#123456"))
     first.set_background_color(QColor("#abcdef"))
     first.set_selection_outline_style(QColor("#35a7ff"), 4)
+    first.set_render_backend(RenderBackendKind.SOFTWARE)
+    first.set_numeric_drag_sensitivity(0.02, 0.0005)
     first.sync()
 
     second = make_settings(path)
@@ -24,6 +27,9 @@ def test_settings_round_trip_size_and_colors(tmp_path) -> None:
     assert second.background_color().name() == "#abcdef"
     assert second.selection_outline_color().name() == "#35a7ff"
     assert second.selection_outline_width() == 4
+    assert second.render_backend() is RenderBackendKind.SOFTWARE
+    assert second.numeric_drag_sensitivity() == 0.02
+    assert second.numeric_fine_drag_sensitivity() == 0.0005
 
 
 def test_invalid_settings_fall_back_to_defaults(tmp_path) -> None:
@@ -33,11 +39,20 @@ def test_invalid_settings_fall_back_to_defaults(tmp_path) -> None:
     settings._settings.setValue("colors/foreground", "invalid")  # noqa: SLF001
     settings._settings.setValue("selection/outline_color", "invalid")  # noqa: SLF001
     settings._settings.setValue("selection/outline_width", 99)  # noqa: SLF001
+    settings._settings.setValue("render/backend", "unknown")  # noqa: SLF001
+    settings._settings.setValue("ui/numeric_drag_sensitivity", 99)  # noqa: SLF001
+    settings._settings.setValue(  # noqa: SLF001
+        "ui/numeric_fine_drag_sensitivity",
+        -1,
+    )
 
     assert settings.last_document_size() == Size(1920, 1080)
     assert settings.foreground_color().name() == "#000000"
     assert settings.selection_outline_color().name() == "#f28c28"
     assert settings.selection_outline_width() == 8
+    assert settings.render_backend() is RenderBackendKind.AUTO
+    assert settings.numeric_drag_sensitivity() == 0.1
+    assert settings.numeric_fine_drag_sensitivity() == 0.0001
 
 
 def test_color_panel_persists_without_modifying_document(qtbot, tmp_path) -> None:

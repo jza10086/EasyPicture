@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator
 import numpy as np
 from PySide6.QtCore import QObject, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
+from PySide6.QtWidgets import QGraphicsRectItem, QStyleOptionGraphicsItem, QWidget
 
 from easypicture.domain import Document, DocumentEvent, SelectionChanged
 from easypicture.pixels import Rect, TileCoord
@@ -18,7 +18,7 @@ from easypicture.ui.selection_style import (
 )
 
 
-class SelectionOverlayItem(QGraphicsItem):
+class SelectionOverlayItem(QGraphicsRectItem):
     """Draw selection contours without becoming part of document pixels."""
 
     def __init__(
@@ -28,19 +28,24 @@ class SelectionOverlayItem(QGraphicsItem):
         color: QColor | None = None,
         width: float = DEFAULT_SELECTION_OUTLINE_WIDTH,
     ) -> None:
-        super().__init__()
+        super().__init__(
+            0.0,
+            0.0,
+            float(document.width),
+            float(document.height),
+        )
         _ = timer_parent
         self.document = document
         self._color = QColor(color or DEFAULT_SELECTION_OUTLINE_COLOR)
         self._color.setAlpha(255)
         self._width = min(float(MAX_SELECTION_OUTLINE_WIDTH), max(1.0, width))
         self.setZValue(9_000.0)
-        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption, True)
+        self.setFlag(
+            QGraphicsRectItem.GraphicsItemFlag.ItemUsesExtendedStyleOption,
+            True,
+        )
         self._paths: dict[TileCoord, QPainterPath] = {}
         self._unsubscribe: Callable[[], None] = document.subscribe(self._on_document_event)
-
-    def boundingRect(self) -> QRectF:
-        return QRectF(0.0, 0.0, float(self.document.width), float(self.document.height))
 
     def paint(
         self,

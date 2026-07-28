@@ -5,25 +5,33 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
+    QContextMenuEvent,
     QCursor,
+    QGuiApplication,
+    QImage,
     QKeyEvent,
     QMouseEvent,
     QPainter,
-    QPaintEvent,
     QPen,
     QResizeEvent,
     QTransform,
     QWheelEvent,
 )
+from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
-from easypicture.domain import Document, Point, RasterLayer
+from easypicture.domain import Document, Point, RasterLayer, TransformMatrix
+from easypicture.imaging import TransformInterpolation
 from easypicture.pixels import RGBAArray, TileCoord
-from easypicture.render import TileRenderer
-from easypicture.ui.canvas_item import CanvasItem
+from easypicture.render import (
+    CanvasRenderCoordinator,
+    OpenGLCanvasBackend,
+    RenderBackendKind,
+)
+from easypicture.ui.canvas_item import CanvasBoundsItem
 from easypicture.ui.selection_overlay import SelectionOverlayItem
 from easypicture.ui.selection_style import (
     DEFAULT_SELECTION_OUTLINE_COLOR,
@@ -43,8 +51,14 @@ class CanvasView(QGraphicsView):
 
     zoom_changed = Signal(float)
     cursor_document_position_changed = Signal(object)
+    render_backend_fallback = Signal(str)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        render_backend: RenderBackendKind = RenderBackendKind.SOFTWARE,
+    ) -> None:
         super().__init__(parent)
         self._graphics_scene = QGraphicsScene(self)
         self.setScene(self._graphics_scene)
@@ -53,11 +67,43 @@ class CanvasView(QGraphicsView):
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.NoAnchor)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self._requested_render_backend = render_backend
+        self._opengl_backend: OpenGLCanvasBackend | None = None
+        self._opengl_viewport: QOpenGLWidget | None = None
+        self._fallback_scheduled = False
+        platform_name = QGuiApplication.platformName().lower()
+        platform_supports_gl_widget = platform_name not in {"minimal", "offscreen"}
+        if (
+            render_backend is not RenderBackendKind.SOFTWARE
+            and platform_supports_gl_widget
+        ):
+            gl_viewport = QOpenGLWidget(self)
+            gl_viewport.setUpdateBehavior(QOpenGLWidget.UpdateBehavior.NoPartialUpdate)
+            self.setViewport(gl_viewport)
+            self._opengl_viewport = gl_viewport
+            self._opengl_backend = OpenGLCanvasBackend()
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
 
         self._document: Document | None = None
-        self._canvas_item: CanvasItem | None = None
+        self._canvas_item: CanvasBoundsItem | None = None
+        self._render_coordinator = CanvasRenderCoordinator(
+            requested_backend=render_backend,
+            parent=self,
+        )
+        self._render_coordinator.frame_requested.connect(self._request_viewport_frame)
+        if render_backend is RenderBackendKind.SOFTWARE:
+            self._render_coordinator.set_backend_diagnostics(
+                RenderBackendKind.SOFTWARE,
+                renderer="Qt QPainter full-frame compositor",
+            )
+        elif not platform_supports_gl_widget:
+            self._render_coordinator.set_backend_diagnostics(
+                RenderBackendKind.SOFTWARE,
+                renderer="Qt QPainter full-frame compositor",
+                fallback_reason=f"Qt {platform_name} platform does not support QOpenGLWidget",
+            )
         self._selection_overlay: SelectionOverlayItem | None = None
         self._selection_outline_color = QColor(DEFAULT_SELECTION_OUTLINE_COLOR)
         self._selection_outline_width = float(DEFAULT_SELECTION_OUTLINE_WIDTH)
@@ -71,6 +117,7 @@ class CanvasView(QGraphicsView):
         self._brush_cursor_visible = False
         self._brush_cursor_suspended = False
         self._tool_controller: ToolController | None = None
+        self._interaction_scene_bounds: QRectF | None = None
         self._fit_request_id = 0
         self.scene().setSceneRect(QRectF(-100.0, -100.0, 200.0, 200.0))
 
@@ -83,8 +130,13 @@ class CanvasView(QGraphicsView):
         return self._zoom
 
     @property
-    def renderer(self) -> TileRenderer | None:
-        return self._canvas_item.renderer if self._canvas_item is not None else None
+    def render_coordinator(self) -> CanvasRenderCoordinator:
+        return self._render_coordinator
+
+    @property
+    def renderer(self) -> CanvasRenderCoordinator | None:
+        """Compatibility alias for P6A callers while P6R lands."""
+        return self._render_coordinator if self._document is not None else None
 
     def set_tool_controller(self, controller: ToolController) -> None:
         self._tool_controller = controller
@@ -137,25 +189,57 @@ class CanvasView(QGraphicsView):
         layer_id: UUID,
         updates: dict[TileCoord, RGBAArray],
     ) -> None:
-        renderer = self.renderer
-        if renderer is not None:
-            renderer.set_preview_tiles(layer_id, updates)
+        if self._document is not None:
+            self._render_coordinator.set_pixel_preview(layer_id, updates)
 
     def clear_pixel_preview(self) -> None:
-        renderer = self.renderer
-        if renderer is not None:
-            renderer.clear_preview()
+        self._render_coordinator.clear_pixel_preview()
+
+    def set_transform_preview(
+        self,
+        layer_id: UUID,
+        matrix: TransformMatrix,
+        interpolation: TransformInterpolation,
+    ) -> None:
+        if self._document is not None:
+            self._render_coordinator.set_transform_preview(
+                layer_id,
+                matrix,
+                interpolation,
+            )
+
+    def clear_transform_preview(self) -> None:
+        self._render_coordinator.clear_transform_preview()
+
+    def request_render_capture(self) -> None:
+        if self._opengl_backend is not None:
+            self._opengl_backend.request_capture()
+        self.viewport().update()
+
+    def take_render_capture(self) -> QImage | None:
+        if self._opengl_backend is None:
+            return None
+        return self._opengl_backend.take_capture()
+
+    def set_selection_overlay_visible(self, visible: bool) -> None:
+        if self._selection_overlay is not None:
+            self._selection_overlay.setVisible(visible)
+
+    def set_interaction_scene_bounds(self, bounds: QRectF | None) -> None:
+        self._interaction_scene_bounds = None if bounds is None else QRectF(bounds)
+        self._update_pan_bounds()
 
     def set_document(self, document: Document | None) -> None:
+        self._interaction_scene_bounds = None
         if self._selection_overlay is not None:
             self._selection_overlay.dispose()
             self.scene().removeItem(self._selection_overlay)
             self._selection_overlay = None
         if self._canvas_item is not None:
-            self._canvas_item.dispose()
             self.scene().removeItem(self._canvas_item)
         self._document = document
         self._canvas_item = None
+        self._render_coordinator.set_document(document)
         if document is None:
             self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
             self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -164,8 +248,7 @@ class CanvasView(QGraphicsView):
             self.cursor_document_position_changed.emit(None)
             return
 
-        renderer = TileRenderer(document, parent=self)
-        self._canvas_item = CanvasItem(document.size, renderer)
+        self._canvas_item = CanvasBoundsItem(document.size)
         self.scene().addItem(self._canvas_item)
         self._selection_overlay = SelectionOverlayItem(
             document,
@@ -229,7 +312,7 @@ class CanvasView(QGraphicsView):
     def _refine_document_fit(
         self,
         request_id: int,
-        canvas_item: CanvasItem,
+        canvas_item: CanvasBoundsItem,
     ) -> None:
         if request_id != self._fit_request_id or canvas_item is not self._canvas_item:
             return
@@ -277,21 +360,8 @@ class CanvasView(QGraphicsView):
         self._update_pan_bounds()
 
     def scrollContentsBy(self, dx: int, dy: int) -> None:
-        old_rect = self._brush_cursor_rect()
-        if old_rect.isEmpty():
-            super().scrollContentsBy(dx, dy)
-            return
-
-        # QGraphicsView normally scrolls by blitting the existing viewport
-        # pixels. The brush outline is painted above the scene, so it must be
-        # removed before that blit or its pixels are copied to a stale position.
-        self._brush_cursor_suspended = True
-        self._invalidate_brush_cursor(old_rect, synchronous=True)
-        try:
-            super().scrollContentsBy(dx, dy)
-        finally:
-            self._brush_cursor_suspended = False
-        self._invalidate_brush_cursor(QRectF(), synchronous=True)
+        super().scrollContentsBy(dx, dy)
+        self.viewport().update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         pan_button = event.button() == Qt.MouseButton.MiddleButton
@@ -340,6 +410,30 @@ class CanvasView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if self._tool_controller is not None:
+            handler = getattr(
+                self._tool_controller.active_tool,
+                "mouse_double_click",
+                None,
+            )
+            if callable(handler) and handler(event):
+                event.accept()
+                return
+        super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self._tool_controller is not None:
+            handler = getattr(
+                self._tool_controller.active_tool,
+                "context_menu",
+                None,
+            )
+            if callable(handler) and handler(event):
+                event.accept()
+                return
+        super().contextMenuEvent(event)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
             self._space_pressed = True
@@ -373,12 +467,43 @@ class CanvasView(QGraphicsView):
         self._invalidate_brush_cursor(old_rect)
         super().leaveEvent(event)  # type: ignore[arg-type]
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        super().paintEvent(event)
+    def drawBackground(self, painter: QPainter, rect: QRectF | QRect) -> None:
+        """Draw one complete raster frame independently from scene item bounds."""
+        exposed = QRectF(rect)
+        backend = self._opengl_backend
+        if backend is None:
+            self._render_coordinator.paint_software(painter, exposed)
+            return
+        try:
+            initialized = backend.initialize(self._render_coordinator)
+            rendered = initialized and backend.paint_layers(
+                painter,
+                self._render_coordinator,
+                self.viewport().width(),
+                self.viewport().height(),
+                self.viewport().devicePixelRatioF(),
+            )
+        except Exception as error:
+            rendered = False
+            reason = f"{type(error).__name__}: {error}"
+        else:
+            reason = (
+                "OpenGL canvas rendering failed"
+                if initialized
+                else "OpenGL 3.3 context initialization failed"
+            )
+        if not rendered:
+            self._schedule_software_fallback(reason)
+            self._render_coordinator.paint_software(painter, exposed)
+            return
+
+    def drawForeground(self, painter: QPainter, rect: QRectF | QRect) -> None:
+        super().drawForeground(painter, rect)
         rect = self._brush_cursor_rect()
         if rect.isEmpty():
             return
-        painter = QPainter(self.viewport())
+        painter.save()
+        painter.resetTransform()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         outer = QPen(QColor(0, 0, 0, 220))
         outer.setWidth(3)
@@ -391,7 +516,7 @@ class CanvasView(QGraphicsView):
         inner.setCosmetic(True)
         painter.setPen(inner)
         painter.drawEllipse(rect)
-        painter.end()
+        painter.restore()
 
     def _emit_cursor_position(self, viewport_point: QPoint) -> None:
         if self._document is None:
@@ -434,6 +559,11 @@ class CanvasView(QGraphicsView):
             return
 
         canvas_rect = self._canvas_item.sceneBoundingRect()
+        scene_content_rect = (
+            canvas_rect
+            if self._interaction_scene_bounds is None
+            else canvas_rect.united(self._interaction_scene_bounds)
+        )
         available = self.maximumViewportSize()
         horizontal_fits = canvas_rect.width() * self._zoom <= available.width()
         vertical_fits = canvas_rect.height() * self._zoom <= available.height()
@@ -459,7 +589,7 @@ class CanvasView(QGraphicsView):
             viewport_size.height() / (2.0 * zoom),
         )
         self.scene().setSceneRect(
-            canvas_rect.adjusted(
+            scene_content_rect.adjusted(
                 -horizontal_margin,
                 -vertical_margin,
                 horizontal_margin,
@@ -476,22 +606,8 @@ class CanvasView(QGraphicsView):
         new_rect = self._brush_cursor_rect()
         if old_rect.isEmpty() and new_rect.isEmpty():
             return
-        dirty_rects = [rect for rect in (old_rect, new_rect) if not rect.isEmpty()]
-        if len(dirty_rects) == 2 and dirty_rects[0].intersects(dirty_rects[1]):
-            dirty_rects = [dirty_rects[0].united(dirty_rects[1])]
-        viewport_rect = QRectF(self.viewport().rect())
-        for dirty in dirty_rects:
-            target = (
-                dirty.adjusted(-4.0, -4.0, 4.0, 4.0)
-                .intersected(viewport_rect)
-                .toAlignedRect()
-            )
-            if target.isEmpty():
-                continue
-            if synchronous:
-                self.viewport().repaint(target)
-            else:
-                self.viewport().update(target)
+        del old_rect, synchronous
+        self.viewport().update()
 
     def _set_brush_cursor_suspended(self, suspended: bool) -> None:
         if suspended == self._brush_cursor_suspended:
@@ -511,6 +627,41 @@ class CanvasView(QGraphicsView):
             visible=visible,
             synchronous=False,
         )
+
+    def _request_viewport_frame(self) -> None:
+        self.viewport().update()
+
+    def _schedule_software_fallback(self, reason: str) -> None:
+        if self._fallback_scheduled:
+            return
+        self._fallback_scheduled = True
+        QTimer.singleShot(0, lambda: self._activate_software_fallback(reason))
+
+    def _activate_software_fallback(self, reason: str) -> None:
+        backend = self._opengl_backend
+        viewport = self._opengl_viewport
+        if backend is None:
+            return
+        if viewport is not None and viewport.isValid():
+            viewport.makeCurrent()
+            try:
+                backend.release()
+            finally:
+                viewport.doneCurrent()
+        self._opengl_backend = None
+        self._opengl_viewport = None
+        software_viewport = QWidget(self)
+        software_viewport.setMouseTracking(True)
+        self.setViewport(software_viewport)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self._render_coordinator.set_backend_diagnostics(
+            RenderBackendKind.SOFTWARE,
+            renderer="Qt QPainter full-frame compositor",
+            fallback_reason=reason,
+        )
+        self._fallback_scheduled = False
+        self.render_backend_fallback.emit(reason)
+        self.viewport().update()
 
 
 __all__ = ["CanvasView"]

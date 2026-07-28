@@ -8,7 +8,13 @@ from PySide6.QtWidgets import QMainWindow
 
 from easypicture.domain import Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
-from easypicture.imaging import MAX_BRUSH_SIZE, BrushSettings, SelectionCombineMode
+from easypicture.imaging import (
+    MAX_BRUSH_SIZE,
+    BrushSettings,
+    SelectionCombineMode,
+    TransformInterpolation,
+)
+from easypicture.render import RenderBackendKind
 from easypicture.tools import BucketSettings, MagicWandSettings
 from easypicture.ui.selection_style import (
     DEFAULT_SELECTION_OUTLINE_COLOR,
@@ -19,6 +25,10 @@ from easypicture.ui.selection_style import (
 DEFAULT_DOCUMENT_SIZE = Size(1920, 1080)
 DEFAULT_FOREGROUND = QColor("#000000")
 DEFAULT_BACKGROUND = QColor("#ffffff")
+DEFAULT_NUMERIC_DRAG_SENSITIVITY = 0.01
+DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY = 0.001
+MIN_NUMERIC_DRAG_SENSITIVITY = 0.0001
+MAX_NUMERIC_DRAG_SENSITIVITY = 0.1
 
 
 class AppSettings:
@@ -78,6 +88,47 @@ class AppSettings:
         self._settings.setValue(
             "selection/outline_width",
             min(MAX_SELECTION_OUTLINE_WIDTH, max(1, width)),
+        )
+
+    def render_backend(self) -> RenderBackendKind:
+        value = str(
+            self._settings.value(
+                "render/backend",
+                RenderBackendKind.AUTO.value,
+            )
+        )
+        try:
+            return RenderBackendKind(value)
+        except ValueError:
+            return RenderBackendKind.AUTO
+
+    def set_render_backend(self, backend: RenderBackendKind) -> None:
+        self._settings.setValue("render/backend", backend.value)
+
+    def numeric_drag_sensitivity(self) -> float:
+        return self._bounded_float(
+            "ui/numeric_drag_sensitivity",
+            DEFAULT_NUMERIC_DRAG_SENSITIVITY,
+            MIN_NUMERIC_DRAG_SENSITIVITY,
+            MAX_NUMERIC_DRAG_SENSITIVITY,
+        )
+
+    def numeric_fine_drag_sensitivity(self) -> float:
+        return self._bounded_float(
+            "ui/numeric_fine_drag_sensitivity",
+            DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY,
+            MIN_NUMERIC_DRAG_SENSITIVITY,
+            MAX_NUMERIC_DRAG_SENSITIVITY,
+        )
+
+    def set_numeric_drag_sensitivity(self, normal: float, fine: float) -> None:
+        self._settings.setValue(
+            "ui/numeric_drag_sensitivity",
+            min(MAX_NUMERIC_DRAG_SENSITIVITY, max(MIN_NUMERIC_DRAG_SENSITIVITY, normal)),
+        )
+        self._settings.setValue(
+            "ui/numeric_fine_drag_sensitivity",
+            min(MAX_NUMERIC_DRAG_SENSITIVITY, max(MIN_NUMERIC_DRAG_SENSITIVITY, fine)),
         )
 
     def brush_settings(self) -> BrushSettings:
@@ -158,6 +209,29 @@ class AppSettings:
         self._settings.setValue("tools/magic_wand/include_alpha", settings.include_alpha)
         self.set_selection_combine_mode(settings.mode)
 
+    def transform_interpolation(self) -> TransformInterpolation:
+        value = str(
+            self._settings.value(
+                "tools/transform/interpolation",
+                TransformInterpolation.LINEAR.value,
+            )
+        )
+        try:
+            return TransformInterpolation(value)
+        except ValueError:
+            return TransformInterpolation.LINEAR
+
+    def transform_irregular_edit(self) -> bool:
+        return self._bool_value("tools/transform/irregular_edit", False)
+
+    def set_transform_options(
+        self,
+        interpolation: TransformInterpolation,
+        irregular_edit: bool,
+    ) -> None:
+        self._settings.setValue("tools/transform/interpolation", interpolation.value)
+        self._settings.setValue("tools/transform/irregular_edit", irregular_edit)
+
     def restore_window(self, window: QMainWindow) -> None:
         geometry = self._settings.value("window/geometry")
         state = self._settings.value("window/state")
@@ -220,7 +294,11 @@ __all__ = [
     "DEFAULT_BACKGROUND",
     "DEFAULT_DOCUMENT_SIZE",
     "DEFAULT_FOREGROUND",
+    "DEFAULT_NUMERIC_DRAG_SENSITIVITY",
+    "DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY",
     "DEFAULT_SELECTION_OUTLINE_COLOR",
     "DEFAULT_SELECTION_OUTLINE_WIDTH",
     "MAX_SELECTION_OUTLINE_WIDTH",
+    "MAX_NUMERIC_DRAG_SENSITIVITY",
+    "MIN_NUMERIC_DRAG_SENSITIVITY",
 ]

@@ -32,6 +32,13 @@ from easypicture.imaging.selection import (
     rectangle_candidate,
     select_all_candidate,
 )
+from easypicture.imaging.transform import (
+    RasterTransformRequest,
+    RasterTransformResult,
+    TransformInterpolation,
+    calculate_raster_transform,
+    projective_from_quad,
+)
 
 __all__ = [
     "BACKGROUND_SELECTION_PIXEL_THRESHOLD",
@@ -45,18 +52,23 @@ __all__ = [
     "RGBAColor",
     "RegionQuery",
     "RegionResult",
+    "RasterTransformRequest",
+    "RasterTransformResult",
     "SelectionAdjustment",
     "SelectionAdjustmentRequest",
     "SelectionBulkOperation",
     "SelectionBulkRequest",
     "SelectionCombineMode",
     "SelectionOperationResult",
+    "TransformInterpolation",
     "blend_color",
     "blend_color_behind",
     "calculate_fill",
     "calculate_magic_selection",
     "calculate_bulk_selection",
     "calculate_selection_adjustment",
+    "calculate_raster_transform",
+    "projective_from_quad",
     "clear_selection_tiles",
     "combine_selection_tiles",
     "compose_document_tile",

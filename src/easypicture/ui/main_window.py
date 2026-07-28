@@ -39,6 +39,7 @@ from easypicture.imaging import (
 )
 from easypicture.jobs import JobHandle, JobOperation, JobOutcome, JobStatus
 from easypicture.persistence import DocumentSnapshot
+from easypicture.render import RenderBackendKind
 from easypicture.tools import (
     BrushTool,
     BucketTool,
@@ -50,14 +51,17 @@ from easypicture.tools import (
     Tool,
     ToolContext,
     ToolController,
+    TransformTool,
 )
 from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_panel import ColorPanel
+from easypicture.ui.drag_value_spinbox import configure_numeric_drag_sensitivity
 from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.tool_options import ToolOptionsPanel
+from easypicture.ui.transform_properties import TransformPropertiesPanel
 
 RIGHT_SIDEBAR_STYLE = """
 QMainWindow#MainWindow {
@@ -132,10 +136,16 @@ class MainWindow(QMainWindow):
         controller: ApplicationController,
         settings: AppSettings,
         parent: QWidget | None = None,
+        *,
+        render_backend: RenderBackendKind | None = None,
     ) -> None:
         super().__init__(parent)
         self.controller = controller
         self.settings = settings
+        configure_numeric_drag_sensitivity(
+            settings.numeric_drag_sensitivity(),
+            settings.numeric_fine_drag_sensitivity(),
+        )
         self.controller.set_dialog_parent(self)
         self.setObjectName("MainWindow")
         self.setStyleSheet(RIGHT_SIDEBAR_STYLE)
@@ -144,7 +154,10 @@ class MainWindow(QMainWindow):
         self._selection_job: JobHandle | None = None
         self._selection_progress: QProgressDialog | None = None
 
-        self.canvas_view = CanvasView(self)
+        self.canvas_view = CanvasView(
+            self,
+            render_backend=render_backend or self.settings.render_backend(),
+        )
         self.canvas_view.set_selection_outline_style(
             self.settings.selection_outline_color(),
             self.settings.selection_outline_width(),
@@ -204,6 +217,9 @@ class MainWindow(QMainWindow):
         self.undo_action.setEnabled(False)
         self.redo_action.setEnabled(False)
         self.preferences_action = QAction("全局设置…", self)
+        self.transform_action = QAction("自由变换", self)
+        self.transform_action.setShortcut(QKeySequence("Ctrl+T"))
+        self.transform_action.setEnabled(False)
 
         self.zoom_in_action = QAction("放大", self)
         self.zoom_in_action.setShortcut(QKeySequence.StandardKey.ZoomIn)
@@ -240,6 +256,8 @@ class MainWindow(QMainWindow):
         edit_menu = self.menuBar().addMenu("编辑(&E)")
         edit_menu.addAction(self.undo_action)
         edit_menu.addAction(self.redo_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.transform_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.preferences_action)
 
@@ -280,6 +298,14 @@ class MainWindow(QMainWindow):
                 self.tool_options_panel.rectangle_selection.mode
             ),
             "magic_wand": MagicWandTool(self.tool_options_panel.magic_wand.settings),
+            "transform": TransformTool(
+                self.tool_options_panel.transform.interpolation,
+                self.tool_options_panel.transform.irregular_edit,
+                self.tool_options_panel.transform.set_parameters,
+                self._set_transform_corners,
+                self._set_transform_pivot,
+                self._update_undo_actions,
+            ),
         }
         self.tool_actions: dict[str, QAction] = {}
         for name, label, shortcut in (
@@ -289,6 +315,7 @@ class MainWindow(QMainWindow):
             ("bucket", "油漆桶", "G"),
             ("rectangle_selection", "矩形选区", "M"),
             ("magic_wand", "魔棒", "W"),
+            ("transform", "自由变换", "T"),
         ):
             action = QAction(label, self)
             action.setCheckable(True)
@@ -311,6 +338,27 @@ class MainWindow(QMainWindow):
             self._save_magic_wand_settings
         )
         self.tool_options_panel.deselect_requested.connect(self._deselect)
+        self.tool_options_panel.transform_options_changed.connect(
+            self._transform_options_changed
+        )
+        self.tool_options_panel.transform_parameters_changed.connect(
+            self._transform_parameters_changed
+        )
+        self.tool_options_panel.transform_parameter_edit_started.connect(
+            self._transform_edit_started
+        )
+        self.tool_options_panel.transform_parameter_edit_finished.connect(
+            self._transform_edit_finished
+        )
+        self.tool_options_panel.transform_parameter_edit_canceled.connect(
+            self._transform_edit_canceled
+        )
+        self.tool_options_panel.transform_commit_requested.connect(
+            self._transform_commit
+        )
+        self.tool_options_panel.transform_cancel_requested.connect(
+            self._transform_cancel
+        )
         self.tool_actions["brush"].setChecked(True)
         self._activate_tool("brush")
 
@@ -323,9 +371,27 @@ class MainWindow(QMainWindow):
         self.color_dock = self._make_dock("颜色", "ColorDock", self.color_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.color_dock)
 
-        properties = QLabel("属性面板将在后续阶段提供", self)
-        properties.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.properties_dock = self._make_dock("属性", "PropertiesDock", properties)
+        self.properties_stack = QStackedWidget(self)
+        properties_placeholder = QLabel("选择自由变换工具以编辑角点坐标", self)
+        properties_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        properties_placeholder.setWordWrap(True)
+        self.transform_properties = TransformPropertiesPanel(self)
+        self.properties_stack.addWidget(properties_placeholder)
+        self.properties_stack.addWidget(self.transform_properties)
+        self.transform_properties.corners_changed.connect(
+            self._transform_corners_changed
+        )
+        self.transform_properties.pivot_changed.connect(
+            self._transform_pivot_changed
+        )
+        self.transform_properties.edit_started.connect(self._transform_edit_started)
+        self.transform_properties.edit_finished.connect(self._transform_edit_finished)
+        self.transform_properties.edit_canceled.connect(self._transform_edit_canceled)
+        self.properties_dock = self._make_dock(
+            "属性",
+            "PropertiesDock",
+            self.properties_stack,
+        )
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
         self.tabifyDockWidget(self.color_dock, self.properties_dock)
 
@@ -353,6 +419,7 @@ class MainWindow(QMainWindow):
         self.export_action.triggered.connect(self._request_export_png)
         self.exit_action.triggered.connect(self.close)
         self.preferences_action.triggered.connect(self._show_preferences)
+        self.transform_action.triggered.connect(self._activate_transform_command)
         self.zoom_in_action.triggered.connect(self.canvas_view.zoom_in)
         self.zoom_out_action.triggered.connect(self.canvas_view.zoom_out)
         self.fit_action.triggered.connect(self.canvas_view.fit_document)
@@ -385,8 +452,8 @@ class MainWindow(QMainWindow):
             )
         )
         undo_stack = self.controller.commands.undo_stack
-        self.undo_action.triggered.connect(lambda _checked=False: undo_stack.undo())
-        self.redo_action.triggered.connect(lambda _checked=False: undo_stack.redo())
+        self.undo_action.triggered.connect(self._undo_requested)
+        self.redo_action.triggered.connect(self._redo_requested)
         undo_stack.canUndoChanged.connect(self._update_undo_actions)
         undo_stack.canRedoChanged.connect(self._update_undo_actions)
         undo_stack.undoTextChanged.connect(self._update_undo_actions)
@@ -394,6 +461,12 @@ class MainWindow(QMainWindow):
         self.controller.document_changed.connect(self._on_document_changed)
         self.controller.document_event.connect(self._on_document_event)
         self.controller.status_message.connect(self.statusBar().showMessage)
+        self.canvas_view.render_backend_fallback.connect(
+            lambda reason: self.statusBar().showMessage(
+                f"OpenGL 渲染不可用，已回退到软件后端：{reason}",
+                10_000,
+            )
+        )
         self.canvas_view.zoom_changed.connect(self._on_zoom_changed)
         self.canvas_view.cursor_document_position_changed.connect(self._on_cursor_position)
 
@@ -446,8 +519,8 @@ class MainWindow(QMainWindow):
             self._selection_job = None
             self._close_selection_progress()
             self._editing_busy = False
-        self.tool_controller.reset_active_tool()
         self.canvas_view.set_document(document)
+        self.tool_controller.reset_active_tool()
         self.layer_panel.set_document(document)
         has_document = document is not None
         self.central_stack.setCurrentWidget(self.canvas_view if has_document else self.empty_state)
@@ -455,6 +528,7 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(has_document)
         self.save_as_action.setEnabled(has_document)
         self.export_action.setEnabled(has_document)
+        self.transform_action.setEnabled(has_document and not self._editing_busy)
         for action in (
             self.zoom_in_action,
             self.zoom_out_action,
@@ -475,8 +549,23 @@ class MainWindow(QMainWindow):
 
     def _activate_tool(self, tool_name: str) -> None:
         tool = self._tools[tool_name]
-        self.tool_controller.set_tool(tool)
+        if tool is self.tool_controller.active_tool and isinstance(tool, TransformTool):
+            tool.restart_session()
+        else:
+            self.tool_controller.set_tool(tool)
         self.tool_options_panel.show_tool(tool_name)
+        if tool_name == "transform" and hasattr(self, "properties_stack"):
+            self.properties_stack.setCurrentWidget(self.transform_properties)
+            self.properties_dock.show()
+            self.properties_dock.raise_()
+        elif hasattr(self, "properties_stack"):
+            self.properties_stack.setCurrentIndex(0)
+
+    def _activate_transform_command(self) -> None:
+        if self.controller.document is None or self._editing_busy:
+            return
+        self.tool_actions["transform"].setChecked(True)
+        self._activate_tool("transform")
 
     def _foreground_rgba(self) -> tuple[int, int, int, int]:
         color = self.color_panel.foreground
@@ -516,11 +605,84 @@ class MainWindow(QMainWindow):
             self.settings.set_magic_wand_settings(settings)
             self.settings.sync()
 
+    def _transform_options_changed(self) -> None:
+        options = self.tool_options_panel.transform
+        self.settings.set_transform_options(
+            options.interpolation(),
+            options.irregular_edit(),
+        )
+        self.settings.sync()
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.refresh_options()
+
+    def _transform_parameters_changed(self, values: object) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.apply_numeric_parameters(values)
+
+    def _set_transform_corners(self, values: object) -> None:
+        if values is None or (
+            isinstance(values, tuple)
+            and len(values) == 8
+            and all(isinstance(value, (int, float)) for value in values)
+        ):
+            self.transform_properties.set_corners(values)
+
+    def _set_transform_pivot(self, values: object) -> None:
+        if values is None or (
+            isinstance(values, tuple)
+            and len(values) == 2
+            and all(isinstance(value, (int, float)) for value in values)
+        ):
+            self.transform_properties.set_pivot(values)
+
+    def _transform_corners_changed(self, values: object) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.apply_corner_values(values)
+
+    def _transform_pivot_changed(self, values: object) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.apply_pivot_values(values)
+
+    def _transform_edit_started(self, label: str) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.begin_preview_edit(label)
+
+    def _transform_edit_finished(self) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.finish_preview_edit()
+
+    def _transform_edit_canceled(self) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.cancel_preview_edit()
+
+    def _transform_commit(self) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.commit()
+
+    def _transform_cancel(self) -> None:
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool):
+            tool.cancel()
+
     def _show_preferences(self) -> None:
         dialog = PreferencesDialog(
             self.settings.selection_outline_color(),
             self.settings.selection_outline_width(),
+            self.settings.render_backend(),
+            self.canvas_view.render_coordinator.diagnostics,
             self,
+            numeric_drag_sensitivity=self.settings.numeric_drag_sensitivity(),
+            numeric_fine_drag_sensitivity=(
+                self.settings.numeric_fine_drag_sensitivity()
+            ),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -528,7 +690,16 @@ class MainWindow(QMainWindow):
             dialog.selection_color,
             dialog.selection_width,
         )
+        self.settings.set_render_backend(dialog.render_backend)
+        self.settings.set_numeric_drag_sensitivity(
+            dialog.numeric_drag_sensitivity,
+            dialog.numeric_fine_drag_sensitivity,
+        )
         self.settings.sync()
+        configure_numeric_drag_sensitivity(
+            dialog.numeric_drag_sensitivity,
+            dialog.numeric_fine_drag_sensitivity,
+        )
         self.canvas_view.set_selection_outline_style(
             dialog.selection_color,
             dialog.selection_width,
@@ -541,6 +712,7 @@ class MainWindow(QMainWindow):
             action.setEnabled(has_document and not busy)
         self.tool_options_panel.setEnabled(has_document and not busy)
         self.layer_panel.setEnabled(not busy)
+        self.transform_action.setEnabled(has_document and not busy)
         self._update_selection_actions()
 
     def _on_document_event(self, event: DocumentEvent) -> None:
@@ -731,6 +903,19 @@ class MainWindow(QMainWindow):
             action.setEnabled(active and not self._editing_busy)
 
     def _update_undo_actions(self, *_args: object) -> None:
+        tool = self._tools.get("transform") if hasattr(self, "_tools") else None
+        if isinstance(tool, TransformTool) and tool.has_active_session:
+            undo_text = tool.preview_undo_text
+            redo_text = tool.preview_redo_text
+            self.undo_action.setEnabled(tool.can_undo_preview)
+            self.redo_action.setEnabled(tool.can_redo_preview)
+            self.undo_action.setText(
+                f"撤销 {undo_text}" if undo_text else "撤销"
+            )
+            self.redo_action.setText(
+                f"重做 {redo_text}" if redo_text else "重做"
+            )
+            return
         stack = self.controller.commands.undo_stack
         self.undo_action.setEnabled(stack.canUndo())
         self.redo_action.setEnabled(stack.canRedo())
@@ -738,6 +923,22 @@ class MainWindow(QMainWindow):
         redo_text = stack.redoText()
         self.undo_action.setText(f"撤销 {undo_text}" if undo_text else "撤销")
         self.redo_action.setText(f"重做 {redo_text}" if redo_text else "重做")
+
+    def _undo_requested(self, _checked: bool = False) -> None:
+        _ = _checked
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool) and tool.has_active_session:
+            tool.undo_preview()
+            return
+        self.controller.commands.undo_stack.undo()
+
+    def _redo_requested(self, _checked: bool = False) -> None:
+        _ = _checked
+        tool = self._tools.get("transform")
+        if isinstance(tool, TransformTool) and tool.has_active_session:
+            tool.redo_preview()
+            return
+        self.controller.commands.undo_stack.redo()
 
     def _update_window_title(self) -> None:
         document = self.controller.document

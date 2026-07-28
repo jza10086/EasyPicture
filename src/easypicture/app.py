@@ -7,7 +7,8 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import QApplication
 
 from easypicture import __version__
@@ -21,6 +22,8 @@ from easypicture.persistence import (
     load_project,
     save_project,
 )
+from easypicture.render import RenderBackendKind
+from easypicture.render_smoke import run_render_smoke_test
 from easypicture.ui.dialogs import DialogService, QtDialogService
 from easypicture.ui.main_window import MainWindow
 from easypicture.ui.settings import AppSettings
@@ -41,6 +44,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="Run a tiny project/import/export round trip under DIR and exit.",
     )
+    parser.add_argument(
+        "--render-backend",
+        choices=[backend.value for backend in RenderBackendKind],
+        help="Override the canvas renderer for this process.",
+    )
+    parser.add_argument(
+        "--render-smoke-test",
+        type=Path,
+        metavar="DIR",
+        help="Render a GPU/software reference scene under DIR and exit.",
+    )
     return parser
 
 
@@ -49,6 +63,7 @@ def create_window(
     settings: AppSettings | None = None,
     dialogs: DialogService | None = None,
     recovery_enabled: bool = True,
+    render_backend: RenderBackendKind | None = None,
 ) -> MainWindow:
     """Create the P1 main window with injectable settings and dialogs."""
     resolved_settings = settings if settings is not None else AppSettings()
@@ -58,7 +73,11 @@ def create_window(
         resolved_dialogs,
         recovery_enabled=recovery_enabled,
     )
-    return MainWindow(controller, resolved_settings)
+    return MainWindow(
+        controller,
+        resolved_settings,
+        render_backend=render_backend,
+    )
 
 
 def run(argv: Sequence[str] | None = None) -> int:
@@ -66,6 +85,12 @@ def run(argv: Sequence[str] | None = None) -> int:
     options = build_parser().parse_args(argv)
     if options.io_smoke_test is not None:
         return _run_io_smoke_test(options.io_smoke_test)
+    requested_backend = (
+        RenderBackendKind(options.render_backend)
+        if options.render_backend is not None
+        else None
+    )
+    _configure_surface_format(requested_backend)
     app = QApplication(["easypicture"])
     app.setOrganizationName("EasyPicture")
     app.setOrganizationDomain("local.easypicture")
@@ -73,7 +98,18 @@ def run(argv: Sequence[str] | None = None) -> int:
     app.setApplicationVersion(__version__)
     apply_dark_theme(app)
 
-    window = create_window(recovery_enabled=not options.smoke_test)
+    if options.render_smoke_test is not None:
+        smoke_backend = requested_backend or RenderBackendKind.OPENGL
+        return run_render_smoke_test(
+            app,
+            options.render_smoke_test,
+            smoke_backend,
+        )
+
+    window = create_window(
+        recovery_enabled=not options.smoke_test,
+        render_backend=requested_backend,
+    )
     window.show()
 
     if options.smoke_test:
@@ -83,6 +119,23 @@ def run(argv: Sequence[str] | None = None) -> int:
         QTimer.singleShot(0, lambda: window.controller.offer_recovery(window))
 
     return int(app.exec())
+
+
+def _configure_surface_format(
+    requested_backend: RenderBackendKind | None,
+) -> None:
+    if requested_backend is RenderBackendKind.SOFTWARE:
+        return
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseDesktopOpenGL)
+    surface_format = QSurfaceFormat()
+    surface_format.setVersion(3, 3)
+    surface_format.setProfile(QSurfaceFormat.OpenGLContextProfile.CoreProfile)
+    surface_format.setRenderableType(QSurfaceFormat.RenderableType.OpenGL)
+    surface_format.setAlphaBufferSize(8)
+    surface_format.setDepthBufferSize(0)
+    surface_format.setStencilBufferSize(0)
+    surface_format.setSwapBehavior(QSurfaceFormat.SwapBehavior.DoubleBuffer)
+    QSurfaceFormat.setDefaultFormat(surface_format)
 
 
 def _run_io_smoke_test(directory: Path) -> int:
