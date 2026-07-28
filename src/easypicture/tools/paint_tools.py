@@ -16,6 +16,7 @@ from easypicture.imaging import (
     BrushStrokeEngine,
     FillRequest,
     FillResult,
+    PaintBlendMode,
     RegionQuery,
     RGBAColor,
     calculate_fill,
@@ -34,6 +35,7 @@ class BucketSettings:
     contiguous: bool = True
     sample_merged: bool = False
     edge_expansion: int = 1
+    mode: PaintBlendMode = PaintBlendMode.NORMAL
 
     def __post_init__(self) -> None:
         if not 0 <= self.tolerance <= 255:
@@ -290,6 +292,7 @@ class BucketTool:
             color=self._foreground(),
             sample_merged=settings.sample_merged,
             edge_expansion=settings.edge_expansion,
+            mode=settings.mode,
         )
         handle = self._context.jobs.submit(
             lambda token, progress: calculate_fill(request, token, progress)

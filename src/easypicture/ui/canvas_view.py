@@ -23,7 +23,17 @@ from PySide6.QtGui import (
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView, QWidget
 
-from easypicture.domain import Document, Point, RasterLayer, TransformMatrix
+from easypicture.domain import (
+    AffineTransform,
+    Document,
+    DocumentEvent,
+    DocumentSizeChanged,
+    Point,
+    RasterLayer,
+    Size,
+    TransformMatrix,
+)
+from easypicture.domain.document import Unsubscribe
 from easypicture.imaging import TransformInterpolation
 from easypicture.pixels import RGBAArray, TileCoord
 from easypicture.render import (
@@ -87,6 +97,7 @@ class CanvasView(QGraphicsView):
         self.viewport().setMouseTracking(True)
 
         self._document: Document | None = None
+        self._document_unsubscribe: Unsubscribe | None = None
         self._canvas_item: CanvasBoundsItem | None = None
         self._render_coordinator = CanvasRenderCoordinator(
             requested_backend=render_backend,
@@ -211,6 +222,36 @@ class CanvasView(QGraphicsView):
     def clear_transform_preview(self) -> None:
         self._render_coordinator.clear_transform_preview()
 
+    def set_geometry_preview(
+        self,
+        document_size: Size,
+        matrix: TransformMatrix | None = None,
+        *,
+        layer_id: UUID | None = None,
+        interpolation: TransformInterpolation = TransformInterpolation.LINEAR,
+    ) -> None:
+        if self._document is None:
+            return
+        self._render_coordinator.set_geometry_preview(
+            document_size,
+            matrix if matrix is not None else AffineTransform(),
+            layer_id=layer_id,
+            interpolation=interpolation,
+        )
+        if self._canvas_item is not None:
+            self._canvas_item.set_size(document_size)
+        if self._selection_overlay is not None:
+            self._selection_overlay.setVisible(False)
+        self._update_pan_bounds()
+
+    def clear_geometry_preview(self) -> None:
+        self._render_coordinator.clear_geometry_preview()
+        if self._document is not None and self._canvas_item is not None:
+            self._canvas_item.set_size(self._document.size)
+        if self._selection_overlay is not None:
+            self._selection_overlay.setVisible(True)
+        self._update_pan_bounds()
+
     def request_render_capture(self) -> None:
         if self._opengl_backend is not None:
             self._opengl_backend.request_capture()
@@ -231,6 +272,9 @@ class CanvasView(QGraphicsView):
 
     def set_document(self, document: Document | None) -> None:
         self._interaction_scene_bounds = None
+        if self._document_unsubscribe is not None:
+            self._document_unsubscribe()
+            self._document_unsubscribe = None
         if self._selection_overlay is not None:
             self._selection_overlay.dispose()
             self.scene().removeItem(self._selection_overlay)
@@ -250,6 +294,7 @@ class CanvasView(QGraphicsView):
 
         self._canvas_item = CanvasBoundsItem(document.size)
         self.scene().addItem(self._canvas_item)
+        self._document_unsubscribe = document.subscribe(self._on_document_event)
         self._selection_overlay = SelectionOverlayItem(
             document,
             self,
@@ -471,7 +516,7 @@ class CanvasView(QGraphicsView):
         """Draw one complete raster frame independently from scene item bounds."""
         exposed = QRectF(rect)
         backend = self._opengl_backend
-        if backend is None:
+        if backend is None or self._render_coordinator.geometry_preview is not None:
             self._render_coordinator.paint_software(painter, exposed)
             return
         try:
@@ -629,6 +674,14 @@ class CanvasView(QGraphicsView):
         )
 
     def _request_viewport_frame(self) -> None:
+        self.viewport().update()
+
+    def _on_document_event(self, event: DocumentEvent) -> None:
+        if not isinstance(event, DocumentSizeChanged):
+            return
+        if self._canvas_item is not None:
+            self._canvas_item.set_size(event.new_size)
+        self._update_pan_bounds()
         self.viewport().update()
 
     def _schedule_software_fallback(self, reason: str) -> None:

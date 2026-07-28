@@ -11,6 +11,7 @@ from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
 from easypicture.imaging import (
     MAX_BRUSH_SIZE,
     BrushSettings,
+    PaintBlendMode,
     SelectionCombineMode,
     TransformInterpolation,
 )
@@ -138,6 +139,7 @@ class AppSettings:
             opacity=self._bounded_float("tools/brush/opacity", 1.0, 0.0, 1.0),
             spacing=self._bounded_float("tools/brush/spacing", 0.15, 0.01, 2.0),
             antialias=self._bool_value("tools/brush/antialias", True),
+            mode=self._paint_blend_mode("tools/brush/mode"),
         )
 
     def set_brush_settings(self, settings: BrushSettings) -> None:
@@ -146,6 +148,7 @@ class AppSettings:
         self._settings.setValue("tools/brush/opacity", settings.opacity)
         self._settings.setValue("tools/brush/spacing", settings.spacing)
         self._settings.setValue("tools/brush/antialias", settings.antialias)
+        self._settings.setValue("tools/brush/mode", settings.mode.value)
 
     def bucket_settings(self) -> BucketSettings:
         connectivity = self._bounded_int("tools/bucket/connectivity", 4, 4, 8)
@@ -160,6 +163,7 @@ class AppSettings:
                 0,
                 8,
             ),
+            mode=self._paint_blend_mode("tools/bucket/mode"),
         )
 
     def set_bucket_settings(self, settings: BucketSettings) -> None:
@@ -168,6 +172,7 @@ class AppSettings:
         self._settings.setValue("tools/bucket/contiguous", settings.contiguous)
         self._settings.setValue("tools/bucket/sample_merged", settings.sample_merged)
         self._settings.setValue("tools/bucket/edge_expansion", settings.edge_expansion)
+        self._settings.setValue("tools/bucket/mode", settings.mode.value)
 
     def eyedropper_sample_merged(self) -> bool:
         return self._bool_value("tools/eyedropper/sample_merged", True)
@@ -287,6 +292,13 @@ class AppSettings:
         if normalized in {"0", "false", "no", "off"}:
             return False
         return default
+
+    def _paint_blend_mode(self, key: str) -> PaintBlendMode:
+        value = str(self._settings.value(key, PaintBlendMode.NORMAL.value))
+        try:
+            return PaintBlendMode(value)
+        except ValueError:
+            return PaintBlendMode.NORMAL
 
 
 __all__ = [

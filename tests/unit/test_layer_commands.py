@@ -162,6 +162,7 @@ def test_pixel_event_maps_non_aligned_layer_tile_to_document_tiles() -> None:
         origin=PixelPoint(10, 20),
     )
     document.insert_layer(layer, 1)
+    assert layer.origin == PixelPoint()
     document.mark_clean()
     events: list[object] = []
     document.subscribe(events.append)
@@ -172,14 +173,38 @@ def test_pixel_event_maps_non_aligned_layer_tile_to_document_tiles() -> None:
 
     event = next(event for event in events if isinstance(event, LayerPixelsChanged))
     assert event.layer_tiles == frozenset({TileCoord(0, 0)})
-    assert event.document_tiles == frozenset(
-        {
-            TileCoord(0, 0),
-            TileCoord(1, 0),
-            TileCoord(0, 1),
-            TileCoord(1, 1),
-        }
+    assert event.document_tiles == frozenset({TileCoord(0, 0)})
+
+
+def test_delete_clears_selection_alpha_preserves_rgb_and_is_undoable() -> None:
+    document = Document.create(16, 16)
+    service = DocumentCommandService()
+    service.attach_document(document)
+    pixels = np.zeros((256, 256, 4), dtype=np.uint8)
+    pixels[2, 2] = (17, 29, 41, 200)
+    pixels[2, 3] = (50, 60, 70, 200)
+    assert service.apply_pixel_tiles(
+        document.active_layer_id,
+        {TileCoord(0, 0): pixels},
+        "初始像素",
     )
+    service.mark_saved(document.id, document.revision)
+    mask = np.zeros((256, 256), dtype=np.uint8)
+    mask[2, 2] = 255
+    mask[2, 3] = 128
+    document.selection.mask.replace_tile(0, 0, mask)
+
+    assert service.clear_selected_pixels(document.active_layer_id)
+    result = document.active_layer.pixels.read_tile(0, 0)
+    assert tuple(result[2, 2]) == (17, 29, 41, 0)
+    assert tuple(result[2, 3]) == (50, 60, 70, 100)
+
+    service.undo_stack.undo()
+    restored = document.active_layer.pixels.read_tile(0, 0)
+    assert tuple(restored[2, 2]) == (17, 29, 41, 200)
+    assert tuple(restored[2, 3]) == (50, 60, 70, 200)
+    assert service.set_layer_alpha_locked(document.active_layer_id, True)
+    assert not service.clear_selected_pixels(document.active_layer_id)
 
 
 def test_undo_budget_cancel_preserves_history_and_document() -> None:

@@ -23,7 +23,14 @@ from easypicture.domain import (
 )
 from easypicture.jobs import CancellationToken
 from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
-from easypicture.pixels import DEFAULT_TILE_SIZE, MaskArray, Rect, RGBAArray, TileCoord
+from easypicture.pixels import (
+    DEFAULT_TILE_SIZE,
+    MaskArray,
+    Rect,
+    RGBAArray,
+    TileCoord,
+    TilePixelStore,
+)
 
 type ProgressSink = Callable[[int, int, str], None]
 MEMMAP_THRESHOLD_BYTES = 64 * 1024 * 1024
@@ -256,15 +263,59 @@ def _calculate_raster_transform(
                 completed += 1
                 progress(completed, maximum, "正在重采样选区")
 
+    clipped_tiles = _clip_tiles_to_canvas(
+        output_tiles,
+        PixelPoint(left, top),
+        request.snapshot.size,
+    )
     return RasterTransformResult(
         document_id=request.snapshot.document_id,
         source_revision=request.snapshot.revision,
         layer_id=request.layer_id,
-        layer_size=Size(width, height),
-        layer_origin=PixelPoint(left, top),
-        layer_tiles=output_tiles,
+        layer_size=request.snapshot.size,
+        layer_origin=PixelPoint(),
+        layer_tiles=clipped_tiles,
         selection_tiles=selection_tiles,
     )
+
+
+def _clip_tiles_to_canvas(
+    tiles: Mapping[TileCoord, RGBAArray],
+    origin: PixelPoint,
+    canvas_size: Size,
+) -> Mapping[TileCoord, RGBAArray]:
+    store = TilePixelStore(DEFAULT_TILE_SIZE)
+    for coord, tile in tiles.items():
+        document_left = origin.x + coord.x * DEFAULT_TILE_SIZE
+        document_top = origin.y + coord.y * DEFAULT_TILE_SIZE
+        clipped_left = max(0, document_left)
+        clipped_top = max(0, document_top)
+        clipped_right = min(canvas_size.width, document_left + DEFAULT_TILE_SIZE)
+        clipped_bottom = min(canvas_size.height, document_top + DEFAULT_TILE_SIZE)
+        if clipped_right <= clipped_left or clipped_bottom <= clipped_top:
+            continue
+        source_left = clipped_left - document_left
+        source_top = clipped_top - document_top
+        portion = np.ascontiguousarray(
+            tile[
+                source_top : source_top + clipped_bottom - clipped_top,
+                source_left : source_left + clipped_right - clipped_left,
+            ]
+        )
+        if np.any(portion):
+            store.write_region(
+                Rect(
+                    clipped_left,
+                    clipped_top,
+                    clipped_right - clipped_left,
+                    clipped_bottom - clipped_top,
+                ),
+                portion,
+            )
+    return {
+        coord: tile
+        for coord, tile in store.iter_allocated_tiles()
+    }
 
 
 def _layer_by_id(snapshot: DocumentSnapshot, layer_id: UUID) -> LayerSnapshot:

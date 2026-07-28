@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt
+import numpy as np
+from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtTest import QTest
 
 from easypicture.controller import ApplicationController
+from easypicture.pixels import TileCoord
 from easypicture.ui.dialogs import NewDocumentSpec
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.main_window import MainWindow
@@ -92,6 +95,37 @@ def test_layer_edit_visibility_opacity_and_locks_round_trip(qtbot, tmp_path) -> 
     assert not layer.locked
     assert not layer.alpha_locked
     assert not document.modified
+
+
+def test_layer_rows_show_cached_pixel_preview_and_refresh_precisely(
+    qtbot,
+    tmp_path,
+) -> None:
+    window, controller = _window_with_document(qtbot, tmp_path)
+    panel = window.layer_panel
+    document = controller.document
+    assert document is not None
+    index = panel.model.index(0, 0)
+
+    before = panel.model.data(index, Qt.ItemDataRole.DecorationRole)
+    assert isinstance(before, QIcon)
+    assert not before.isNull()
+    assert panel.list_view.iconSize() == QSize(48, 48)
+
+    pixels = np.zeros((256, 256, 4), dtype=np.uint8)
+    pixels[:] = (230, 20, 30, 255)
+    assert controller.commands.apply_pixel_tiles(
+        document.active_layer_id,
+        {TileCoord(0, 0): pixels},
+        "缩略图测试",
+    )
+    after = panel.model.data(index, Qt.ItemDataRole.DecorationRole)
+    assert isinstance(after, QIcon)
+    assert after.cacheKey() != before.cacheKey()
+    image = after.pixmap(QSize(48, 48)).toImage()
+    sampled = image.pixelColor(3, 8)
+    assert sampled.red() > 200
+    assert sampled.green() < 50
 
 
 def test_layer_buttons_and_drag_drop_reorder(qtbot, tmp_path) -> None:

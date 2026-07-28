@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QWidget
 
 from easypicture.domain import Document, Size
 from easypicture.render import RenderBackendKind
+from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.color_panel import ColorPanel
+from easypicture.ui.drag_value_spinbox import DRAG_THRESHOLD, NumericEditState
 from tests.fakes import FakeDialogService, make_settings
 
 
@@ -72,6 +75,95 @@ def test_color_panel_persists_without_modifying_document(qtbot, tmp_path) -> Non
     assert settings.background_color().name() == "#ff0000"
     assert not document.modified
     assert document.revision == 0
+
+
+def test_color_picker_uses_chinese_drag_fields_and_hex_input(qtbot) -> None:
+    dialog = ColorPickerDialog(QColor(10, 20, 30, 40), "选择前景色")
+    qtbot.addWidget(dialog)
+
+    assert dialog.windowTitle() == "选择前景色"
+    assert dialog.red_spin.value() == 10
+    assert dialog.alpha_spin.value() == 40
+    dialog.red_spin.setValue(123)
+    dialog.alpha_spin.setValue(77)
+    assert dialog.selected_color.red() == 123
+    assert dialog.selected_color.alpha() == 77
+
+    dialog.hex_edit.setText("#00ff0080")
+    dialog.hex_edit.editingFinished.emit()
+    assert dialog.selected_color == QColor(0, 255, 0, 128)
+    assert dialog.saturation_spin.value() == 100
+    assert dialog.value_spin.value() == 100
+
+
+def test_color_picker_hsv_wheel_and_modes_keep_alpha(qtbot) -> None:
+    dialog = ColorPickerDialog(QColor(0, 0, 0, 91), "选择背景色")
+    qtbot.addWidget(dialog)
+
+    assert dialog.mode_stack.currentWidget() is dialog.hsv_page
+    qtbot.mouseClick(dialog.mode_buttons["RGB"], Qt.MouseButton.LeftButton)
+    assert dialog.mode_stack.currentWidget() is dialog.rgb_page
+    qtbot.mouseClick(dialog.mode_buttons["Hex"], Qt.MouseButton.LeftButton)
+    assert dialog.mode_stack.currentWidget() is dialog.hex_page
+
+    dialog.hue_spin.setValue(240)
+    dialog.saturation_spin.setValue(100)
+    dialog.value_spin.setValue(100)
+    assert dialog.selected_color.blue() == 255
+    assert dialog.selected_color.alpha() == 91
+
+    dialog.color_wheel.changed.emit(120, 100)
+    dialog.value_bar.changed.emit(50)
+    assert dialog.selected_color.green() in (127, 128)
+    assert dialog.selected_color.red() == 0
+    assert dialog.selected_color.blue() == 0
+    assert dialog.selected_color.alpha() == 91
+
+
+def test_color_picker_numeric_drag_is_not_interrupted_by_sync(qtbot) -> None:
+    dialog = ColorPickerDialog(QColor(64, 96, 128, 255), "选择前景色")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(1)
+    field = dialog.red_spin
+    field.resize(150, 25)
+    start = field.value()
+
+    qtbot.mousePress(field, Qt.MouseButton.LeftButton, pos=QPoint(20, 10))
+    qtbot.mouseMove(field, QPoint(20 + DRAG_THRESHOLD + 8, 10))
+
+    assert field.interaction_state is NumericEditState.DRAGGING
+    assert field.value() != start
+    assert dialog.selected_color.red() == field.value()
+
+    first = field.value()
+    qtbot.mouseMove(field, QPoint(20 + DRAG_THRESHOLD + 18, 10))
+    assert field.interaction_state is NumericEditState.DRAGGING
+    assert field.value() != first
+    qtbot.mouseRelease(field, Qt.MouseButton.LeftButton)
+    assert field.interaction_state is NumericEditState.IDLE
+
+
+def test_color_picker_eyedropper_uses_modal_dialog_grab_and_releases(qtbot) -> None:
+    dialog = ColorPickerDialog(QColor(10, 20, 30, 255), "选择前景色")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.wait(1)
+
+    qtbot.mouseClick(dialog.eyedropper_button, Qt.MouseButton.LeftButton)
+
+    assert dialog._eyedropper_active  # noqa: SLF001
+    assert QWidget.mouseGrabber() is dialog
+    assert QWidget.keyboardGrabber() is dialog
+    assert QApplication.overrideCursor() is not None
+
+    qtbot.mousePress(dialog, Qt.MouseButton.RightButton)
+
+    assert not dialog._eyedropper_active  # noqa: SLF001
+    assert QWidget.mouseGrabber() is not dialog
+    assert QWidget.keyboardGrabber() is not dialog
+    assert QApplication.overrideCursor() is None
+    assert dialog.eyedropper_button.text() == "吸管"
 
 
 def test_window_geometry_round_trip(qtbot, tmp_path) -> None:

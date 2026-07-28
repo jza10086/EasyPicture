@@ -5,7 +5,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QImage, QPainter
 
 from easypicture.commands import DocumentCommandService
-from easypicture.domain import AffineTransform, Document
+from easypicture.domain import AffineTransform, Document, Size
 from easypicture.imaging import TransformInterpolation
 from easypicture.pixels import TileCoord
 from easypicture.render import CanvasRenderCoordinator, RenderBackendKind
@@ -141,3 +141,29 @@ def test_deleting_transform_layer_clears_preview_in_same_generation(qapp) -> Non
 
     assert coordinator.transform_preview is None
     assert coordinator.document is document
+
+
+def test_geometry_preview_repaints_scaled_latest_frame_and_clears(qapp) -> None:
+    _ = qapp
+    document = Document.create(32, 24)
+    tile = np.zeros((256, 256, 4), dtype=np.uint8)
+    tile[2:6, 3:7] = (230, 70, 20, 255)
+    document.active_layer.pixels.replace_tile(0, 0, tile)
+    coordinator = CanvasRenderCoordinator()
+    coordinator.set_document(document)
+
+    coordinator.set_geometry_preview(
+        Size(64, 48),
+        AffineTransform.scale(2.0, 2.0),
+        interpolation=TransformInterpolation.NEAREST,
+    )
+    scaled = _paint_frame(coordinator, 72, 56)
+    assert coordinator.document_rect() == QRectF(0.0, 0.0, 64.0, 48.0)
+    assert _pixel(scaled, 7, 5) == (230, 70, 20, 255)
+    assert _pixel(scaled, 3, 2) != (230, 70, 20, 255)
+
+    coordinator.clear_geometry_preview()
+    restored = _paint_frame(coordinator, 72, 56)
+    assert coordinator.document_rect() == QRectF(0.0, 0.0, 32.0, 24.0)
+    assert _pixel(restored, 3, 2) == (230, 70, 20, 255)
+    assert _pixel(restored, 7, 5) != (230, 70, 20, 255)

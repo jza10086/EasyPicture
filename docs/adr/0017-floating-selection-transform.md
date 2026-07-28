@@ -1,6 +1,6 @@
 # ADR-0017：浮动选区、重采样与复合撤销
 
-- 状态：Accepted
+- 状态：Accepted；图层边界规则由 ADR-0021 部分取代
 - 日期：2026-07-27
 
 ## 决策
@@ -14,8 +14,9 @@
 采样 straight RGBA；其他插值先处理预乘 RGB/Alpha，再转回 straight RGBA，并在
 输出 Alpha 为零时保留独立插值的隐藏 RGB。
 
-图层新边界取四个目标角点的 `floor/ceil` 整数包围盒；选区变换时与原图层边界取并集。
-画布外像素保留，但单层宽高仍限制为 8192，origin 遵守 `.limg v1` 安全范围。
+预览边界取四个目标角点的 `floor/ceil` 整数包围盒，因此交互期间仍可显示画布外内容。
+ADR-0021 生效后，最终提交会把结果裁切到固定画布，图层 size 与 origin 不再随变换改变；
+画布外像素只能在提交前或通过撤销原操作恢复。
 
 `DocumentCommandService.apply_raster_transform()` 在执行前校验 document ID、revision、
 锁定状态、边界和撤销预算。图层 size/origin、像素 Tile 和选区 Tile 由一个复合命令

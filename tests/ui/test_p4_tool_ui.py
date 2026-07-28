@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from easypicture.controller import ApplicationController
-from easypicture.imaging import MAX_BRUSH_SIZE, BrushSettings
+from easypicture.imaging import MAX_BRUSH_SIZE, BrushSettings, PaintBlendMode
 from easypicture.tools import BucketSettings
 from easypicture.ui.dialogs import NewDocumentDialog, NewDocumentSpec
 from easypicture.ui.drag_value_spinbox import (
@@ -28,12 +28,20 @@ from tests.fakes import FakeDialogService, make_settings
 
 def test_tool_settings_round_trip(tmp_path) -> None:
     settings = make_settings(str(tmp_path / "settings.ini"))
-    brush = BrushSettings(size=73, hardness=0.25, opacity=0.6, spacing=1.25, antialias=False)
+    brush = BrushSettings(
+        size=73,
+        hardness=0.25,
+        opacity=0.6,
+        spacing=1.25,
+        antialias=False,
+        mode=PaintBlendMode.OVERLAY,
+    )
     bucket = BucketSettings(
         tolerance=17,
         connectivity=8,
         contiguous=False,
         sample_merged=True,
+        mode=PaintBlendMode.MULTIPLY,
     )
 
     settings.set_brush_settings(brush)

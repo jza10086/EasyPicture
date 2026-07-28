@@ -21,21 +21,35 @@ from PySide6.QtWidgets import (
 
 from easypicture import __version__
 from easypicture.controller import ApplicationController
-from easypicture.domain import Document, DocumentEvent, Point
+from easypicture.domain import AffineTransform, Document, DocumentEvent, Point, Size
 from easypicture.imaging import (
     BACKGROUND_SELECTION_PIXEL_THRESHOLD,
+    CanvasResizeRequest,
+    CropDocumentRequest,
+    DocumentGeometryResult,
+    GeometryRect,
+    ImageScaleRequest,
+    LayerScaleRequest,
     SelectionAdjustment,
     SelectionAdjustmentRequest,
     SelectionBulkOperation,
     SelectionBulkRequest,
     SelectionCombineMode,
     SelectionOperationResult,
+    TrimTransparentRequest,
     calculate_bulk_selection,
+    calculate_canvas_resize,
+    calculate_crop_document,
+    calculate_image_scale,
+    calculate_layer_scale,
     calculate_selection_adjustment,
+    calculate_trim_transparent,
+    canvas_anchor_offset,
     clear_selection_tiles,
     combine_selection_tiles,
     invert_selection_tiles,
     select_all_candidate,
+    selection_bounds,
 )
 from easypicture.jobs import JobHandle, JobOperation, JobOutcome, JobStatus
 from easypicture.persistence import DocumentSnapshot
@@ -43,6 +57,7 @@ from easypicture.render import RenderBackendKind
 from easypicture.tools import (
     BrushTool,
     BucketTool,
+    CropTool,
     EyedropperTool,
     MagicWandSettings,
     MagicWandTool,
@@ -56,6 +71,7 @@ from easypicture.tools import (
 from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_panel import ColorPanel
 from easypicture.ui.drag_value_spinbox import configure_numeric_drag_sensitivity
+from easypicture.ui.geometry_dialogs import CanvasSizeDialog, ScaleGeometryDialog
 from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
@@ -153,6 +169,8 @@ class MainWindow(QMainWindow):
         self._editing_busy = False
         self._selection_job: JobHandle | None = None
         self._selection_progress: QProgressDialog | None = None
+        self._geometry_job: JobHandle | None = None
+        self._geometry_progress: QProgressDialog | None = None
 
         self.canvas_view = CanvasView(
             self,
@@ -220,6 +238,19 @@ class MainWindow(QMainWindow):
         self.transform_action = QAction("自由变换", self)
         self.transform_action.setShortcut(QKeySequence("Ctrl+T"))
         self.transform_action.setEnabled(False)
+        self.canvas_size_action = QAction("画布大小…", self)
+        self.image_scale_action = QAction("缩放图像…", self)
+        self.crop_to_selection_action = QAction("裁切到选区", self)
+        self.trim_transparent_action = QAction("裁切透明像素", self)
+        self.layer_scale_action = QAction("缩放图层…", self)
+        for action in (
+            self.canvas_size_action,
+            self.image_scale_action,
+            self.crop_to_selection_action,
+            self.trim_transparent_action,
+            self.layer_scale_action,
+        ):
+            action.setEnabled(False)
 
         self.zoom_in_action = QAction("放大", self)
         self.zoom_in_action.setShortcut(QKeySequence.StandardKey.ZoomIn)
@@ -240,6 +271,8 @@ class MainWindow(QMainWindow):
         self.grow_selection_action = QAction("扩展…", self)
         self.shrink_selection_action = QAction("收缩…", self)
         self.smooth_selection_action = QAction("平滑…", self)
+        self.clear_selected_pixels_action = QAction("清除选区像素", self)
+        self.clear_selected_pixels_action.setShortcut(QKeySequence("Del"))
 
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("文件(&F)")
@@ -258,8 +291,19 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.redo_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.transform_action)
+        edit_menu.addAction(self.clear_selected_pixels_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.preferences_action)
+
+        image_menu = self.menuBar().addMenu("图像(&I)")
+        image_menu.addAction(self.canvas_size_action)
+        image_menu.addAction(self.image_scale_action)
+        image_menu.addSeparator()
+        image_menu.addAction(self.crop_to_selection_action)
+        image_menu.addAction(self.trim_transparent_action)
+
+        layer_menu = self.menuBar().addMenu("图层(&L)")
+        layer_menu.addAction(self.layer_scale_action)
 
         view_menu = self.menuBar().addMenu("视图(&V)")
         view_menu.addAction(self.zoom_in_action)
@@ -298,6 +342,13 @@ class MainWindow(QMainWindow):
                 self.tool_options_panel.rectangle_selection.mode
             ),
             "magic_wand": MagicWandTool(self.tool_options_panel.magic_wand.settings),
+            "crop": CropTool(
+                self.tool_options_panel.crop.ratio,
+                self.tool_options_panel.crop.show_grid,
+                self._set_crop_rect,
+                self._commit_crop_rect,
+                self._crop_cancel,
+            ),
             "transform": TransformTool(
                 self.tool_options_panel.transform.interpolation,
                 self.tool_options_panel.transform.irregular_edit,
@@ -315,6 +366,7 @@ class MainWindow(QMainWindow):
             ("bucket", "油漆桶", "G"),
             ("rectangle_selection", "矩形选区", "M"),
             ("magic_wand", "魔棒", "W"),
+            ("crop", "裁切", "C"),
             ("transform", "自由变换", "T"),
         ):
             action = QAction(label, self)
@@ -359,6 +411,12 @@ class MainWindow(QMainWindow):
         self.tool_options_panel.transform_cancel_requested.connect(
             self._transform_cancel
         )
+        self.tool_options_panel.crop_rect_changed.connect(self._crop_rect_changed)
+        self.tool_options_panel.crop_options_changed.connect(
+            self._crop_options_changed
+        )
+        self.tool_options_panel.crop_commit_requested.connect(self._crop_commit)
+        self.tool_options_panel.crop_cancel_requested.connect(self._crop_cancel)
         self.tool_actions["brush"].setChecked(True)
         self._activate_tool("brush")
 
@@ -420,6 +478,11 @@ class MainWindow(QMainWindow):
         self.exit_action.triggered.connect(self.close)
         self.preferences_action.triggered.connect(self._show_preferences)
         self.transform_action.triggered.connect(self._activate_transform_command)
+        self.canvas_size_action.triggered.connect(self._show_canvas_size_dialog)
+        self.image_scale_action.triggered.connect(self._show_image_scale_dialog)
+        self.crop_to_selection_action.triggered.connect(self._crop_to_selection)
+        self.trim_transparent_action.triggered.connect(self._trim_transparent)
+        self.layer_scale_action.triggered.connect(self._show_layer_scale_dialog)
         self.zoom_in_action.triggered.connect(self.canvas_view.zoom_in)
         self.zoom_out_action.triggered.connect(self.canvas_view.zoom_out)
         self.fit_action.triggered.connect(self.canvas_view.fit_document)
@@ -450,6 +513,9 @@ class MainWindow(QMainWindow):
                 SelectionAdjustment.SMOOTH,
                 "平滑选区",
             )
+        )
+        self.clear_selected_pixels_action.triggered.connect(
+            self._clear_selected_pixels
         )
         undo_stack = self.controller.commands.undo_stack
         self.undo_action.triggered.connect(self._undo_requested)
@@ -513,12 +579,252 @@ class MainWindow(QMainWindow):
     def _request_export_png(self) -> None:
         self.controller.request_export_png(self)
 
+    def _show_canvas_size_dialog(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        snapshot = DocumentSnapshot.capture(document)
+        dialog = CanvasSizeDialog(document.size, self)
+
+        def preview(size: object, anchor: object) -> None:
+            if not isinstance(size, Size):
+                return
+            from easypicture.imaging import CanvasAnchor
+
+            if not isinstance(anchor, CanvasAnchor):
+                return
+            offset = canvas_anchor_offset(snapshot.size, size, anchor)
+            self.canvas_view.set_geometry_preview(
+                size,
+                AffineTransform.translation(float(offset.x), float(offset.y)),
+            )
+
+        dialog.preview_changed.connect(preview)
+        preview(dialog.size_value, dialog.anchor)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self.canvas_view.clear_geometry_preview()
+        if not accepted:
+            return
+        request = CanvasResizeRequest(snapshot, dialog.size_value, dialog.anchor)
+        self._start_geometry_job(
+            lambda token, progress: calculate_canvas_resize(
+                request,
+                token,
+                progress,
+            ),
+            "调整画布大小",
+        )
+
+    def _show_image_scale_dialog(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        snapshot = DocumentSnapshot.capture(document)
+        interpolation = self.settings.transform_interpolation()
+        dialog = ScaleGeometryDialog("缩放图像", document.size, interpolation, self)
+
+        def preview(size: object, mode: object) -> None:
+            from easypicture.imaging import TransformInterpolation
+
+            if not isinstance(size, Size) or not isinstance(
+                mode,
+                TransformInterpolation,
+            ):
+                return
+            self.canvas_view.set_geometry_preview(
+                size,
+                AffineTransform.scale(
+                    size.width / snapshot.size.width,
+                    size.height / snapshot.size.height,
+                ),
+                interpolation=mode,
+            )
+
+        dialog.preview_changed.connect(preview)
+        preview(dialog.size_value, dialog.interpolation)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self.canvas_view.clear_geometry_preview()
+        if not accepted:
+            return
+        request = ImageScaleRequest(
+            snapshot,
+            dialog.size_value,
+            dialog.interpolation,
+        )
+        self._start_geometry_job(
+            lambda token, progress: calculate_image_scale(
+                request,
+                token,
+                progress,
+            ),
+            "缩放图像",
+        )
+
+    def _show_layer_scale_dialog(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        layer = document.active_layer
+        if layer.locked or layer.alpha_locked:
+            self.statusBar().showMessage("锁定或透明像素锁定的图层不能缩放")
+            return
+        snapshot = DocumentSnapshot.capture(document)
+        interpolation = self.settings.transform_interpolation()
+        dialog = ScaleGeometryDialog("缩放图层", layer.size, interpolation, self)
+
+        def preview(size: object, mode: object) -> None:
+            from easypicture.imaging import TransformInterpolation
+
+            if not isinstance(size, Size) or not isinstance(
+                mode,
+                TransformInterpolation,
+            ):
+                return
+            scale_x = size.width / layer.size.width
+            scale_y = size.height / layer.size.height
+            matrix = AffineTransform(
+                a=scale_x,
+                d=scale_y,
+                tx=layer.origin.x * (1.0 - scale_x),
+                ty=layer.origin.y * (1.0 - scale_y),
+            )
+            self.canvas_view.set_geometry_preview(
+                document.size,
+                matrix,
+                layer_id=layer.id,
+                interpolation=mode,
+            )
+
+        dialog.preview_changed.connect(preview)
+        preview(dialog.size_value, dialog.interpolation)
+        accepted = dialog.exec() == QDialog.DialogCode.Accepted
+        self.canvas_view.clear_geometry_preview()
+        if not accepted:
+            return
+        request = LayerScaleRequest(
+            snapshot,
+            layer.id,
+            dialog.size_value,
+            dialog.interpolation,
+        )
+        self._start_geometry_job(
+            lambda token, progress: calculate_layer_scale(
+                request,
+                token,
+                progress,
+            ),
+            "缩放图层",
+        )
+
+    def _crop_to_selection(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        snapshot = DocumentSnapshot.capture(document)
+        rect = selection_bounds(snapshot)
+        if rect is None:
+            self.statusBar().showMessage("当前没有活动选区")
+            return
+        self._commit_crop_rect(rect)
+
+    def _trim_transparent(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        request = TrimTransparentRequest(DocumentSnapshot.capture(document))
+        self._start_geometry_job(
+            lambda token, progress: calculate_trim_transparent(
+                request,
+                token,
+                progress,
+            ),
+            "裁切透明像素",
+        )
+
+    def _clear_selected_pixels(self) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        transform = self._tools.get("transform")
+        if isinstance(transform, TransformTool) and transform.has_active_session:
+            self.statusBar().showMessage("请先应用或取消自由变换")
+            return
+        if not document.selection.is_active:
+            self.statusBar().showMessage("当前没有活动选区")
+            return
+        layer = document.active_layer
+        if layer.locked or layer.alpha_locked:
+            self.statusBar().showMessage("锁定或透明像素锁定的图层不能清除")
+            return
+        if not self.controller.commands.clear_selected_pixels(layer.id):
+            self.statusBar().showMessage("选区内没有可清除的像素")
+
+    def _start_geometry_job(
+        self,
+        operation: JobOperation,
+        label: str,
+    ) -> None:
+        if self._geometry_job is not None:
+            return
+        handle = self.controller.jobs.submit(operation)
+        self._geometry_job = handle
+        dialog = QProgressDialog(f"正在{label}…", "取消", 0, 0, self)
+        dialog.setWindowTitle(label)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setMinimumDuration(150)
+        dialog.setAutoClose(False)
+        dialog.canceled.connect(handle.cancel)
+        handle.progress.connect(
+            lambda value, maximum, message: self._update_selection_progress(
+                dialog,
+                value,
+                maximum,
+                message,
+            )
+        )
+        self._geometry_progress = dialog
+        self._set_editing_busy(True)
+        handle.finished.connect(
+            lambda outcome: self._on_geometry_finished(outcome, label)
+        )
+
+    def _on_geometry_finished(self, outcome: JobOutcome, label: str) -> None:
+        self._close_geometry_progress()
+        self._geometry_job = None
+        self._set_editing_busy(False)
+        if outcome.status is JobStatus.CANCELLED:
+            self.statusBar().showMessage(f"已取消{label}")
+            return
+        if outcome.status is JobStatus.FAILED:
+            self.statusBar().showMessage(f"{label}失败：{outcome.error}")
+            return
+        if not isinstance(outcome.value, DocumentGeometryResult):
+            self.statusBar().showMessage(f"{label}失败：无效的任务结果")
+            return
+        if not self.controller.commands.apply_document_geometry(
+            outcome.value,
+            label,
+        ):
+            self.statusBar().showMessage(f"{label}未产生变化或结果已过期")
+
+    def _close_geometry_progress(self) -> None:
+        if self._geometry_progress is not None:
+            self._geometry_progress.close()
+            self._geometry_progress.deleteLater()
+            self._geometry_progress = None
+
     def _on_document_changed(self, document: Document | None) -> None:
         if self._selection_job is not None:
             self._selection_job.cancel()
             self._selection_job = None
             self._close_selection_progress()
             self._editing_busy = False
+        if self._geometry_job is not None:
+            self._geometry_job.cancel()
+            self._geometry_job = None
+            self._close_geometry_progress()
+            self._editing_busy = False
+        self.canvas_view.clear_geometry_preview()
         self.canvas_view.set_document(document)
         self.tool_controller.reset_active_tool()
         self.layer_panel.set_document(document)
@@ -529,6 +835,13 @@ class MainWindow(QMainWindow):
         self.save_as_action.setEnabled(has_document)
         self.export_action.setEnabled(has_document)
         self.transform_action.setEnabled(has_document and not self._editing_busy)
+        for action in (
+            self.canvas_size_action,
+            self.image_scale_action,
+            self.layer_scale_action,
+            self.trim_transparent_action,
+        ):
+            action.setEnabled(has_document and not self._editing_busy)
         for action in (
             self.zoom_in_action,
             self.zoom_out_action,
@@ -548,6 +861,13 @@ class MainWindow(QMainWindow):
         self._update_window_title()
 
     def _activate_tool(self, tool_name: str) -> None:
+        if tool_name == "crop":
+            document = self.controller.document
+            if document is not None:
+                self.tool_options_panel.crop.set_original_size(
+                    document.width,
+                    document.height,
+                )
         tool = self._tools[tool_name]
         if tool is self.tool_controller.active_tool and isinstance(tool, TransformTool):
             tool.restart_session()
@@ -672,6 +992,46 @@ class MainWindow(QMainWindow):
         if isinstance(tool, TransformTool):
             tool.cancel()
 
+    def _set_crop_rect(self, rect: GeometryRect | None) -> None:
+        self.tool_options_panel.crop.set_rect(rect)
+
+    def _crop_rect_changed(self, value: object) -> None:
+        tool = self._tools.get("crop")
+        if isinstance(tool, CropTool) and isinstance(value, GeometryRect):
+            tool.set_rect(value)
+
+    def _crop_options_changed(self) -> None:
+        tool = self._tools.get("crop")
+        if isinstance(tool, CropTool):
+            tool.refresh_options()
+
+    def _crop_commit(self) -> None:
+        tool = self._tools.get("crop")
+        if isinstance(tool, CropTool):
+            tool.commit()
+
+    def _crop_cancel(self) -> None:
+        if self.controller.document is None:
+            return
+        self.tool_actions["brush"].setChecked(True)
+        self._activate_tool("brush")
+
+    def _commit_crop_rect(self, rect: GeometryRect) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        request = CropDocumentRequest(DocumentSnapshot.capture(document), rect)
+        self.tool_actions["brush"].setChecked(True)
+        self._activate_tool("brush")
+        self._start_geometry_job(
+            lambda token, progress: calculate_crop_document(
+                request,
+                token,
+                progress,
+            ),
+            "裁切画布",
+        )
+
     def _show_preferences(self) -> None:
         dialog = PreferencesDialog(
             self.settings.selection_outline_color(),
@@ -713,10 +1073,20 @@ class MainWindow(QMainWindow):
         self.tool_options_panel.setEnabled(has_document and not busy)
         self.layer_panel.setEnabled(not busy)
         self.transform_action.setEnabled(has_document and not busy)
+        for action in (
+            self.canvas_size_action,
+            self.image_scale_action,
+            self.layer_scale_action,
+            self.trim_transparent_action,
+        ):
+            action.setEnabled(has_document and not busy)
         self._update_selection_actions()
 
     def _on_document_event(self, event: DocumentEvent) -> None:
         self.layer_panel.handle_event(event)
+        document = self.controller.document
+        if document is not None:
+            self.document_size_label.setText(f"{document.width} × {document.height} px")
         self._update_window_title()
         self._update_selection_actions()
 
@@ -891,6 +1261,12 @@ class MainWindow(QMainWindow):
         has_document = document is not None
         active = has_document and document.selection.is_active if document is not None else False
         self.select_all_action.setEnabled(has_document and not self._editing_busy)
+        self.crop_to_selection_action.setEnabled(
+            active and not self._editing_busy
+        )
+        self.clear_selected_pixels_action.setEnabled(
+            active and not self._editing_busy
+        )
         self.tool_options_panel.set_selection_active(active and not self._editing_busy)
         for action in (
             self.deselect_action,

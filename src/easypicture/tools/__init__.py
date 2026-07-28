@@ -1,6 +1,7 @@
 """Tool lifecycle and first-party editing tools."""
 
 from easypicture.tools.controller import ToolController
+from easypicture.tools.crop_tool import CropTool
 from easypicture.tools.edit_session import PixelEditSession
 from easypicture.tools.paint_tools import (
     BrushTool,
@@ -21,6 +22,7 @@ __all__ = [
     "BrushTool",
     "BucketSettings",
     "BucketTool",
+    "CropTool",
     "EyedropperTool",
     "MagicWandSettings",
     "MagicWandTool",

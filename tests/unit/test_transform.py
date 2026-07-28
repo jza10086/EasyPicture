@@ -93,21 +93,22 @@ def test_projective_quad_maps_all_four_corners() -> None:
 
 def test_nearest_integer_translation_preserves_layer_bytes() -> None:
     document = _document_with_pixels()
-    before = document.active_layer.pixels.read_tile(0, 0).copy()
     result = calculate_raster_transform(
         RasterTransformRequest(
             DocumentSnapshot.capture(document),
             document.active_layer_id,
-            AffineTransform.translation(3.0, -2.0),
+            AffineTransform.translation(3.0, 2.0),
             TransformInterpolation.NEAREST,
         ),
         CancellationToken(),
         _progress,
     )
-    assert result.layer_origin.x == 3
-    assert result.layer_origin.y == -2
+    assert result.layer_origin.x == 0
+    assert result.layer_origin.y == 0
     assert result.layer_size == document.size
-    assert np.array_equal(result.layer_tiles[TileCoord(0, 0)], before)
+    target = result.layer_tiles[TileCoord(0, 0)]
+    assert tuple(target[3, 4]) == (200, 10, 30, 255)
+    assert tuple(target[1, 1]) == (0, 0, 0, 0)
 
 
 def test_irregular_quad_is_resampled_with_projective_mapping() -> None:
@@ -148,7 +149,7 @@ def test_irregular_quad_is_resampled_with_projective_mapping() -> None:
     assert np.any(sample[..., 0] == 220)
 
 
-def test_rotation_uses_floor_ceil_bounds_and_preserves_hidden_rgb() -> None:
+def test_transform_clips_to_canvas_and_preserves_hidden_rgb_inside_it() -> None:
     document = Document.create(10, 20)
     tile = np.zeros((256, 256, 4), dtype=np.uint8)
     tile[2, 3] = (17, 29, 41, 0)
@@ -157,17 +158,16 @@ def test_rotation_uses_floor_ceil_bounds_and_preserves_hidden_rgb() -> None:
         RasterTransformRequest(
             DocumentSnapshot.capture(document),
             document.active_layer_id,
-            AffineTransform.rotation(90.0),
+            AffineTransform.translation(1.0, 1.0),
             TransformInterpolation.NEAREST,
         ),
         CancellationToken(),
         _progress,
     )
-    assert result.layer_origin.x == -20
+    assert result.layer_origin.x == 0
     assert result.layer_origin.y == 0
-    assert result.layer_size.width == 20
-    assert result.layer_size.height == 10
-    assert tuple(result.layer_tiles[TileCoord(0, 0)][3, 18]) == (17, 29, 41, 0)
+    assert result.layer_size == document.size
+    assert tuple(result.layer_tiles[TileCoord(0, 0)][3, 4]) == (17, 29, 41, 0)
 
 
 def test_selected_pixel_is_cut_moved_and_selection_follows() -> None:
@@ -506,8 +506,14 @@ def test_transform_command_is_one_atomic_undo_step(qtbot) -> None:
     )
     assert service.apply_raster_transform(result)
     assert service.undo_stack.count() == 1
-    assert document.active_layer.origin.x == 4
-    assert document.active_layer.origin.y == 2
+    assert document.active_layer.origin.x == 0
+    assert document.active_layer.origin.y == 0
+    assert tuple(document.active_layer.pixels.read_tile(0, 0)[3, 5]) == (
+        200,
+        10,
+        30,
+        255,
+    )
 
     service.undo_stack.undo()
     assert document.active_layer.origin.x == 0
@@ -520,8 +526,14 @@ def test_transform_command_is_one_atomic_undo_step(qtbot) -> None:
     )
 
     service.undo_stack.redo()
-    assert document.active_layer.origin.x == 4
-    assert document.active_layer.origin.y == 2
+    assert document.active_layer.origin.x == 0
+    assert document.active_layer.origin.y == 0
+    assert tuple(document.active_layer.pixels.read_tile(0, 0)[3, 5]) == (
+        200,
+        10,
+        30,
+        255,
+    )
 
 
 def test_transform_rejects_stale_or_over_budget_result_without_mutation(qtbot) -> None:

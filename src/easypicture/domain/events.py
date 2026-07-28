@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from easypicture.domain.geometry import Size
 from easypicture.pixels import TileCoord
 
 
@@ -27,6 +28,14 @@ class ActiveLayerChanged:
 class DocumentRevisionChanged:
     document_id: UUID
     revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class DocumentSizeChanged:
+    document_id: UUID
+    revision: int
+    old_size: Size
+    new_size: Size
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +84,7 @@ type DocumentEvent = (
     | DocumentPathChanged
     | ActiveLayerChanged
     | DocumentRevisionChanged
+    | DocumentSizeChanged
     | LayerListChanged
     | LayerPropertiesChanged
     | LayerPixelsChanged
@@ -93,6 +103,7 @@ __all__ = [
     "DocumentModifiedChanged",
     "DocumentPathChanged",
     "DocumentRevisionChanged",
+    "DocumentSizeChanged",
     "LayerListChanged",
     "LayerPixelsChanged",
     "LayerPropertiesChanged",

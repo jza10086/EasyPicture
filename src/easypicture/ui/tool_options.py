@@ -16,6 +16,8 @@ from easypicture.imaging import (
     DEFAULT_BRUSH_SIZE_LIMIT,
     MAX_BRUSH_SIZE,
     BrushSettings,
+    GeometryRect,
+    PaintBlendMode,
     SelectionCombineMode,
     TransformInterpolation,
 )
@@ -46,9 +48,12 @@ class BrushOptionsWidget(QWidget):
         self.spacing_spin = self._spin(1, 200, round(settings.spacing * 100), "%")
         self.antialias_check = QCheckBox("抗锯齿", self)
         self.antialias_check.setChecked(settings.antialias)
+        self.mode_combo = _paint_mode_combo(settings.mode, self)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
+        layout.addWidget(QLabel("模式", self))
+        layout.addWidget(self.mode_combo)
         for label, widget in (
             ("大小", self.size_spin),
             ("硬度", self.hardness_spin),
@@ -67,6 +72,7 @@ class BrushOptionsWidget(QWidget):
         ):
             spin.valueChanged.connect(self._emit_settings)
         self.antialias_check.toggled.connect(self._emit_settings)
+        self.mode_combo.currentIndexChanged.connect(self._emit_settings)
 
     def settings(self) -> BrushSettings:
         return BrushSettings(
@@ -75,6 +81,7 @@ class BrushOptionsWidget(QWidget):
             opacity=self.opacity_spin.value() / 100.0,
             spacing=self.spacing_spin.value() / 100.0,
             antialias=self.antialias_check.isChecked(),
+            mode=PaintBlendMode(str(self.mode_combo.currentData())),
         )
 
     def _emit_settings(self, _value: object = None) -> None:
@@ -142,9 +149,12 @@ class BucketOptionsWidget(QWidget):
             suffix=" px",
             parent=self,
         )
+        self.mode_combo = _paint_mode_combo(settings.mode, self)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
+        layout.addWidget(QLabel("模式", self))
+        layout.addWidget(self.mode_combo)
         layout.addWidget(QLabel("容差", self))
         layout.addWidget(self.tolerance_spin)
         layout.addWidget(self.connectivity_combo)
@@ -158,6 +168,7 @@ class BucketOptionsWidget(QWidget):
         self.contiguous_check.toggled.connect(self._emit_settings)
         self.sample_merged_check.toggled.connect(self._emit_settings)
         self.edge_expansion_spin.valueChanged.connect(self._emit_settings)
+        self.mode_combo.currentIndexChanged.connect(self._emit_settings)
 
     def settings(self) -> BucketSettings:
         connectivity = int(self.connectivity_combo.currentData())
@@ -167,10 +178,28 @@ class BucketOptionsWidget(QWidget):
             contiguous=self.contiguous_check.isChecked(),
             sample_merged=self.sample_merged_check.isChecked(),
             edge_expansion=self.edge_expansion_spin.value(),
+            mode=PaintBlendMode(str(self.mode_combo.currentData())),
         )
 
     def _emit_settings(self, _value: object = None) -> None:
         self.settings_changed.emit(self.settings())
+
+
+def _paint_mode_combo(
+    current: PaintBlendMode,
+    parent: QWidget,
+) -> BlenderComboBox:
+    combo = BlenderComboBox(parent)
+    for label, mode in (
+        ("正常", PaintBlendMode.NORMAL),
+        ("替换", PaintBlendMode.REPLACE),
+        ("正片叠底", PaintBlendMode.MULTIPLY),
+        ("滤色", PaintBlendMode.SCREEN),
+        ("叠加", PaintBlendMode.OVERLAY),
+    ):
+        combo.addItem(label, mode.value)
+    combo.setCurrentIndex(max(0, combo.findData(current.value)))
+    return combo
 
 
 def _add_selection_modes(
@@ -424,6 +453,139 @@ class TransformOptionsWidget(QWidget):
         )
 
 
+class CropOptionsWidget(QWidget):
+    rect_changed = Signal(object)
+    options_changed = Signal()
+    commit_requested = Signal()
+    cancel_requested = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._syncing = False
+        self._original_ratio = 1.0
+        self.ratio_combo = BlenderComboBox(self)
+        for label, value in (
+            ("自由", "free"),
+            ("原始比例", "original"),
+            ("1:1", "1:1"),
+            ("4:3", "4:3"),
+            ("3:2", "3:2"),
+            ("16:9", "16:9"),
+            ("自定义", "custom"),
+        ):
+            self.ratio_combo.addItem(label, value)
+        self.custom_width = DragValueSpinBox(1, 100, 1, parent=self)
+        self.custom_height = DragValueSpinBox(1, 100, 1, parent=self)
+        self.grid_check = QCheckBox("三分网格", self)
+        self.grid_check.setChecked(True)
+        self.x_spin = DragValueSpinBox(
+            -8192,
+            8192,
+            0,
+            manual_minimum=-32768,
+            manual_maximum=32768,
+            suffix=" px",
+            parent=self,
+        )
+        self.y_spin = DragValueSpinBox(
+            -8192,
+            8192,
+            0,
+            manual_minimum=-32768,
+            manual_maximum=32768,
+            suffix=" px",
+            parent=self,
+        )
+        self.width_spin = DragValueSpinBox(1, 8192, 1, suffix=" px", parent=self)
+        self.height_spin = DragValueSpinBox(1, 8192, 1, suffix=" px", parent=self)
+        self.apply_button = QPushButton("应用", self)
+        self.cancel_button = QPushButton("取消", self)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        for label, widget in (
+            ("比例", self.ratio_combo),
+            ("X", self.x_spin),
+            ("Y", self.y_spin),
+            ("W", self.width_spin),
+            ("H", self.height_spin),
+        ):
+            layout.addWidget(QLabel(label, self))
+            layout.addWidget(widget)
+        layout.addWidget(self.custom_width)
+        layout.addWidget(QLabel(":", self))
+        layout.addWidget(self.custom_height)
+        layout.addWidget(self.grid_check)
+        layout.addWidget(self.apply_button)
+        layout.addWidget(self.cancel_button)
+        layout.addStretch(1)
+        for field in self.rect_fields:
+            field.valueChanged.connect(self._emit_rect)
+        self.ratio_combo.currentIndexChanged.connect(self._options_changed)
+        self.custom_width.valueChanged.connect(self._options_changed)
+        self.custom_height.valueChanged.connect(self._options_changed)
+        self.grid_check.toggled.connect(self._options_changed)
+        self.apply_button.clicked.connect(self.commit_requested)
+        self.cancel_button.clicked.connect(self.cancel_requested)
+        self._update_custom_visibility()
+
+    @property
+    def rect_fields(self) -> tuple[DragValueSpinBox, ...]:
+        return self.x_spin, self.y_spin, self.width_spin, self.height_spin
+
+    def set_original_size(self, width: int, height: int) -> None:
+        self._original_ratio = width / max(1, height)
+
+    def set_rect(self, rect: GeometryRect | None) -> None:
+        if rect is None:
+            return
+        self._syncing = True
+        try:
+            for field, value in zip(
+                self.rect_fields,
+                (rect.x, rect.y, rect.width, rect.height),
+                strict=True,
+            ):
+                if field.interaction_state is NumericEditState.IDLE:
+                    field.setValue(value)
+        finally:
+            self._syncing = False
+
+    def crop_rect_value(self) -> GeometryRect:
+        return GeometryRect(
+            self.x_spin.value(),
+            self.y_spin.value(),
+            self.width_spin.value(),
+            self.height_spin.value(),
+        )
+
+    def ratio(self) -> float | None:
+        value = str(self.ratio_combo.currentData())
+        if value == "free":
+            return None
+        if value == "original":
+            return self._original_ratio
+        if value == "custom":
+            return self.custom_width.value() / self.custom_height.value()
+        left, right = value.split(":", maxsplit=1)
+        return float(left) / float(right)
+
+    def show_grid(self) -> bool:
+        return self.grid_check.isChecked()
+
+    def _emit_rect(self, _value: int) -> None:
+        if not self._syncing:
+            self.rect_changed.emit(self.crop_rect_value())
+
+    def _options_changed(self, _value: object = None) -> None:
+        self._update_custom_visibility()
+        self.options_changed.emit()
+
+    def _update_custom_visibility(self) -> None:
+        custom = str(self.ratio_combo.currentData()) == "custom"
+        self.custom_width.setVisible(custom)
+        self.custom_height.setVisible(custom)
+
+
 class ToolOptionsPanel(QStackedWidget):
     brush_settings_changed = Signal(object)
     bucket_settings_changed = Signal(object)
@@ -438,6 +600,10 @@ class ToolOptionsPanel(QStackedWidget):
     transform_parameter_edit_canceled = Signal()
     transform_commit_requested = Signal()
     transform_cancel_requested = Signal()
+    crop_rect_changed = Signal(object)
+    crop_options_changed = Signal()
+    crop_commit_requested = Signal()
+    crop_cancel_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -450,12 +616,14 @@ class ToolOptionsPanel(QStackedWidget):
         )
         self.magic_wand = MagicWandOptionsWidget(settings.magic_wand_settings(), self)
         self.transform = TransformOptionsWidget(settings, self)
+        self.crop = CropOptionsWidget(self)
         self.addWidget(self.brush)
         self.addWidget(self.eyedropper)
         self.addWidget(self.bucket)
         self.addWidget(self.rectangle_selection)
         self.addWidget(self.magic_wand)
         self.addWidget(self.transform)
+        self.addWidget(self.crop)
         self.brush.settings_changed.connect(self.brush_settings_changed)
         self.bucket.settings_changed.connect(self.bucket_settings_changed)
         self.eyedropper.settings_changed.connect(self.eyedropper_settings_changed)
@@ -474,6 +642,10 @@ class ToolOptionsPanel(QStackedWidget):
         )
         self.transform.commit_requested.connect(self.transform_commit_requested)
         self.transform.cancel_requested.connect(self.transform_cancel_requested)
+        self.crop.rect_changed.connect(self.crop_rect_changed)
+        self.crop.options_changed.connect(self.crop_options_changed)
+        self.crop.commit_requested.connect(self.crop_commit_requested)
+        self.crop.cancel_requested.connect(self.crop_cancel_requested)
         self.rectangle_selection.deselect_requested.connect(self.deselect_requested)
         self.magic_wand.deselect_requested.connect(self.deselect_requested)
         self.set_selection_active(False)
@@ -491,6 +663,8 @@ class ToolOptionsPanel(QStackedWidget):
             self.setCurrentWidget(self.magic_wand)
         elif tool_name == "transform":
             self.setCurrentWidget(self.transform)
+        elif tool_name == "crop":
+            self.setCurrentWidget(self.crop)
 
     def set_selection_active(self, active: bool) -> None:
         self.rectangle_selection.deselect_button.setEnabled(active)
@@ -511,6 +685,7 @@ class ToolOptionsPanel(QStackedWidget):
 __all__ = [
     "BrushOptionsWidget",
     "BucketOptionsWidget",
+    "CropOptionsWidget",
     "EyedropperOptionsWidget",
     "MagicWandOptionsWidget",
     "RectangleSelectionOptionsWidget",

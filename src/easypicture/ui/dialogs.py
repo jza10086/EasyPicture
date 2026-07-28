@@ -9,7 +9,6 @@ from typing import Protocol
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QColorDialog,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -21,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from easypicture.domain import Document, Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
+from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 
 
@@ -315,13 +315,10 @@ class QtDialogService:
         current: QColor,
         title: str,
     ) -> QColor | None:
-        color = QColorDialog.getColor(
-            current,
-            parent,
-            title,
-            QColorDialog.ColorDialogOption.ShowAlphaChannel,
-        )
-        return color if color.isValid() else None
+        dialog = ColorPickerDialog(current, title, parent)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.selected_color
 
     def confirm_undo_history_reset(
         self,

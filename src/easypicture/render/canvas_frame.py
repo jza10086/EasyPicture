@@ -13,11 +13,13 @@ from PySide6.QtCore import QObject, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPixmap, QTransform
 
 from easypicture.domain import (
+    AffineTransform,
     Document,
     DocumentEvent,
     LayerListChanged,
     LayerPixelsChanged,
     RasterLayer,
+    Size,
     TransformMatrix,
     as_projective,
 )
@@ -55,6 +57,16 @@ class TransformPreviewState:
     interpolation: TransformInterpolation
 
 
+@dataclass(frozen=True, slots=True)
+class GeometryPreviewState:
+    """Temporary canvas or layer geometry rendered without changing the document."""
+
+    document_size: Size
+    matrix: TransformMatrix = AffineTransform()
+    layer_id: UUID | None = None
+    interpolation: TransformInterpolation = TransformInterpolation.LINEAR
+
+
 type SourceCacheKey = tuple[UUID, TileCoord, int, int, str]
 
 
@@ -82,6 +94,7 @@ class CanvasRenderCoordinator(QObject):
         self._pixel_preview_tiles: dict[TileCoord, RGBAArray] = {}
         self._pixel_preview_revisions: dict[TileCoord, int] = {}
         self._transform_preview: TransformPreviewState | None = None
+        self._geometry_preview: GeometryPreviewState | None = None
         self._source_cache: OrderedDict[SourceCacheKey, QImage] = OrderedDict()
         self._generation = 0
         self._active_backend = RenderBackendKind.SOFTWARE
@@ -99,6 +112,10 @@ class CanvasRenderCoordinator(QObject):
     @property
     def transform_preview(self) -> TransformPreviewState | None:
         return self._transform_preview
+
+    @property
+    def geometry_preview(self) -> GeometryPreviewState | None:
+        return self._geometry_preview
 
     @property
     def preview_tile_count(self) -> int:
@@ -150,6 +167,7 @@ class CanvasRenderCoordinator(QObject):
         self._pixel_preview_tiles.clear()
         self._pixel_preview_revisions.clear()
         self._transform_preview = None
+        self._geometry_preview = None
         self._source_cache.clear()
         if document is not None:
             self._unsubscribe = document.subscribe(self._on_document_event)
@@ -164,6 +182,7 @@ class CanvasRenderCoordinator(QObject):
         self._pixel_preview_tiles.clear()
         self._pixel_preview_revisions.clear()
         self._transform_preview = None
+        self._geometry_preview = None
 
     def set_pixel_preview(
         self,
@@ -212,12 +231,39 @@ class CanvasRenderCoordinator(QObject):
         if self._pixel_preview_layer_id is not None:
             self.clear_pixel_preview()
         self._transform_preview = TransformPreviewState(layer_id, matrix, interpolation)
+        self._geometry_preview = None
         self.request_frame()
 
     def clear_transform_preview(self) -> None:
         if self._transform_preview is None:
             return
         self._transform_preview = None
+        self.request_frame()
+
+    def set_geometry_preview(
+        self,
+        document_size: Size,
+        matrix: TransformMatrix | None = None,
+        *,
+        layer_id: UUID | None = None,
+        interpolation: TransformInterpolation = TransformInterpolation.LINEAR,
+    ) -> None:
+        document = self._require_document()
+        if layer_id is not None:
+            document.layer_by_id(layer_id)
+        self._transform_preview = None
+        self._geometry_preview = GeometryPreviewState(
+            document_size,
+            matrix if matrix is not None else AffineTransform(),
+            layer_id,
+            interpolation,
+        )
+        self.request_frame()
+
+    def clear_geometry_preview(self) -> None:
+        if self._geometry_preview is None:
+            return
+        self._geometry_preview = None
         self.request_frame()
 
     def request_frame(self) -> None:
@@ -253,11 +299,16 @@ class CanvasRenderCoordinator(QObject):
 
     def document_rect(self) -> QRectF:
         document = self._require_document()
+        size = (
+            self._geometry_preview.document_size
+            if self._geometry_preview is not None
+            else document.size
+        )
         return QRectF(
             0.0,
             0.0,
-            float(document.width),
-            float(document.height),
+            float(size.width),
+            float(size.height),
         )
 
     def display_tile_coords(self, layer: RasterLayer) -> frozenset[TileCoord]:
@@ -346,6 +397,45 @@ class CanvasRenderCoordinator(QObject):
         return True
 
     def _paint_layers(self, painter: QPainter, document_rect: QRectF) -> None:
+        geometry = self._geometry_preview
+        if geometry is not None:
+            if geometry.layer_id is None:
+                transform = self._qt_transform(geometry.matrix)
+                inverse, invertible = transform.inverted()
+                painter.save()
+                painter.setClipRect(document_rect)
+                painter.setWorldTransform(transform, combine=True)
+                self._paint_document_layers(
+                    painter,
+                    inverse.mapRect(document_rect) if invertible else document_rect,
+                )
+                painter.restore()
+                return
+            document = self._require_document()
+            painter.save()
+            painter.setClipRect(document_rect)
+            for layer in document.layers:
+                if layer.id == geometry.layer_id:
+                    self._draw_transformed_layer(
+                        painter,
+                        layer,
+                        TransformPreviewState(
+                            layer.id,
+                            geometry.matrix,
+                            geometry.interpolation,
+                        ),
+                    )
+                else:
+                    self._draw_normal_layer(painter, layer, document_rect)
+            painter.restore()
+            return
+        self._paint_document_layers(painter, document_rect)
+
+    def _paint_document_layers(
+        self,
+        painter: QPainter,
+        document_rect: QRectF,
+    ) -> None:
         document = self._require_document()
         preview = self._transform_preview
         if preview is None:
@@ -413,18 +503,7 @@ class CanvasRenderCoordinator(QObject):
     ) -> None:
         if not layer.visible or layer.opacity <= 0.0:
             return
-        matrix = as_projective(preview.matrix)
-        transform = QTransform(
-            matrix.m11,
-            matrix.m21,
-            matrix.m31,
-            matrix.m12,
-            matrix.m22,
-            matrix.m32,
-            matrix.m13,
-            matrix.m23,
-            matrix.m33,
-        )
+        transform = self._qt_transform(preview.matrix)
         painter.save()
         painter.setOpacity(layer.opacity)
         painter.setRenderHint(
@@ -440,6 +519,21 @@ class CanvasRenderCoordinator(QObject):
                 self._source_image(layer, coord, kind),
             )
         painter.restore()
+
+    @staticmethod
+    def _qt_transform(matrix: TransformMatrix) -> QTransform:
+        projective = as_projective(matrix)
+        return QTransform(
+            projective.m11,
+            projective.m21,
+            projective.m31,
+            projective.m12,
+            projective.m22,
+            projective.m32,
+            projective.m13,
+            projective.m23,
+            projective.m33,
+        )
 
     def _source_image(
         self,
@@ -599,6 +693,7 @@ __all__ = [
     "CanvasRenderCoordinator",
     "CanvasRenderDiagnostics",
     "DEFAULT_SOURCE_CACHE_BYTES",
+    "GeometryPreviewState",
     "RenderBackendKind",
     "TransformPreviewState",
 ]

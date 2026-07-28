@@ -5,6 +5,7 @@ import subprocess
 import sys
 from uuid import uuid4
 
+import numpy as np
 import pytest
 
 from easypicture.domain import (
@@ -12,6 +13,7 @@ from easypicture.domain import (
     Document,
     DocumentModifiedChanged,
     DocumentRevisionChanged,
+    PixelPoint,
     RasterLayer,
     Selection,
     Size,
@@ -69,6 +71,36 @@ def test_document_create_builds_clean_transparent_default_layer() -> None:
     assert document.active_layer.pixels.allocated_tile_count == 0
     assert document.selection.size == document.size
     assert document.selection.revision == 0
+
+
+def test_document_normalizes_legacy_layer_geometry_to_canvas() -> None:
+    size = Size(8, 6)
+    layer = RasterLayer.create_blank(
+        "旧图层",
+        Size(4, 3),
+        origin=PixelPoint(2, 1),
+    )
+    pixels = np.zeros((256, 256, 4), dtype=np.uint8)
+    pixels[1, 1] = (10, 20, 30, 255)
+    layer.pixels.replace_tile(0, 0, pixels)
+
+    document = Document(
+        document_id=uuid4(),
+        size=size,
+        layers=[layer],
+        active_layer_id=layer.id,
+        selection=Selection.create_empty(size),
+    )
+
+    assert document.active_layer.size == size
+    assert document.active_layer.origin == PixelPoint()
+    assert tuple(document.active_layer.pixels.read_tile(0, 0)[2, 3]) == (
+        10,
+        20,
+        30,
+        255,
+    )
+    assert document.active_layer.pixels.has_tile(0, 0)
 
 
 def test_new_documents_and_layers_have_unique_ids() -> None:

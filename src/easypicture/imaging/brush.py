@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from functools import lru_cache
 from typing import Protocol, cast
 
@@ -17,6 +18,14 @@ DEFAULT_BRUSH_SIZE_LIMIT = 1024
 MAX_BRUSH_SIZE = 8192
 
 
+class PaintBlendMode(Enum):
+    NORMAL = "normal"
+    REPLACE = "replace"
+    MULTIPLY = "multiply"
+    SCREEN = "screen"
+    OVERLAY = "overlay"
+
+
 @dataclass(frozen=True, slots=True)
 class BrushSettings:
     size: int = 32
@@ -24,6 +33,7 @@ class BrushSettings:
     opacity: float = 1.0
     spacing: float = 0.15
     antialias: bool = True
+    mode: PaintBlendMode = PaintBlendMode.NORMAL
 
     def __post_init__(self) -> None:
         if not 1 <= self.size <= MAX_BRUSH_SIZE:
@@ -53,6 +63,7 @@ def blend_color(
     destination: RGBAArray,
     color: RGBAColor,
     coverage: np.ndarray,
+    mode: PaintBlendMode = PaintBlendMode.NORMAL,
 ) -> RGBAArray:
     """Blend a constant straight-RGBA color over a destination array."""
     if destination.shape[:2] != coverage.shape:
@@ -60,26 +71,68 @@ def blend_color(
     if not all(0 <= channel <= 255 for channel in color):
         raise ValueError("RGBA channels must be between 0 and 255")
     strength = np.clip(coverage.astype(np.float32), 0.0, 1.0)
-    source_alpha = strength * (color[3] / 255.0)
     destination_f = destination.astype(np.float32) / 255.0
+    source_rgb = np.asarray(color[:3], dtype=np.float32) / 255.0
+    if mode is PaintBlendMode.REPLACE:
+        output = destination_f * (1.0 - strength[..., None])
+        output += (
+            np.asarray(color, dtype=np.float32)
+            / 255.0
+            * strength[..., None]
+        )
+        return np.clip(np.rint(output * 255.0), 0, 255).astype(np.uint8)
+
+    source_alpha = strength * (color[3] / 255.0)
     destination_alpha = destination_f[..., 3]
     output_alpha = source_alpha + destination_alpha * (1.0 - source_alpha)
 
     output = destination_f.copy()
     nonzero = output_alpha > 0.0
-    for channel in range(3):
-        numerator = (
-            (color[channel] / 255.0) * source_alpha
-            + destination_f[..., channel] * destination_alpha * (1.0 - source_alpha)
-        )
-        output[..., channel] = np.divide(
-            numerator,
-            output_alpha,
-            out=output[..., channel],
-            where=nonzero,
-        )
+    destination_rgb = destination_f[..., :3]
+    blend_rgb = _blend_rgb(destination_rgb, source_rgb, mode)
+    numerator = (
+        source_alpha[..., None]
+        * (1.0 - destination_alpha[..., None])
+        * source_rgb
+        + source_alpha[..., None]
+        * destination_alpha[..., None]
+        * blend_rgb
+        + (1.0 - source_alpha[..., None])
+        * destination_alpha[..., None]
+        * destination_rgb
+    )
+    output[..., :3] = np.divide(
+        numerator,
+        output_alpha[..., None],
+        out=output[..., :3],
+        where=nonzero[..., None],
+    )
     output[..., 3] = output_alpha
     return np.clip(np.rint(output * 255.0), 0, 255).astype(np.uint8)
+
+
+def _blend_rgb(
+    destination: np.ndarray,
+    source: np.ndarray,
+    mode: PaintBlendMode,
+) -> np.ndarray:
+    if mode is PaintBlendMode.MULTIPLY:
+        return np.asarray(destination * source, dtype=np.float32)
+    if mode is PaintBlendMode.SCREEN:
+        return np.asarray(
+            destination + source - destination * source,
+            dtype=np.float32,
+        )
+    if mode is PaintBlendMode.OVERLAY:
+        return np.asarray(
+            np.where(
+                destination <= 0.5,
+                2.0 * destination * source,
+                1.0 - 2.0 * (1.0 - destination) * (1.0 - source),
+            ),
+            dtype=np.float32,
+        )
+    return np.asarray(np.broadcast_to(source, destination.shape), dtype=np.float32)
 
 
 def erase_alpha(destination: RGBAArray, coverage: np.ndarray) -> RGBAArray:
@@ -266,7 +319,12 @@ class BrushStrokeEngine:
                 after = (
                     erase_alpha(before, local_coverage)
                     if self.eraser
-                    else blend_color(before, self.color, local_coverage)
+                    else blend_color(
+                        before,
+                        self.color,
+                        local_coverage,
+                        self.settings.mode,
+                    )
                 )
                 if np.array_equal(before, after):
                     continue
@@ -342,6 +400,7 @@ def _cached_coverage(
 __all__ = [
     "DEFAULT_BRUSH_SIZE_LIMIT",
     "MAX_BRUSH_SIZE",
+    "PaintBlendMode",
     "BrushSettings",
     "BrushStrokeEngine",
     "BrushSurface",

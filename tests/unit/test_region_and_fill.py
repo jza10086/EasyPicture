@@ -5,6 +5,7 @@ import numpy as np
 from easypicture.domain import Document
 from easypicture.imaging import (
     FillRequest,
+    PaintBlendMode,
     RegionQuery,
     calculate_fill,
     find_region,
@@ -176,3 +177,21 @@ def test_fill_edge_expansion_does_not_cross_opaque_barrier() -> None:
     assert tuple(after[0, 0]) == (255, 0, 0, 255)
     assert tuple(after[0, 1]) == (0, 0, 0, 255)
     assert tuple(after[0, 2]) == (0, 0, 0, 0)
+
+
+def test_fill_replace_mode_replaces_rgba_instead_of_source_over() -> None:
+    document = Document.create(1, 1)
+    tile = np.zeros((256, 256, 4), dtype=np.uint8)
+    tile[0, 0] = (255, 0, 0, 255)
+    document.active_layer.pixels.replace_tile(0, 0, tile)
+    request = FillRequest(
+        snapshot=DocumentSnapshot.capture(document),
+        layer_id=document.active_layer_id,
+        query=RegionQuery((0, 0)),
+        color=(0, 255, 0, 128),
+        mode=PaintBlendMode.REPLACE,
+    )
+
+    result = calculate_fill(request, CancellationToken(), lambda *_args: None)
+
+    assert tuple(result.updates[TileCoord(0, 0)][0, 0]) == (0, 255, 0, 128)

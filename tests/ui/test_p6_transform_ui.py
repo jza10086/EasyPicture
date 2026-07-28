@@ -93,8 +93,9 @@ def test_transform_tool_keyboard_translation_previews_and_commits_once(
 
     qtbot.mouseClick(options.apply_button, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
     qtbot.waitUntil(lambda: controller.commands.undo_stack.count() == 1, timeout=5000)
-    assert document.active_layer.origin.x == 10
-    assert tuple(document.active_layer.pixels.read_tile(0, 0)[5, 5]) == (
+    assert document.active_layer.origin.x == 0
+    assert document.active_layer.size == document.size
+    assert tuple(document.active_layer.pixels.read_tile(0, 0)[5, 15]) == (
         255,
         0,
         0,
@@ -103,6 +104,12 @@ def test_transform_tool_keyboard_translation_previews_and_commits_once(
 
     controller.commands.undo_stack.undo()
     assert document.active_layer.origin.x == 0
+    assert tuple(document.active_layer.pixels.read_tile(0, 0)[5, 5]) == (
+        255,
+        0,
+        0,
+        255,
+    )
 
 
 def test_transform_preview_operations_have_local_undo_and_redo(

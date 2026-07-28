@@ -18,5 +18,8 @@ class CanvasBoundsItem(QGraphicsRectItem):
         self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
 
+    def set_size(self, size: Size) -> None:
+        self.setRect(0.0, 0.0, float(size.width), float(size.height))
+
 
 __all__ = ["CanvasBoundsItem"]

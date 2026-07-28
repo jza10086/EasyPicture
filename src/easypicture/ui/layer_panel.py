@@ -4,16 +4,28 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Any
+from uuid import UUID
 
+import numpy as np
 from PySide6.QtCore import (
     QAbstractListModel,
     QMimeData,
     QModelIndex,
     QPersistentModelIndex,
     QRect,
+    QSize,
     Qt,
 )
-from PySide6.QtGui import QFocusEvent, QMouseEvent
+from PySide6.QtGui import (
+    QColor,
+    QFocusEvent,
+    QIcon,
+    QImage,
+    QMouseEvent,
+    QPainter,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -33,15 +45,87 @@ from easypicture.domain import (
     ActiveLayerChanged,
     Document,
     DocumentEvent,
+    DocumentSizeChanged,
     LayerListChanged,
+    LayerPixelsChanged,
     LayerPropertiesChanged,
     RasterLayer,
 )
+from easypicture.render import rgba_tile_to_qimage
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 
 LAYER_MIME_TYPE = "application/x-easypicture-layer-id"
+LAYER_THUMBNAIL_SIZE = 48
+_THUMBNAIL_CONTENT_SIZE = 44
 _INVALID_INDEX = QModelIndex()
 type ModelIndex = QModelIndex | QPersistentModelIndex
+type ThumbnailKey = tuple[int, int, int, int, int, int, int]
+
+
+def _render_layer_thumbnail(
+    layer: RasterLayer,
+    document_width: int,
+    document_height: int,
+) -> QIcon:
+    scale = min(
+        _THUMBNAIL_CONTENT_SIZE / document_width,
+        _THUMBNAIL_CONTENT_SIZE / document_height,
+    )
+    content_width = max(1, round(document_width * scale))
+    content_height = max(1, round(document_height * scale))
+    sampled = np.zeros((content_height, content_width, 4), dtype=np.uint8)
+    tile_size = layer.pixels.tile_size
+    tile_cache: dict[tuple[int, int], np.ndarray] = {}
+    for target_y in range(content_height):
+        document_y = min(
+            document_height - 1,
+            int((target_y + 0.5) * document_height / content_height),
+        )
+        local_y = document_y - layer.origin.y
+        if not 0 <= local_y < layer.size.height:
+            continue
+        tile_y, pixel_y = divmod(local_y, tile_size)
+        for target_x in range(content_width):
+            document_x = min(
+                document_width - 1,
+                int((target_x + 0.5) * document_width / content_width),
+            )
+            local_x = document_x - layer.origin.x
+            if not 0 <= local_x < layer.size.width:
+                continue
+            tile_x, pixel_x = divmod(local_x, tile_size)
+            cache_key = (tile_x, tile_y)
+            tile = tile_cache.get(cache_key)
+            if tile is None:
+                tile = layer.pixels.read_tile(tile_x, tile_y)
+                tile_cache[cache_key] = tile
+            sampled[target_y, target_x] = tile[pixel_y, pixel_x]
+
+    thumbnail = QImage(
+        LAYER_THUMBNAIL_SIZE,
+        LAYER_THUMBNAIL_SIZE,
+        QImage.Format.Format_RGBA8888_Premultiplied,
+    )
+    thumbnail.fill(QColor("#1b1b1b"))
+    left = (LAYER_THUMBNAIL_SIZE - content_width) // 2
+    top = (LAYER_THUMBNAIL_SIZE - content_height) // 2
+    painter = QPainter(thumbnail)
+    checker_size = 4
+    for y in range(0, content_height, checker_size):
+        for x in range(0, content_width, checker_size):
+            shade = 104 if (x // checker_size + y // checker_size) % 2 == 0 else 74
+            painter.fillRect(
+                left + x,
+                top + y,
+                min(checker_size, content_width - x),
+                min(checker_size, content_height - y),
+                QColor(shade, shade, shade),
+            )
+    painter.drawImage(left, top, rgba_tile_to_qimage(sampled))
+    painter.setPen(QPen(QColor("#151515"), 1.0))
+    painter.drawRect(left, top, content_width - 1, content_height - 1)
+    painter.end()
+    return QIcon(QPixmap.fromImage(thumbnail))
 
 
 class LayerListModel(QAbstractListModel):
@@ -58,6 +142,7 @@ class LayerListModel(QAbstractListModel):
         super().__init__(parent)
         self.commands = commands
         self._document: Document | None = None
+        self._thumbnail_cache: dict[UUID, tuple[ThumbnailKey, QIcon]] = {}
 
     @property
     def document(self) -> Document | None:
@@ -66,6 +151,7 @@ class LayerListModel(QAbstractListModel):
     def set_document(self, document: Document | None) -> None:
         self.beginResetModel()
         self._document = document
+        self._thumbnail_cache.clear()
         self.endResetModel()
 
     def rowCount(self, parent: ModelIndex = _INVALID_INDEX) -> int:
@@ -79,6 +165,8 @@ class LayerListModel(QAbstractListModel):
             return None
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             return layer.name
+        if role == Qt.ItemDataRole.DecorationRole:
+            return self._thumbnail(layer)
         if role == Qt.ItemDataRole.CheckStateRole:
             return Qt.CheckState.Checked if layer.visible else Qt.CheckState.Unchecked
         if role == Qt.ItemDataRole.ToolTipRole:
@@ -194,17 +282,68 @@ class LayerListModel(QAbstractListModel):
 
     def handle_event(self, event: DocumentEvent) -> None:
         if isinstance(event, LayerListChanged):
+            self._thumbnail_cache.clear()
             self.beginResetModel()
             self.endResetModel()
+            return
+        if isinstance(event, DocumentSizeChanged):
+            self._thumbnail_cache.clear()
+            if self.rowCount() > 0:
+                self.dataChanged.emit(
+                    self.index(0, 0),
+                    self.index(self.rowCount() - 1, 0),
+                    [Qt.ItemDataRole.DecorationRole],
+                )
+            return
+        if isinstance(event, LayerPixelsChanged) and self._document is not None:
+            self._invalidate_thumbnail(event.layer_id)
             return
         if isinstance(event, LayerPropertiesChanged) and self._document is not None:
             try:
                 layer = self._document.layer_by_id(event.layer_id)
             except ValueError:
                 return
+            if event.properties & {"size", "origin"}:
+                self._thumbnail_cache.pop(layer.id, None)
             row = self.row_for_layer(layer)
             index = self.index(row, 0)
             self.dataChanged.emit(index, index)
+
+    def _invalidate_thumbnail(self, layer_id: UUID) -> None:
+        if self._document is None:
+            return
+        try:
+            layer = self._document.layer_by_id(layer_id)
+        except ValueError:
+            return
+        self._thumbnail_cache.pop(layer_id, None)
+        row = self.row_for_layer(layer)
+        index = self.index(row, 0)
+        self.dataChanged.emit(
+            index,
+            index,
+            [Qt.ItemDataRole.DecorationRole],
+        )
+
+    def _thumbnail(self, layer: RasterLayer) -> QIcon:
+        document = self._document
+        if document is None:
+            return QIcon()
+        key: ThumbnailKey = (
+            layer.pixels.revision,
+            document.width,
+            document.height,
+            layer.size.width,
+            layer.size.height,
+            layer.origin.x,
+            layer.origin.y,
+        )
+        cached = self._thumbnail_cache.get(layer.id)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        icon = _render_layer_thumbnail(layer, document.width, document.height)
+        self._thumbnail_cache[layer.id] = (key, icon)
+        return icon
 
 
 class LayerItemDelegate(QStyledItemDelegate):
@@ -365,6 +504,11 @@ class LayerPanel(QWidget):
         self.list_view = LayerListView(commands, self)
         self.list_view.setObjectName("LayerList")
         self.list_view.setModel(self.model)
+        self.list_view.setIconSize(
+            QSize(LAYER_THUMBNAIL_SIZE, LAYER_THUMBNAIL_SIZE)
+        )
+        self.list_view.setSpacing(2)
+        self.list_view.setUniformItemSizes(True)
         self.list_view.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed

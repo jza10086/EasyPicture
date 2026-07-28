@@ -9,7 +9,12 @@ from PySide6.QtCore import QObject, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QGraphicsRectItem, QStyleOptionGraphicsItem, QWidget
 
-from easypicture.domain import Document, DocumentEvent, SelectionChanged
+from easypicture.domain import (
+    Document,
+    DocumentEvent,
+    DocumentSizeChanged,
+    SelectionChanged,
+)
 from easypicture.pixels import Rect, TileCoord
 from easypicture.ui.selection_style import (
     DEFAULT_SELECTION_OUTLINE_COLOR,
@@ -198,6 +203,17 @@ class SelectionOverlayItem(QGraphicsRectItem):
             yield int(start), int(end)
 
     def _on_document_event(self, event: DocumentEvent) -> None:
+        if isinstance(event, DocumentSizeChanged):
+            self.prepareGeometryChange()
+            self.setRect(
+                0.0,
+                0.0,
+                float(event.new_size.width),
+                float(event.new_size.height),
+            )
+            self._paths.clear()
+            self.update()
+            return
         if not isinstance(event, SelectionChanged):
             return
         changed = set(event.tiles)

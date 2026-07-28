@@ -12,6 +12,7 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 from easypicture.commands.patch_store import PatchHandle, UndoPatchStore
 from easypicture.domain import Document, PixelPoint, RasterLayer, Size
 from easypicture.domain.document import MAX_DOCUMENT_LAYERS
+from easypicture.imaging.geometry_ops import DocumentGeometryResult
 from easypicture.imaging.transform import RasterTransformResult
 from easypicture.pixels import MaskArray, RGBAArray, TileCoord
 
@@ -262,6 +263,96 @@ class _RasterTransformCommand(_DocumentCommand):
         super().release_payload()
 
 
+@dataclass(frozen=True, slots=True)
+class _LayerGeometryPatch:
+    layer_id: UUID
+    before_size: Size
+    after_size: Size
+    before_origin: PixelPoint
+    after_origin: PixelPoint
+    pixel_patches: tuple[_TilePatch, ...]
+
+
+class _DocumentGeometryCommand(_DocumentCommand):
+    def __init__(
+        self,
+        document: Document,
+        before_document_size: Size,
+        after_document_size: Size,
+        layers: tuple[_LayerGeometryPatch, ...],
+        selection_patches: tuple[_TilePatch, ...],
+        patch_store: UndoPatchStore,
+        text: str,
+    ) -> None:
+        storage_bytes = sum(
+            patch.before.stored_bytes + patch.after.stored_bytes
+            for layer in layers
+            for patch in layer.pixel_patches
+        ) + sum(
+            patch.before.stored_bytes + patch.after.stored_bytes
+            for patch in selection_patches
+        )
+        super().__init__(document, text, storage_bytes=storage_bytes)
+        self.before_document_size = before_document_size
+        self.after_document_size = after_document_size
+        self.layers = layers
+        self.selection_patches = selection_patches
+        self.patch_store = patch_store
+
+    def _apply(self, *, use_after: bool) -> None:
+        layer_geometry = {
+            layer.layer_id: (
+                layer.after_size if use_after else layer.before_size,
+                layer.after_origin if use_after else layer.before_origin,
+            )
+            for layer in self.layers
+        }
+        layer_updates = {
+            layer.layer_id: {
+                patch.coord: self.patch_store.restore(
+                    patch.after if use_after else patch.before
+                )
+                for patch in layer.pixel_patches
+            }
+            for layer in self.layers
+            if layer.pixel_patches
+        }
+        selection_updates = {
+            patch.coord: self.patch_store.restore(
+                patch.after if use_after else patch.before
+            )
+            for patch in self.selection_patches
+        }
+        self.document.apply_geometry_transaction(
+            document_size=(
+                self.after_document_size
+                if use_after
+                else self.before_document_size
+            ),
+            layer_geometry=layer_geometry,
+            layer_updates=layer_updates,
+            selection_updates=selection_updates,
+        )
+
+    def redo(self) -> None:
+        self._apply(use_after=True)
+
+    def undo(self) -> None:
+        self._apply(use_after=False)
+
+    def release_payload(self) -> None:
+        if self._released:
+            return
+        for layer in self.layers:
+            for patch in layer.pixel_patches:
+                self.patch_store.release(patch.before)
+                self.patch_store.release(patch.after)
+        for patch in self.selection_patches:
+            self.patch_store.release(patch.before)
+            self.patch_store.release(patch.after)
+        super().release_payload()
+
+
 class DocumentCommandService:
     """The only application-layer entry point for undoable document changes."""
 
@@ -463,6 +554,32 @@ class DocumentCommandService:
             )
         )
 
+    def clear_selected_pixels(self, layer_id: UUID) -> bool:
+        """Make selected pixels transparent while preserving their hidden RGB."""
+
+        document = self._require_document()
+        if not document.selection.is_active:
+            return False
+        try:
+            layer = document.layer_by_id(layer_id)
+        except ValueError:
+            return False
+        if layer.locked or layer.alpha_locked:
+            return False
+        updates: dict[TileCoord, RGBAArray] = {}
+        for coord, mask in document.selection.mask.iter_allocated_tiles():
+            if not layer.pixels.has_tile(coord.x, coord.y):
+                continue
+            before = layer.pixels.read_tile(coord.x, coord.y)
+            after = before.copy()
+            remaining = 1.0 - mask.astype(np.float32) / 255.0
+            after[..., 3] = np.rint(
+                before[..., 3].astype(np.float32) * remaining
+            ).astype(np.uint8)
+            if not np.array_equal(before, after):
+                updates[coord] = after
+        return self.apply_pixel_tiles(layer_id, updates, "清除选区像素")
+
     def apply_selection_tiles(
         self,
         updates: Mapping[TileCoord, MaskArray | None],
@@ -517,10 +634,8 @@ class DocumentCommandService:
         if layer.locked or layer.alpha_locked:
             return False
         if (
-            result.layer_size.width > 8192
-            or result.layer_size.height > 8192
-            or abs(result.layer_origin.x) > 8192 * 4
-            or abs(result.layer_origin.y) > 8192 * 4
+            result.layer_size != document.size
+            or result.layer_origin != PixelPoint()
         ):
             return False
 
@@ -607,6 +722,135 @@ class DocumentCommandService:
                 tuple(selection_patches),
                 self.patch_store,
                 label.strip() or "自由变换",
+            )
+        )
+
+    def apply_document_geometry(
+        self,
+        result: DocumentGeometryResult,
+        label: str,
+    ) -> bool:
+        document = self._require_document()
+        if (
+            result.document_id != document.id
+            or result.source_revision != document.revision
+            or result.document_size.width > 8192
+            or result.document_size.height > 8192
+        ):
+            return False
+        current_ids = {layer.id for layer in document.layers}
+        result_ids = {layer.layer_id for layer in result.layers}
+        if current_ids != result_ids:
+            return False
+
+        layer_results = {layer.layer_id: layer for layer in result.layers}
+        layers: list[_LayerGeometryPatch] = []
+        selection_patches: list[_TilePatch] = []
+        captured_patches: list[_TilePatch] = []
+        try:
+            for layer in document.layers:
+                resolved = layer_results[layer.id]
+                if (
+                    resolved.size != result.document_size
+                    or resolved.origin != PixelPoint()
+                ):
+                    raise ValueError("layers must match the document canvas")
+                pixel_patches: list[_TilePatch] = []
+                if resolved.tiles is not None:
+                    before_coords = {
+                        coord for coord, _pixels in layer.pixels.iter_allocated_tiles()
+                    }
+                    for coord in sorted(
+                        before_coords | set(resolved.tiles),
+                        key=lambda item: (item.y, item.x),
+                    ):
+                        before = (
+                            layer.pixels.read_tile(coord.x, coord.y)
+                            if coord in before_coords
+                            else None
+                        )
+                        after = resolved.tiles.get(coord)
+                        if before is None and after is None:
+                            continue
+                        if (
+                            before is not None
+                            and after is not None
+                            and np.array_equal(before, after)
+                        ):
+                            continue
+                        patch = _TilePatch(
+                            coord,
+                            self.patch_store.capture(before),
+                            self.patch_store.capture(after),
+                        )
+                        pixel_patches.append(patch)
+                        captured_patches.append(patch)
+                layers.append(
+                    _LayerGeometryPatch(
+                        layer.id,
+                        layer.size,
+                        resolved.size,
+                        layer.origin,
+                        resolved.origin,
+                        tuple(pixel_patches),
+                    )
+                )
+
+            before_selection_coords = {
+                coord for coord, _pixels in document.selection.mask.iter_allocated_tiles()
+            }
+            for coord in sorted(
+                before_selection_coords | set(result.selection_tiles),
+                key=lambda item: (item.y, item.x),
+            ):
+                before_mask = (
+                    document.selection.mask.read_tile(coord.x, coord.y)
+                    if coord in before_selection_coords
+                    else None
+                )
+                after_mask = result.selection_tiles.get(coord)
+                if before_mask is None and after_mask is None:
+                    continue
+                if (
+                    before_mask is not None
+                    and after_mask is not None
+                    and np.array_equal(before_mask, after_mask)
+                ):
+                    continue
+                patch = _TilePatch(
+                    coord,
+                    self.patch_store.capture_mask(before_mask),
+                    self.patch_store.capture_mask(after_mask),
+                )
+                selection_patches.append(patch)
+                captured_patches.append(patch)
+        except (TypeError, ValueError):
+            for patch in captured_patches:
+                self.patch_store.release(patch.before)
+                self.patch_store.release(patch.after)
+            return False
+
+        changed = (
+            document.size != result.document_size
+            or bool(selection_patches)
+            or any(
+                layer.before_size != layer.after_size
+                or layer.before_origin != layer.after_origin
+                or layer.pixel_patches
+                for layer in layers
+            )
+        )
+        if not changed:
+            return False
+        return self._push(
+            _DocumentGeometryCommand(
+                document,
+                document.size,
+                result.document_size,
+                tuple(layers),
+                tuple(selection_patches),
+                self.patch_store,
+                label.strip() or "几何变更",
             )
         )
 

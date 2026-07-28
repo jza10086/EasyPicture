@@ -27,13 +27,18 @@ class ColorPanel(QWidget):
 
         self.foreground_button = QPushButton("前景色", self)
         self.background_button = QPushButton("背景色", self)
-        self.swap_button = QPushButton("交换", self)
+        self.swap_button = QPushButton("交换颜色", self)
+        self.foreground_button.setToolTip("打开前景色选择器")
+        self.background_button.setToolTip("打开背景色选择器")
         self.foreground_button.clicked.connect(self._choose_foreground)
         self.background_button.clicked.connect(self._choose_background)
         self.swap_button.clicked.connect(self.swap_colors)
 
         layout = QGridLayout(self)
-        layout.addWidget(QLabel("颜色", self), 0, 0, 1, 2)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setHorizontalSpacing(6)
+        layout.setVerticalSpacing(6)
+        layout.addWidget(QLabel("当前颜色", self), 0, 0, 1, 2)
         layout.addWidget(self.foreground_button, 1, 0)
         layout.addWidget(self.background_button, 1, 1)
         layout.addWidget(self.swap_button, 2, 0, 1, 2)
@@ -89,7 +94,12 @@ class ColorPanel(QWidget):
     def _color_style(color: QColor) -> str:
         contrasting = "#ffffff" if color.lightness() < 128 else "#000000"
         rgba = f"{color.red()}, {color.green()}, {color.blue()}, {color.alpha()}"
-        return f"QPushButton {{background-color: rgba({rgba});color: {contrasting};}}"
+        return (
+            "QPushButton {"
+            f"background-color: rgba({rgba});"
+            f"color: {contrasting};"
+            "}"
+        )
 
 
 __all__ = ["ColorPanel"]

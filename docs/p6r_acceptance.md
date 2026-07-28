@@ -74,6 +74,6 @@ uv run python -m easypicture --render-backend software `
 2. `Passed`：快速拖动四角、旋转按钮和属性数值，帧跟随且无旧姿态；
 3. `Passed`：连续显隐、排序和拖动不透明度无闪烁；
 4. `Passed`：快速画笔、橡皮、滚轮和中键平移无残影；
-5. `Passed`：画布外预览及提交后画布外像素保留；
+5. `Passed`：画布外预览正常；当时的提交后保留规则已由 P6B 固定画布图层决策取代；
 6. `Passed`：自动、OpenGL 和软件后端均可启动；
 7. `Passed`：standalone 的 OpenGL/软件 render smoke。

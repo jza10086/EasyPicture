@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from easypicture.imaging import BrushSettings, BrushStrokeEngine, blend_color, erase_alpha
+from easypicture.imaging import (
+    BrushSettings,
+    BrushStrokeEngine,
+    PaintBlendMode,
+    blend_color,
+    erase_alpha,
+)
 from easypicture.pixels import MaskTileStore, Rect, TileCoord, TilePixelStore
 
 
@@ -68,6 +74,34 @@ def test_half_transparent_brush_uses_straight_rgba_source_over() -> None:
     actual = blend_color(destination, (255, 0, 0, 128), np.ones((1, 1), dtype=np.float32))
 
     assert tuple(actual[0, 0]) == (170, 0, 85, 192)
+
+
+def test_replace_and_common_blend_modes_have_distinct_pixel_semantics() -> None:
+    destination = np.array([[[100, 150, 200, 255]]], dtype=np.uint8)
+    coverage = np.ones((1, 1), dtype=np.float32)
+
+    replaced = blend_color(
+        destination,
+        (200, 100, 50, 128),
+        coverage,
+        PaintBlendMode.REPLACE,
+    )
+    multiplied = blend_color(
+        destination,
+        (200, 100, 50, 255),
+        coverage,
+        PaintBlendMode.MULTIPLY,
+    )
+    screened = blend_color(
+        destination,
+        (200, 100, 50, 255),
+        coverage,
+        PaintBlendMode.SCREEN,
+    )
+
+    assert tuple(replaced[0, 0]) == (200, 100, 50, 128)
+    assert tuple(multiplied[0, 0]) == (78, 59, 39, 255)
+    assert tuple(screened[0, 0]) == (222, 191, 211, 255)
 
 
 def test_eraser_preserves_rgb_when_alpha_reaches_zero() -> None:

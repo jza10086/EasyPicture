@@ -10,7 +10,14 @@ P6A 自由变换与 P6R GPU 画布重构已经完成联合人工验收：支持�
 撤销；显示链使用 OpenGL 3.3 完整帧并提供软件回退，优先保证旋出/旋回、画笔、
 显隐和导航期间不残留旧帧。自由变换预览支持按操作分步撤销、拖动右键复位，中心点
 与四角坐标集中在属性面板；全局设置可调整普通及 Shift 数值拖动灵敏度。套索、网格
-变形、裁切、形状、文本和完整格式导出尚未实现。
+网格变形尚未实现。P6B 已完成自动与人工验收，包括可扩展到画布外的裁切、裁切透明像素、九点锚点画布尺寸、
+图像/图层缩放和裁切到选区；所有图层固定与画布同尺寸且 origin 为零，缩小或裁切后位于
+画布外的像素会被删除，只能通过撤销恢复。Delete 可按选区权重清除活动层 Alpha，画笔与
+油漆桶支持正常、替换、正片叠底、滤色和叠加模式；颜色 Dock 保持紧凑，点击前景色或
+背景色后使用深色中文 Blender 式 HSV 圆盘、明度条和 RGB/HSV/Hex 分页拖动输入弹窗。
+图层列表为每个图层显示带透明棋盘格的像素缩略图，并按图层 revision 精确刷新。
+几何预览继续使用统一完整帧状态，整次提交只产生一个撤销命令。基础图形、文本和完整格式
+导出尚未实现。
 
 ## 环境
 
@@ -52,4 +59,5 @@ uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\
 [`docs/p5_acceptance.md`](docs/p5_acceptance.md)。界面输入控件约定见
 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，P6A 结果见
 [`docs/p6a_acceptance.md`](docs/p6a_acceptance.md)，P6R 渲染重构见
-[`docs/p6r_acceptance.md`](docs/p6r_acceptance.md)。
+[`docs/p6r_acceptance.md`](docs/p6r_acceptance.md)，P6B 几何工具验收见
+[`docs/p6b_acceptance.md`](docs/p6b_acceptance.md)。

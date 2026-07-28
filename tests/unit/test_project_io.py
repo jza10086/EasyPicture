@@ -65,8 +65,8 @@ def test_project_round_trip_preserves_sparse_pixels_and_selection(tmp_path: Path
     assert restored.layers[0].opacity == 0.75
     assert tuple(restored.layers[0].pixels.read_tile(0, 0)[0, 0]) == (11, 22, 33, 0)
     assert restored.active_layer.name == "隐藏层"
-    assert restored.active_layer.size == Size(20, 30)
-    assert restored.active_layer.origin == PixelPoint(-2, 3)
+    assert restored.active_layer.size == document.size
+    assert restored.active_layer.origin == PixelPoint()
     assert not restored.active_layer.visible
     assert restored.active_layer.locked
     assert restored.active_layer.alpha_locked

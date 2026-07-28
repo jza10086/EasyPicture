@@ -12,7 +12,12 @@ from uuid import UUID
 import cv2
 import numpy as np
 
-from easypicture.imaging.brush import RGBAColor, blend_color, blend_color_behind
+from easypicture.imaging.brush import (
+    PaintBlendMode,
+    RGBAColor,
+    blend_color,
+    blend_color_behind,
+)
 from easypicture.imaging.reference import create_region_reference, layer_by_id
 from easypicture.imaging.region import RegionQuery, RegionResult, find_region
 from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
@@ -33,6 +38,7 @@ class FillRequest:
     color: RGBAColor
     sample_merged: bool = False
     edge_expansion: int = 0
+    mode: PaintBlendMode = PaintBlendMode.NORMAL
 
     def __post_init__(self) -> None:
         if not 0 <= self.edge_expansion <= 8:
@@ -83,6 +89,7 @@ def calculate_fill(
         region,
         expanded_region,
         request.color,
+        request.mode,
         cancellation,
         progress,
     )
@@ -100,6 +107,7 @@ def _build_updates(
     region: RegionResult,
     expanded_region: RegionResult,
     color: RGBAColor,
+    mode: PaintBlendMode,
     cancellation: FillCancellation,
     progress: ProgressReporter,
 ) -> dict[TileCoord, RGBAArray]:
@@ -182,10 +190,14 @@ def _build_updates(
         target_right = target_left + core_coverage.shape[1]
         target_bottom = target_top + core_coverage.shape[0]
         target = after[target_top:target_bottom, target_left:target_right]
-        target_after = blend_color(target, color, core_coverage)
+        target_after = blend_color(target, color, core_coverage, mode)
         fringe_coverage = np.clip(expanded_coverage - core_coverage, 0.0, 1.0)
         if np.any(fringe_coverage > 0):
-            target_after = blend_color_behind(target_after, color, fringe_coverage)
+            target_after = (
+                blend_color_behind(target_after, color, fringe_coverage)
+                if mode is PaintBlendMode.NORMAL
+                else blend_color(target_after, color, fringe_coverage, mode)
+            )
         if np.array_equal(target, target_after):
             continue
         after[target_top:target_bottom, target_left:target_right] = target_after
