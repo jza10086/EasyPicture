@@ -211,6 +211,41 @@ class CanvasRenderCoordinator(QObject):
         self._discard_tile_cache(layer_id, frozenset(updates))
         self.request_frame()
 
+    def replace_pixel_preview(
+        self,
+        layer_id: UUID,
+        updates: Mapping[TileCoord, RGBAArray | None],
+    ) -> None:
+        """Replace the complete preview mapping in one frame generation."""
+
+        document = self._require_document()
+        layer = document.layer_by_id(layer_id)
+        normalized: dict[TileCoord, RGBAArray] = {}
+        for coord, pixels in updates.items():
+            if pixels is None:
+                pixels = np.zeros(
+                    (layer.pixels.tile_size, layer.pixels.tile_size, 4),
+                    dtype=np.uint8,
+                )
+            validate_rgba_array(
+                pixels,
+                expected_width=layer.pixels.tile_size,
+                expected_height=layer.pixels.tile_size,
+            )
+            normalized[coord] = pixels
+        old_layer_id = self._pixel_preview_layer_id
+        old_coords = frozenset(self._pixel_preview_tiles)
+        self._pixel_preview_epoch += 1
+        self._pixel_preview_layer_id = layer_id if normalized else None
+        self._pixel_preview_tiles = normalized
+        self._pixel_preview_revisions = {
+            coord: self._pixel_preview_epoch for coord in normalized
+        }
+        if old_layer_id is not None:
+            self._discard_tile_cache(old_layer_id, old_coords)
+        self._discard_tile_cache(layer_id, frozenset(normalized))
+        self.request_frame()
+
     def clear_pixel_preview(self) -> None:
         layer_id = self._pixel_preview_layer_id
         if layer_id is None:

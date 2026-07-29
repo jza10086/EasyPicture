@@ -109,6 +109,13 @@ class AppSettings:
     def set_render_backend(self, backend: RenderBackendKind) -> None:
         self._settings.setValue("render/backend", backend.value)
 
+    def color_adjustment_state(self, kind: str) -> str | None:
+        value = self._settings.value(f"color_adjustments/{kind}")
+        return None if value is None else str(value)
+
+    def set_color_adjustment_state(self, kind: str, state: str) -> None:
+        self._settings.setValue(f"color_adjustments/{kind}", state)
+
     def numeric_drag_sensitivity(self) -> float:
         return self._bounded_float(
             "ui/numeric_drag_sensitivity",

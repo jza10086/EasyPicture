@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -202,6 +203,14 @@ class CanvasView(QGraphicsView):
     ) -> None:
         if self._document is not None:
             self._render_coordinator.set_pixel_preview(layer_id, updates)
+
+    def replace_pixel_preview(
+        self,
+        layer_id: UUID,
+        updates: Mapping[TileCoord, RGBAArray | None],
+    ) -> None:
+        if self._document is not None:
+            self._render_coordinator.replace_pixel_preview(layer_id, updates)
 
     def clear_pixel_preview(self) -> None:
         self._render_coordinator.clear_pixel_preview()

@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QColor, QKeySequence
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QCloseEvent,
+    QColor,
+    QKeyEvent,
+    QKeySequence,
+    QShortcut,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QDockWidget,
@@ -24,12 +32,21 @@ from easypicture.controller import ApplicationController
 from easypicture.domain import AffineTransform, Document, DocumentEvent, Point, Size
 from easypicture.imaging import (
     BACKGROUND_SELECTION_PIXEL_THRESHOLD,
+    BrightnessContrastAdjustment,
     CanvasResizeRequest,
+    ColorAdjustmentKind,
+    ColorReplaceAdjustment,
     CropDocumentRequest,
+    CurvesAdjustment,
     DocumentGeometryResult,
+    GammaAdjustment,
     GeometryRect,
+    GradientMapAdjustment,
+    HslAdjustment,
     ImageScaleRequest,
+    InvertAdjustment,
     LayerScaleRequest,
+    PaletteMapAdjustment,
     SelectionAdjustment,
     SelectionAdjustmentRequest,
     SelectionBulkOperation,
@@ -39,6 +56,7 @@ from easypicture.imaging import (
     ShapeGeometry,
     ShapeKind,
     ShapeSettings,
+    ThresholdAdjustment,
     TrimTransparentRequest,
     calculate_bulk_selection,
     calculate_canvas_resize,
@@ -73,6 +91,8 @@ from easypicture.tools import (
     TransformTool,
 )
 from easypicture.ui.canvas_view import CanvasView
+from easypicture.ui.color_adjustment_controller import ColorAdjustmentController
+from easypicture.ui.color_adjustment_panel import ColorAdjustmentPanel
 from easypicture.ui.color_panel import ColorPanel
 from easypicture.ui.drag_value_spinbox import configure_numeric_drag_sensitivity
 from easypicture.ui.geometry_dialogs import CanvasSizeDialog, ScaleGeometryDialog
@@ -176,6 +196,7 @@ class MainWindow(QMainWindow):
         self._selection_progress: QProgressDialog | None = None
         self._geometry_job: JobHandle | None = None
         self._geometry_progress: QProgressDialog | None = None
+        self._adjustment_previous_tool: Tool | None = None
 
         self.canvas_view = CanvasView(
             self,
@@ -211,6 +232,11 @@ class MainWindow(QMainWindow):
         self._create_menus()
         self._create_toolbars()
         self._create_docks()
+        self._color_apply_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self._color_apply_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self._color_apply_shortcut.activated.connect(
+            self._apply_color_adjustment_if_active
+        )
         self._create_status_bar()
         self._connect_signals()
         self._on_document_changed(self.controller.document)
@@ -278,6 +304,28 @@ class MainWindow(QMainWindow):
         self.smooth_selection_action = QAction("平滑…", self)
         self.clear_selected_pixels_action = QAction("清除选区像素", self)
         self.clear_selected_pixels_action.setShortcut(QKeySequence("Del"))
+        self.color_adjustment_actions: dict[ColorAdjustmentKind, QAction] = {}
+        for kind, label in (
+            (ColorAdjustmentKind.INVERT, "反相"),
+            (ColorAdjustmentKind.THRESHOLD, "阈值…"),
+            (ColorAdjustmentKind.BRIGHTNESS_CONTRAST, "亮度/对比度…"),
+            (ColorAdjustmentKind.GAMMA, "伽马…"),
+            (ColorAdjustmentKind.CURVES, "曲线…"),
+            (ColorAdjustmentKind.HSL, "色相/饱和度/明度…"),
+            (ColorAdjustmentKind.GRADIENT_MAP, "渐变映射…"),
+            (ColorAdjustmentKind.COLOR_REPLACE, "颜色替换…"),
+            (ColorAdjustmentKind.PALETTE_MAP, "调色板映射…"),
+        ):
+            action = QAction(label, self)
+            action.setEnabled(False)
+            if kind is ColorAdjustmentKind.INVERT:
+                action.setShortcut(QKeySequence("Ctrl+I"))
+            action.triggered.connect(
+                lambda _checked=False, adjustment_kind=kind: self._start_color_adjustment(
+                    adjustment_kind
+                )
+            )
+            self.color_adjustment_actions[kind] = action
 
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("文件(&F)")
@@ -309,6 +357,17 @@ class MainWindow(QMainWindow):
 
         layer_menu = self.menuBar().addMenu("图层(&L)")
         layer_menu.addAction(self.layer_scale_action)
+
+        color_menu = self.menuBar().addMenu("颜色(&C)")
+        for kind in ColorAdjustmentKind:
+            color_menu.addAction(self.color_adjustment_actions[kind])
+            if kind in (
+                ColorAdjustmentKind.INVERT,
+                ColorAdjustmentKind.CURVES,
+                ColorAdjustmentKind.HSL,
+                ColorAdjustmentKind.COLOR_REPLACE,
+            ):
+                color_menu.addSeparator()
 
         view_menu = self.menuBar().addMenu("视图(&V)")
         view_menu.addAction(self.zoom_in_action)
@@ -453,9 +512,30 @@ class MainWindow(QMainWindow):
         properties_placeholder.setWordWrap(True)
         self.transform_properties = TransformPropertiesPanel(self)
         self.shape_properties = ShapePropertiesPanel(self)
+        self.color_adjustment_panel = ColorAdjustmentPanel(
+            self.settings,
+            self.controller.dialogs,
+            self._foreground_rgba,
+            lambda: (
+                self.color_panel.background.red(),
+                self.color_panel.background.green(),
+                self.color_panel.background.blue(),
+                self.color_panel.background.alpha(),
+            ),
+            self,
+        )
         self.properties_stack.addWidget(properties_placeholder)
         self.properties_stack.addWidget(self.transform_properties)
         self.properties_stack.addWidget(self.shape_properties)
+        self.properties_stack.addWidget(self.color_adjustment_panel)
+        self.color_adjustment_controller = ColorAdjustmentController(
+            self.canvas_view,
+            lambda: self.controller.document,
+            self.controller.commands,
+            self.controller.jobs,
+            self.statusBar().showMessage,
+            self,
+        )
         self.transform_properties.corners_changed.connect(
             self._transform_corners_changed
         )
@@ -469,6 +549,35 @@ class MainWindow(QMainWindow):
         self.shape_properties.edit_started.connect(self._shape_edit_started)
         self.shape_properties.edit_finished.connect(self._shape_edit_finished)
         self.shape_properties.edit_canceled.connect(self._shape_edit_canceled)
+        self.color_adjustment_panel.parameters_changed.connect(
+            self._color_adjustment_parameters_changed
+        )
+        self.color_adjustment_panel.apply_requested.connect(
+            self._apply_color_adjustment
+        )
+        self.color_adjustment_panel.cancel_requested.connect(
+            self.color_adjustment_controller.cancel
+        )
+        self.color_adjustment_panel.preview_toggled.connect(
+            self.color_adjustment_controller.set_preview_enabled
+        )
+        self.color_adjustment_panel.sample_requested.connect(
+            lambda merged: self.color_adjustment_controller.begin_sampling(
+                merged=merged
+            )
+        )
+        self.color_adjustment_controller.active_changed.connect(
+            self._on_color_adjustment_active
+        )
+        self.color_adjustment_controller.progress_changed.connect(
+            self.color_adjustment_panel.set_progress
+        )
+        self.color_adjustment_controller.preview_ready.connect(
+            lambda _result: self.color_adjustment_panel.set_running(False)
+        )
+        self.color_adjustment_controller.sampled_color.connect(
+            self.color_adjustment_panel.use_sampled_source
+        )
         self.properties_dock = self._make_dock(
             "属性",
             "PropertiesDock",
@@ -586,12 +695,15 @@ class MainWindow(QMainWindow):
         return dock
 
     def _request_new_document(self) -> None:
+        self._cancel_color_adjustment_for_lifecycle()
         self.controller.request_new_document(self)
 
     def _request_close_document(self) -> None:
+        self._cancel_color_adjustment_for_lifecycle()
         self.controller.close_document(self)
 
     def _request_open_document(self) -> None:
+        self._cancel_color_adjustment_for_lifecycle()
         self.controller.request_open_document(self)
 
     def _request_save_document(self) -> None:
@@ -838,6 +950,11 @@ class MainWindow(QMainWindow):
             self._geometry_progress = None
 
     def _on_document_changed(self, document: Document | None) -> None:
+        if (
+            hasattr(self, "color_adjustment_controller")
+            and self.color_adjustment_controller.active
+        ):
+            self.color_adjustment_controller.cancel()
         if self._selection_job is not None:
             self._selection_job.cancel()
             self._selection_job = None
@@ -876,6 +993,8 @@ class MainWindow(QMainWindow):
         for action in self.tool_actions.values():
             action.setEnabled(has_document and not self._editing_busy)
         self.tool_options_panel.setEnabled(has_document and not self._editing_busy)
+        for action in self.color_adjustment_actions.values():
+            action.setEnabled(has_document and not self._editing_busy)
         if document is None:
             self.document_size_label.setText("无文档")
         else:
@@ -885,6 +1004,11 @@ class MainWindow(QMainWindow):
         self._update_window_title()
 
     def _activate_tool(self, tool_name: str) -> None:
+        if (
+            hasattr(self, "color_adjustment_controller")
+            and self.color_adjustment_controller.active
+        ):
+            self.color_adjustment_controller.cancel()
         if tool_name == "crop":
             document = self.controller.document
             if document is not None:
@@ -1009,6 +1133,87 @@ class MainWindow(QMainWindow):
         tool = self._tools.get("shape")
         if isinstance(tool, ShapeTool):
             tool.cancel()
+
+    def _start_color_adjustment(self, kind: ColorAdjustmentKind) -> None:
+        document = self.controller.document
+        if document is None or self._editing_busy:
+            return
+        previous_tool = self.tool_controller.active_tool
+        self._adjustment_previous_tool = previous_tool
+        self.tool_controller.set_tool(NullTool())
+        parameters = self.color_adjustment_panel.activate(kind)
+        if not self.color_adjustment_controller.start(parameters):
+            self.tool_controller.set_tool(previous_tool)
+            self._adjustment_previous_tool = None
+
+    def _color_adjustment_parameters_changed(self, parameters: object) -> None:
+        if not isinstance(
+            parameters,
+            (
+                InvertAdjustment,
+                ThresholdAdjustment,
+                BrightnessContrastAdjustment,
+                GammaAdjustment,
+                CurvesAdjustment,
+                HslAdjustment,
+                GradientMapAdjustment,
+                ColorReplaceAdjustment,
+                PaletteMapAdjustment,
+            ),
+        ):
+            return
+        if self.color_adjustment_controller.update_parameters(parameters):
+            self.color_adjustment_panel.set_running(True)
+        elif self.color_adjustment_controller.parameters is not None:
+            self.color_adjustment_panel.set_parameters(
+                self.color_adjustment_controller.parameters
+            )
+
+    def _apply_color_adjustment(self) -> None:
+        self.color_adjustment_panel.set_running(True)
+        self.color_adjustment_controller.apply()
+
+    def _apply_color_adjustment_if_active(self) -> None:
+        if self.color_adjustment_controller.active:
+            self._apply_color_adjustment()
+
+    def _on_color_adjustment_active(self, active: bool) -> None:
+        if active:
+            self._set_editing_busy(True)
+            self.properties_stack.setCurrentWidget(self.color_adjustment_panel)
+            self.properties_dock.show()
+            self.properties_dock.raise_()
+            return
+        self.color_adjustment_panel.set_running(False)
+        self.color_adjustment_panel.set_progress(0, 0, "")
+        self._set_editing_busy(False)
+        previous = self._adjustment_previous_tool
+        self._adjustment_previous_tool = None
+        if previous is not None and self.controller.document is not None:
+            self.tool_controller.set_tool(previous)
+            for name, tool in self._tools.items():
+                if tool is previous:
+                    self.tool_actions[name].setChecked(True)
+                    self.tool_options_panel.show_tool(name)
+                    self._show_properties_for_tool(name)
+                    break
+        elif hasattr(self, "properties_stack"):
+            self.properties_stack.setCurrentIndex(0)
+
+    def _show_properties_for_tool(self, tool_name: str) -> None:
+        if tool_name == "transform":
+            self.properties_stack.setCurrentWidget(self.transform_properties)
+        elif tool_name == "shape":
+            self.properties_stack.setCurrentWidget(self.shape_properties)
+        else:
+            self.properties_stack.setCurrentIndex(0)
+
+    def _cancel_color_adjustment_for_lifecycle(self) -> None:
+        if (
+            hasattr(self, "color_adjustment_controller")
+            and self.color_adjustment_controller.active
+        ):
+            self.color_adjustment_controller.cancel()
 
     def _transform_options_changed(self) -> None:
         options = self.tool_options_panel.transform
@@ -1157,6 +1362,10 @@ class MainWindow(QMainWindow):
             action.setEnabled(has_document and not busy)
         self.tool_options_panel.setEnabled(has_document and not busy)
         self.layer_panel.setEnabled(not busy)
+        for action in self.color_adjustment_actions.values():
+            action.setEnabled(has_document and not busy)
+        for action in (self.save_action, self.save_as_action, self.export_action):
+            action.setEnabled(has_document and not busy)
         self.transform_action.setEnabled(has_document and not busy)
         for action in (
             self.canvas_size_action,
@@ -1166,6 +1375,7 @@ class MainWindow(QMainWindow):
         ):
             action.setEnabled(has_document and not busy)
         self._update_selection_actions()
+        self._update_undo_actions()
 
     def _on_document_event(self, event: DocumentEvent) -> None:
         self.layer_panel.handle_event(event)
@@ -1364,6 +1574,15 @@ class MainWindow(QMainWindow):
             action.setEnabled(active and not self._editing_busy)
 
     def _update_undo_actions(self, *_args: object) -> None:
+        if (
+            hasattr(self, "color_adjustment_controller")
+            and self.color_adjustment_controller.active
+        ):
+            self.undo_action.setEnabled(False)
+            self.redo_action.setEnabled(False)
+            self.undo_action.setText("撤销")
+            self.redo_action.setText("重做")
+            return
         tool = self._tools.get("transform") if hasattr(self, "_tools") else None
         if isinstance(tool, TransformTool) and tool.has_active_session:
             undo_text = tool.preview_undo_text
@@ -1434,11 +1653,32 @@ class MainWindow(QMainWindow):
             self.coordinate_label.setText(f"x: {int(point.x)}  y: {int(point.y)}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._cancel_color_adjustment_for_lifecycle()
         if not self.controller.request_exit(self):
             event.ignore()
             return
         self.settings.save_window(self)
         event.accept()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if (
+            hasattr(self, "color_adjustment_controller")
+            and self.color_adjustment_controller.active
+        ):
+            if event.key() == Qt.Key.Key_Escape:
+                if self.color_adjustment_controller.sampling:
+                    self.color_adjustment_controller.cancel_sampling()
+                else:
+                    self.color_adjustment_controller.cancel()
+                event.accept()
+                return
+            if (
+                event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            ):
+                self._apply_color_adjustment()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
 
 __all__ = ["EmptyStateWidget", "MainWindow"]

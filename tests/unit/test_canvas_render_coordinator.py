@@ -115,6 +115,42 @@ def test_preview_signature_is_monotonic_across_clear_and_same_frame_replace(
     assert _pixel(coordinator.render_tile(coord), 10, 10) == (0, 255, 0, 255)
 
 
+def test_complete_preview_replacement_is_atomic_and_removes_old_coords(qapp) -> None:
+    _ = qapp
+    document = Document.create(512, 256)
+    layer = document.active_layer
+    layer.pixels.replace_tile(0, 0, _solid((10, 20, 30, 255)))
+    layer.pixels.replace_tile(1, 0, _solid((40, 50, 60, 255)))
+    coordinator = CanvasRenderCoordinator()
+    coordinator.set_document(document)
+    frames: list[int] = []
+    coordinator.frame_requested.connect(lambda: frames.append(coordinator.generation))
+
+    coordinator.replace_pixel_preview(
+        layer.id,
+        {
+            TileCoord(0, 0): _solid((255, 0, 0, 255)),
+            TileCoord(1, 0): _solid((0, 255, 0, 255)),
+        },
+    )
+    first_generation = coordinator.generation
+    coordinator.replace_pixel_preview(
+        layer.id,
+        {TileCoord(0, 0): None},
+    )
+
+    assert coordinator.generation == first_generation + 1
+    assert len(frames) == 2
+    assert coordinator.preview_tile_count == 1
+    assert _pixel(coordinator.render_tile(TileCoord(0, 0)), 10, 10) == (0, 0, 0, 0)
+    assert _pixel(coordinator.render_tile(TileCoord(1, 0)), 10, 10) == (
+        40,
+        50,
+        60,
+        255,
+    )
+
+
 def test_transform_return_draws_complete_latest_frame(qapp) -> None:
     _ = qapp
     document = Document.create(64, 64)

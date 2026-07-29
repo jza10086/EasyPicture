@@ -77,8 +77,7 @@ def run_render_smoke_test(
             (32, 210, 144, 230),
         )
         for canvas in (view, reference):
-            canvas.clear_pixel_preview()
-            canvas.set_pixel_preview(document.active_layer_id, replaced_tiles)
+            canvas.replace_pixel_preview(document.active_layer_id, replaced_tiles)
         replaced_frame = _capture_frame(view, app).convertToFormat(
             QImage.Format.Format_RGBA8888
         )
