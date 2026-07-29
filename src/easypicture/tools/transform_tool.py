@@ -374,7 +374,7 @@ class TransformTool:
                 requested[changed],
             )
         before = self._state(session)
-        if not self._set_geometry(corners, session.pivot, sync_corners=False):
+        if not self._set_geometry(corners, session.pivot, sync_corners=True):
             self._corner_sink(_corner_values(session.corners))
             return
         self._record_completed_change(before, "角点坐标")

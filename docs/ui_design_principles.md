@@ -42,10 +42,14 @@
 - `DragValueSpinBox` 使用 `QWidget` 外壳和内置 `QLineEdit`，不叠加
   `QSpinBox` 自身的数值编辑状态机。
 - 交互状态必须互斥，并通过同一个状态转换入口在 `IDLE`、`WAIT_DRAG`、
-  `DRAGGING`、`TEXT_EDITING` 及 Enter/右键手势清理状态之间切换；不得使用多个
-  布尔值表示可能重叠的编辑模式。
-- 非文本状态由外壳独占鼠标事件，文本状态由 `QLineEdit` 独占框内文本选择事件。
-  进入文本状态时只全选一次，状态内的后续点击不得重新进入拖动判断。
+  `DRAGGING`、`TEXT_EDITING`、`TEXT_SELECTING` 及 Enter/右键手势清理状态之间
+  切换；不得使用多个布尔值表示可能重叠的编辑模式。这对应 Blender 对 Number
+  Editing、Text Editing 与 Text Selecting 的显式区分。
+- 非文本状态由外壳独占鼠标事件；进入 `TEXT_EDITING` 后，活动会话成为窗口级半模态
+  事件所有者，框内的按下、双击、移动和释放统一路由到唯一的 `QLineEdit` 编辑面。
+  即使 Qt 把连续点击继续投递给外层浮点包装或旧命中对象，也只能进入
+  `TEXT_SELECTING`，不得重新经过 `WAIT_DRAG`。首次进入文本状态只全选一次，
+  后续点击与拖选完全遵循普通文本编辑行为。
 - 应用级事件路由仅在活动会话期间安装，用于处理框外确认、任意位置右键撤销、
   Enter/Esc/Tab 和窗口失活；同一事件不得再由第二套局部过滤器重复提交。
 - `NumericPropertySpec` 统一保存软范围、硬范围、步长、单位后缀和拖动比例。

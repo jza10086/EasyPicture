@@ -36,6 +36,9 @@ from easypicture.imaging import (
     SelectionBulkRequest,
     SelectionCombineMode,
     SelectionOperationResult,
+    ShapeGeometry,
+    ShapeKind,
+    ShapeSettings,
     TrimTransparentRequest,
     calculate_bulk_selection,
     calculate_canvas_resize,
@@ -63,6 +66,7 @@ from easypicture.tools import (
     MagicWandTool,
     NullTool,
     RectangleSelectionTool,
+    ShapeTool,
     Tool,
     ToolContext,
     ToolController,
@@ -76,6 +80,7 @@ from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
+from easypicture.ui.shape_properties import ShapePropertiesPanel
 from easypicture.ui.tool_options import ToolOptionsPanel
 from easypicture.ui.transform_properties import TransformPropertiesPanel
 
@@ -357,6 +362,12 @@ class MainWindow(QMainWindow):
                 self._set_transform_pivot,
                 self._update_undo_actions,
             ),
+            "shape": ShapeTool(
+                self.tool_options_panel.shape.kind,
+                self.tool_options_panel.shape.settings,
+                self._set_shape_geometry,
+                self._update_undo_actions,
+            ),
         }
         self.tool_actions: dict[str, QAction] = {}
         for name, label, shortcut in (
@@ -368,6 +379,7 @@ class MainWindow(QMainWindow):
             ("magic_wand", "魔棒", "W"),
             ("crop", "裁切", "C"),
             ("transform", "自由变换", "T"),
+            ("shape", "图形", "U"),
         ):
             action = QAction(label, self)
             action.setCheckable(True)
@@ -417,6 +429,12 @@ class MainWindow(QMainWindow):
         )
         self.tool_options_panel.crop_commit_requested.connect(self._crop_commit)
         self.tool_options_panel.crop_cancel_requested.connect(self._crop_cancel)
+        self.tool_options_panel.shape_kind_changed.connect(self._shape_kind_changed)
+        self.tool_options_panel.shape_settings_changed.connect(
+            self._shape_settings_changed
+        )
+        self.tool_options_panel.shape_commit_requested.connect(self._shape_commit)
+        self.tool_options_panel.shape_cancel_requested.connect(self._shape_cancel)
         self.tool_actions["brush"].setChecked(True)
         self._activate_tool("brush")
 
@@ -434,8 +452,10 @@ class MainWindow(QMainWindow):
         properties_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         properties_placeholder.setWordWrap(True)
         self.transform_properties = TransformPropertiesPanel(self)
+        self.shape_properties = ShapePropertiesPanel(self)
         self.properties_stack.addWidget(properties_placeholder)
         self.properties_stack.addWidget(self.transform_properties)
+        self.properties_stack.addWidget(self.shape_properties)
         self.transform_properties.corners_changed.connect(
             self._transform_corners_changed
         )
@@ -445,6 +465,10 @@ class MainWindow(QMainWindow):
         self.transform_properties.edit_started.connect(self._transform_edit_started)
         self.transform_properties.edit_finished.connect(self._transform_edit_finished)
         self.transform_properties.edit_canceled.connect(self._transform_edit_canceled)
+        self.shape_properties.geometry_changed.connect(self._shape_geometry_changed)
+        self.shape_properties.edit_started.connect(self._shape_edit_started)
+        self.shape_properties.edit_finished.connect(self._shape_edit_finished)
+        self.shape_properties.edit_canceled.connect(self._shape_edit_canceled)
         self.properties_dock = self._make_dock(
             "属性",
             "PropertiesDock",
@@ -878,6 +902,10 @@ class MainWindow(QMainWindow):
             self.properties_stack.setCurrentWidget(self.transform_properties)
             self.properties_dock.show()
             self.properties_dock.raise_()
+        elif tool_name == "shape" and hasattr(self, "properties_stack"):
+            self.properties_stack.setCurrentWidget(self.shape_properties)
+            self.properties_dock.show()
+            self.properties_dock.raise_()
         elif hasattr(self, "properties_stack"):
             self.properties_stack.setCurrentIndex(0)
 
@@ -924,6 +952,63 @@ class MainWindow(QMainWindow):
         if isinstance(settings, MagicWandSettings):
             self.settings.set_magic_wand_settings(settings)
             self.settings.sync()
+
+    def _shape_kind_changed(self, kind: object) -> None:
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.kind_changed()
+        if isinstance(kind, ShapeKind):
+            self.settings.set_shape_options(
+                kind,
+                self.tool_options_panel.shape.settings(),
+            )
+            self.settings.sync()
+
+    def _shape_settings_changed(self, settings: object) -> None:
+        if not isinstance(settings, ShapeSettings):
+            return
+        self.settings.set_shape_options(
+            self.tool_options_panel.shape.kind(),
+            settings,
+        )
+        self.settings.sync()
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.settings_changed()
+
+    def _set_shape_geometry(self, geometry: ShapeGeometry | None) -> None:
+        if hasattr(self, "shape_properties"):
+            self.shape_properties.set_geometry(geometry)
+
+    def _shape_geometry_changed(self, geometry: object) -> None:
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool) and isinstance(geometry, ShapeGeometry):
+            tool.set_geometry(geometry)
+
+    def _shape_edit_started(self, _label: str) -> None:
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.begin_property_edit()
+
+    def _shape_edit_finished(self) -> None:
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.finish_property_edit()
+
+    def _shape_edit_canceled(self) -> None:
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.cancel_property_edit()
+
+    def _shape_commit(self) -> None:
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.commit()
+
+    def _shape_cancel(self) -> None:
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.cancel()
 
     def _transform_options_changed(self) -> None:
         options = self.tool_options_panel.transform
@@ -1292,6 +1377,13 @@ class MainWindow(QMainWindow):
                 f"重做 {redo_text}" if redo_text else "重做"
             )
             return
+        shape_tool = self._tools.get("shape") if hasattr(self, "_tools") else None
+        if isinstance(shape_tool, ShapeTool) and shape_tool.has_active_session:
+            self.undo_action.setEnabled(shape_tool.can_undo_preview)
+            self.redo_action.setEnabled(shape_tool.can_redo_preview)
+            self.undo_action.setText("撤销 图形调整")
+            self.redo_action.setText("重做 图形调整")
+            return
         stack = self.controller.commands.undo_stack
         self.undo_action.setEnabled(stack.canUndo())
         self.redo_action.setEnabled(stack.canRedo())
@@ -1306,6 +1398,10 @@ class MainWindow(QMainWindow):
         if isinstance(tool, TransformTool) and tool.has_active_session:
             tool.undo_preview()
             return
+        shape_tool = self._tools.get("shape")
+        if isinstance(shape_tool, ShapeTool) and shape_tool.has_active_session:
+            shape_tool.undo_preview()
+            return
         self.controller.commands.undo_stack.undo()
 
     def _redo_requested(self, _checked: bool = False) -> None:
@@ -1313,6 +1409,10 @@ class MainWindow(QMainWindow):
         tool = self._tools.get("transform")
         if isinstance(tool, TransformTool) and tool.has_active_session:
             tool.redo_preview()
+            return
+        shape_tool = self._tools.get("shape")
+        if isinstance(shape_tool, ShapeTool) and shape_tool.has_active_session:
+            shape_tool.redo_preview()
             return
         self.controller.commands.undo_stack.redo()
 

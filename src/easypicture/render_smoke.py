@@ -29,8 +29,11 @@ def run_render_smoke_test(
     reference = CanvasView(render_backend=RenderBackendKind.SOFTWARE)
     try:
         document = _create_scene()
-        preview_tile = document.active_layer.pixels.read_tile(0, 0).copy(order="C")
-        preview_tile[48:144, 48:144] = (240, 96, 32, 210)
+        preview_tiles = _multi_tile_preview(
+            document,
+            (96, 72, 700, 470),
+            (240, 32, 112, 220),
+        )
 
         for canvas in (view, reference):
             canvas.resize(800, 600)
@@ -42,17 +45,65 @@ def run_render_smoke_test(
             canvas.centerOn(document.width / 2.0, document.height / 2.0)
         _process_frames(app)
 
-        view.set_pixel_preview(
-            document.active_layer_id,
-            {TileCoord(0, 0): preview_tile},
-        )
+        for canvas in (view, reference):
+            canvas.set_pixel_preview(document.active_layer_id, preview_tiles)
         _process_frames(app)
+        preview_frame = _capture_frame(view, app).convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        preview_reference = _capture_frame(reference, app).convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        preview_frame.save(str(directory / "preview.png"))
+        preview_reference.save(str(directory / "preview-reference.png"))
+        top_left = view.mapFromScene(0.0, 0.0)
+        bottom_right = view.mapFromScene(
+            float(document.width),
+            float(document.height),
+        )
+        preview_error, _preview_full_error = _channel_errors(
+            preview_frame,
+            preview_reference,
+            (
+                top_left.x(),
+                top_left.y(),
+                bottom_right.x(),
+                bottom_right.y(),
+            ),
+        )
+        replaced_tiles = _multi_tile_preview(
+            document,
+            (40, 128, 650, 430),
+            (32, 210, 144, 230),
+        )
+        for canvas in (view, reference):
+            canvas.clear_pixel_preview()
+            canvas.set_pixel_preview(document.active_layer_id, replaced_tiles)
+        replaced_frame = _capture_frame(view, app).convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        replaced_reference = _capture_frame(reference, app).convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        replaced_frame.save(str(directory / "preview-replaced.png"))
+        replaced_reference.save(str(directory / "preview-replaced-reference.png"))
+        replaced_preview_error, _replaced_full_error = _channel_errors(
+            replaced_frame,
+            replaced_reference,
+            (
+                top_left.x(),
+                top_left.y(),
+                bottom_right.x(),
+                bottom_right.y(),
+            ),
+        )
         rotation = (
             AffineTransform.translation(-256.0, -192.0)
             .then(AffineTransform.rotation(43.0))
             .then(AffineTransform.translation(256.0, 192.0))
         )
-        view.clear_pixel_preview()
+        for canvas in (view, reference):
+            canvas.clear_pixel_preview()
         view.set_transform_preview(
             document.active_layer_id,
             rotation,
@@ -95,6 +146,8 @@ def run_render_smoke_test(
             "texture_bytes": diagnostics.texture_bytes,
             "fallback_reason": diagnostics.fallback_reason,
             "maximum_channel_error": error,
+            "maximum_preview_channel_error": preview_error,
+            "maximum_replaced_preview_channel_error": replaced_preview_error,
             "maximum_channel_error_including_border": full_error,
             "border_comparison": "2 px document border excluded",
         }
@@ -105,7 +158,13 @@ def run_render_smoke_test(
         if backend is RenderBackendKind.OPENGL:
             if diagnostics.active_backend is not RenderBackendKind.OPENGL:
                 return 2
-        return 0 if error <= 1 else 3
+        return (
+            0
+            if error <= 1
+            and preview_error <= 1
+            and replaced_preview_error <= 1
+            else 3
+        )
     except Exception as error:
         (directory / "diagnostics.json").write_text(
             json.dumps(
@@ -127,7 +186,7 @@ def run_render_smoke_test(
 
 
 def _create_scene() -> Document:
-    document = Document.create(512, 384)
+    document = Document.create(768, 512)
     bottom = document.active_layer
     bottom.name = "底层"
     bottom_tile = np.zeros(
@@ -138,7 +197,7 @@ def _create_scene() -> Document:
     bottom.pixels.replace_tile(0, 0, bottom_tile)
     bottom.pixels.replace_tile(1, 1, np.rot90(bottom_tile).copy(order="C"))
 
-    top = RasterLayer.create_blank("上层", Size(512, 384))
+    top = RasterLayer.create_blank("上层", Size(768, 512))
     top_tile = np.zeros_like(bottom_tile)
     yy, xx = np.ogrid[:DEFAULT_TILE_SIZE, :DEFAULT_TILE_SIZE]
     circle = (xx - 128) ** 2 + (yy - 128) ** 2 <= 92**2
@@ -146,6 +205,31 @@ def _create_scene() -> Document:
     top.pixels.replace_tile(1, 0, top_tile)
     document.insert_layer(top, 1)
     return document
+
+
+def _multi_tile_preview(
+    document: Document,
+    rect: tuple[int, int, int, int],
+    color: tuple[int, int, int, int],
+) -> dict[TileCoord, np.ndarray]:
+    """Create one continuous translucent rectangle spanning four source Tiles."""
+
+    updates: dict[TileCoord, np.ndarray] = {}
+    left_bound, top_bound, right_bound, bottom_bound = rect
+    for ty in range(2):
+        for tx in range(3):
+            coord = TileCoord(tx, ty)
+            tile = document.active_layer.pixels.read_tile(tx, ty).copy(order="C")
+            global_left = tx * DEFAULT_TILE_SIZE
+            global_top = ty * DEFAULT_TILE_SIZE
+            left = max(0, left_bound - global_left)
+            top = max(0, top_bound - global_top)
+            right = min(DEFAULT_TILE_SIZE, right_bound - global_left)
+            bottom = min(DEFAULT_TILE_SIZE, bottom_bound - global_top)
+            if right > left and bottom > top:
+                tile[top:bottom, left:right] = color
+            updates[coord] = tile
+    return updates
 
 
 def _process_frames(app: QApplication, *, count: int = 4) -> None:

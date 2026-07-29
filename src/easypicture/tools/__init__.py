@@ -16,6 +16,7 @@ from easypicture.tools.selection_tools import (
     RectangleSelectionTool,
     mode_from_modifiers,
 )
+from easypicture.tools.shape_tool import ShapeTool
 from easypicture.tools.transform_tool import TransformParameters, TransformTool
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "NullTool",
     "PixelEditSession",
     "RectangleSelectionTool",
+    "ShapeTool",
     "Tool",
     "ToolContext",
     "ToolController",

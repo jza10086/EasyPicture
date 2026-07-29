@@ -16,8 +16,10 @@ P6A 自由变换与 P6R GPU 画布重构已经完成联合人工验收：支持�
 油漆桶支持正常、替换、正片叠底、滤色和叠加模式；颜色 Dock 保持紧凑，点击前景色或
 背景色后使用深色中文 Blender 式 HSV 圆盘、明度条和 RGB/HSV/Hex 分页拖动输入弹窗。
 图层列表为每个图层显示带透明棋盘格的像素缩略图，并按图层 revision 精确刷新。
-几何预览继续使用统一完整帧状态，整次提交只产生一个撤销命令。基础图形、文本和完整格式
-导出尚未实现。
+几何预览继续使用统一完整帧状态，整次提交只产生一个撤销命令。P6C 基础图形已完成验收：
+直线、矩形、圆角矩形、椭圆和多边形在确认前可通过画布手柄或右侧属性继续编辑，支持独立
+描边/填充颜色、选区、五种混合模式和会话内撤销，确认后作为普通栅格像素一次写入。
+文本和完整格式导出尚未实现。
 
 ## 环境
 
@@ -60,4 +62,5 @@ uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\
 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，P6A 结果见
 [`docs/p6a_acceptance.md`](docs/p6a_acceptance.md)，P6R 渲染重构见
 [`docs/p6r_acceptance.md`](docs/p6r_acceptance.md)，P6B 几何工具验收见
-[`docs/p6b_acceptance.md`](docs/p6b_acceptance.md)。
+[`docs/p6b_acceptance.md`](docs/p6b_acceptance.md)，P6C 图形工具验收见
+[`docs/p6c_acceptance.md`](docs/p6c_acceptance.md)。

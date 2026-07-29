@@ -297,3 +297,26 @@ def test_irregular_corner_coordinates_update_projective_preview(
 
     assert after[0] == pytest.approx(before[0] + 7.0)
     assert after[2:] == pytest.approx(before[2:])
+
+
+def test_regular_corner_numeric_updates_keep_related_fields_synchronized(
+    qtbot,
+    tmp_path,
+) -> None:
+    _controller, window = _window(qtbot, tmp_path)
+    window.tool_actions["transform"].trigger()
+    properties = window.transform_properties
+    before = properties.corners()
+    properties.edit_started.emit("左上 X")
+
+    properties._fields[0].setValue(before[0] + 6.0)  # noqa: SLF001
+    first = properties.corners()
+    properties._fields[0].setValue(before[0] + 12.0)  # noqa: SLF001
+    second = properties.corners()
+    properties.edit_finished.emit()
+
+    assert first[0] == pytest.approx(before[0] + 6.0)
+    assert second[0] == pytest.approx(before[0] + 12.0)
+    assert second[2] == pytest.approx(before[2])
+    assert second[6] == pytest.approx(second[0])
+    assert second[6] != pytest.approx(before[6])

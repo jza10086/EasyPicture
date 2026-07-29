@@ -13,6 +13,9 @@ from easypicture.imaging import (
     BrushSettings,
     PaintBlendMode,
     SelectionCombineMode,
+    ShapeKind,
+    ShapePaintStyle,
+    ShapeSettings,
     TransformInterpolation,
 )
 from easypicture.render import RenderBackendKind
@@ -213,6 +216,78 @@ class AppSettings:
         self._settings.setValue("tools/magic_wand/sample_merged", settings.sample_merged)
         self._settings.setValue("tools/magic_wand/include_alpha", settings.include_alpha)
         self.set_selection_combine_mode(settings.mode)
+
+    def shape_kind(self) -> ShapeKind:
+        value = str(
+            self._settings.value("tools/shape/kind", ShapeKind.RECTANGLE.value)
+        )
+        try:
+            return ShapeKind(value)
+        except ValueError:
+            return ShapeKind.RECTANGLE
+
+    def shape_settings(self) -> ShapeSettings:
+        style_value = str(
+            self._settings.value(
+                "tools/shape/style",
+                ShapePaintStyle.STROKE.value,
+            )
+        )
+        try:
+            style = ShapePaintStyle(style_value)
+        except ValueError:
+            style = ShapePaintStyle.STROKE
+        stroke = self._color_value("tools/shape/stroke_color", DEFAULT_FOREGROUND)
+        fill = self._color_value("tools/shape/fill_color", DEFAULT_BACKGROUND)
+        return ShapeSettings(
+            style=style,
+            stroke_color=(
+                stroke.red(),
+                stroke.green(),
+                stroke.blue(),
+                stroke.alpha(),
+            ),
+            fill_color=(
+                fill.red(),
+                fill.green(),
+                fill.blue(),
+                fill.alpha(),
+            ),
+            stroke_width=self._bounded_float(
+                "tools/shape/stroke_width",
+                1.0,
+                1.0,
+                8192.0,
+            ),
+            opacity=self._bounded_float(
+                "tools/shape/opacity",
+                1.0,
+                0.0,
+                1.0,
+            ),
+            antialias=self._bool_value("tools/shape/antialias", True),
+            blend_mode=self._paint_blend_mode("tools/shape/blend_mode"),
+        )
+
+    def set_shape_options(
+        self,
+        kind: ShapeKind,
+        settings: ShapeSettings,
+    ) -> None:
+        self._settings.setValue("tools/shape/kind", kind.value)
+        self._settings.setValue("tools/shape/style", settings.style.value)
+        self._settings.setValue(
+            "tools/shape/stroke_color",
+            QColor.fromRgb(*settings.stroke_color).name(QColor.NameFormat.HexArgb),
+        )
+        self._settings.setValue(
+            "tools/shape/fill_color",
+            QColor.fromRgb(*settings.fill_color).name(QColor.NameFormat.HexArgb),
+        )
+        self._settings.setValue("tools/shape/stroke_width", settings.stroke_width)
+        self._settings.setValue("tools/shape/opacity", settings.opacity)
+        self._settings.setValue("tools/shape/antialias", settings.antialias)
+        self._settings.setValue("tools/shape/blend_mode", settings.blend_mode.value)
 
     def transform_interpolation(self) -> TransformInterpolation:
         value = str(

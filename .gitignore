@@ -12,6 +12,7 @@ dist/
 *.build/
 *.dist/
 *.onefile-build/
+nuitka-crash-report.xml
 
 .coverage
 coverage.xml

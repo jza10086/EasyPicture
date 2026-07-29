@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -19,10 +21,14 @@ from easypicture.imaging import (
     GeometryRect,
     PaintBlendMode,
     SelectionCombineMode,
+    ShapeKind,
+    ShapePaintStyle,
+    ShapeSettings,
     TransformInterpolation,
 )
 from easypicture.tools import BucketSettings, MagicWandSettings
 from easypicture.ui.blender_combo_box import BlenderComboBox
+from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.drag_value_spinbox import (
     DragValueDoubleSpinBox,
     DragValueSpinBox,
@@ -586,6 +592,157 @@ class CropOptionsWidget(QWidget):
         self.custom_height.setVisible(custom)
 
 
+class ShapeOptionsWidget(QWidget):
+    kind_changed = Signal(object)
+    settings_changed = Signal(object)
+    commit_requested = Signal()
+    cancel_requested = Signal()
+
+    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.kind_combo = BlenderComboBox(self)
+        for label, kind in (
+            ("直线", ShapeKind.LINE),
+            ("矩形", ShapeKind.RECTANGLE),
+            ("圆角矩形", ShapeKind.ROUNDED_RECTANGLE),
+            ("椭圆", ShapeKind.ELLIPSE),
+            ("多边形", ShapeKind.POLYGON),
+        ):
+            self.kind_combo.addItem(label, kind.value)
+        self.kind_combo.setCurrentIndex(
+            max(0, self.kind_combo.findData(settings.shape_kind().value))
+        )
+        current = settings.shape_settings()
+        self.style_combo = BlenderComboBox(self)
+        for label, style in (
+            ("仅描边", ShapePaintStyle.STROKE),
+            ("仅填充", ShapePaintStyle.FILL),
+            ("描边与填充", ShapePaintStyle.STROKE_AND_FILL),
+        ):
+            self.style_combo.addItem(label, style.value)
+        self.style_combo.setCurrentIndex(
+            max(0, self.style_combo.findData(current.style.value))
+        )
+        self.stroke_width_spin = DragValueDoubleSpinBox(
+            1.0,
+            256.0,
+            current.stroke_width,
+            manual_maximum=8192.0,
+            suffix=" px",
+            parent=self,
+        )
+        self.opacity_spin = DragValueSpinBox(
+            0,
+            100,
+            round(current.opacity * 100),
+            suffix="%",
+            parent=self,
+        )
+        self.antialias_check = QCheckBox("抗锯齿", self)
+        self.antialias_check.setChecked(current.antialias)
+        self.blend_combo = _paint_mode_combo(current.blend_mode, self)
+        self._stroke_color = QColor.fromRgb(*current.stroke_color)
+        self._fill_color = QColor.fromRgb(*current.fill_color)
+        self.stroke_color_button = QPushButton("描边色", self)
+        self.fill_color_button = QPushButton("填充色", self)
+        self.apply_button = QPushButton("应用", self)
+        self.cancel_button = QPushButton("取消", self)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 0, 4, 0)
+        for label, widget in (
+            ("类型", self.kind_combo),
+            ("样式", self.style_combo),
+            ("描边", self.stroke_width_spin),
+            ("不透明度", self.opacity_spin),
+            ("混合", self.blend_combo),
+        ):
+            layout.addWidget(QLabel(label, self))
+            layout.addWidget(widget)
+        layout.addWidget(self.stroke_color_button)
+        layout.addWidget(self.fill_color_button)
+        layout.addWidget(self.antialias_check)
+        layout.addWidget(self.apply_button)
+        layout.addWidget(self.cancel_button)
+        layout.addStretch(1)
+
+        self.kind_combo.currentIndexChanged.connect(self._emit_kind)
+        self.style_combo.currentIndexChanged.connect(self._emit_settings)
+        self.stroke_width_spin.valueChanged.connect(self._emit_settings)
+        self.opacity_spin.valueChanged.connect(self._emit_settings)
+        self.antialias_check.toggled.connect(self._emit_settings)
+        self.blend_combo.currentIndexChanged.connect(self._emit_settings)
+        self.stroke_color_button.clicked.connect(self._choose_stroke)
+        self.fill_color_button.clicked.connect(self._choose_fill)
+        self.apply_button.clicked.connect(self.commit_requested)
+        self.cancel_button.clicked.connect(self.cancel_requested)
+        self._refresh_color_buttons()
+
+    def kind(self) -> ShapeKind:
+        return ShapeKind(str(self.kind_combo.currentData()))
+
+    def settings(self) -> ShapeSettings:
+        return ShapeSettings(
+            style=ShapePaintStyle(str(self.style_combo.currentData())),
+            stroke_color=(
+                self._stroke_color.red(),
+                self._stroke_color.green(),
+                self._stroke_color.blue(),
+                self._stroke_color.alpha(),
+            ),
+            fill_color=(
+                self._fill_color.red(),
+                self._fill_color.green(),
+                self._fill_color.blue(),
+                self._fill_color.alpha(),
+            ),
+            stroke_width=self.stroke_width_spin.value(),
+            opacity=self.opacity_spin.value() / 100.0,
+            antialias=self.antialias_check.isChecked(),
+            blend_mode=PaintBlendMode(str(self.blend_combo.currentData())),
+        )
+
+    def _emit_kind(self, _value: object = None) -> None:
+        self.kind_changed.emit(self.kind())
+        self._emit_settings()
+
+    def _emit_settings(self, _value: object = None) -> None:
+        self.settings_changed.emit(self.settings())
+
+    def _choose_stroke(self) -> None:
+        color = self._choose_color(self._stroke_color, "选择描边颜色")
+        if color is not None:
+            self._stroke_color = color
+            self._refresh_color_buttons()
+            self._emit_settings()
+
+    def _choose_fill(self) -> None:
+        color = self._choose_color(self._fill_color, "选择填充颜色")
+        if color is not None:
+            self._fill_color = color
+            self._refresh_color_buttons()
+            self._emit_settings()
+
+    def _choose_color(self, current: QColor, title: str) -> QColor | None:
+        dialog = ColorPickerDialog(current, title, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.selected_color
+
+    def _refresh_color_buttons(self) -> None:
+        for button, color in (
+            (self.stroke_color_button, self._stroke_color),
+            (self.fill_color_button, self._fill_color),
+        ):
+            foreground = "#ffffff" if color.lightness() < 128 else "#000000"
+            button.setStyleSheet(
+                "QPushButton {"
+                f"background: rgba({color.red()}, {color.green()}, "
+                f"{color.blue()}, {color.alpha()}); color: {foreground};"
+                "}"
+            )
+
+
 class ToolOptionsPanel(QStackedWidget):
     brush_settings_changed = Signal(object)
     bucket_settings_changed = Signal(object)
@@ -604,6 +761,10 @@ class ToolOptionsPanel(QStackedWidget):
     crop_options_changed = Signal()
     crop_commit_requested = Signal()
     crop_cancel_requested = Signal()
+    shape_kind_changed = Signal(object)
+    shape_settings_changed = Signal(object)
+    shape_commit_requested = Signal()
+    shape_cancel_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -617,6 +778,7 @@ class ToolOptionsPanel(QStackedWidget):
         self.magic_wand = MagicWandOptionsWidget(settings.magic_wand_settings(), self)
         self.transform = TransformOptionsWidget(settings, self)
         self.crop = CropOptionsWidget(self)
+        self.shape = ShapeOptionsWidget(settings, self)
         self.addWidget(self.brush)
         self.addWidget(self.eyedropper)
         self.addWidget(self.bucket)
@@ -624,6 +786,7 @@ class ToolOptionsPanel(QStackedWidget):
         self.addWidget(self.magic_wand)
         self.addWidget(self.transform)
         self.addWidget(self.crop)
+        self.addWidget(self.shape)
         self.brush.settings_changed.connect(self.brush_settings_changed)
         self.bucket.settings_changed.connect(self.bucket_settings_changed)
         self.eyedropper.settings_changed.connect(self.eyedropper_settings_changed)
@@ -646,6 +809,10 @@ class ToolOptionsPanel(QStackedWidget):
         self.crop.options_changed.connect(self.crop_options_changed)
         self.crop.commit_requested.connect(self.crop_commit_requested)
         self.crop.cancel_requested.connect(self.crop_cancel_requested)
+        self.shape.kind_changed.connect(self.shape_kind_changed)
+        self.shape.settings_changed.connect(self.shape_settings_changed)
+        self.shape.commit_requested.connect(self.shape_commit_requested)
+        self.shape.cancel_requested.connect(self.shape_cancel_requested)
         self.rectangle_selection.deselect_requested.connect(self.deselect_requested)
         self.magic_wand.deselect_requested.connect(self.deselect_requested)
         self.set_selection_active(False)
@@ -665,6 +832,8 @@ class ToolOptionsPanel(QStackedWidget):
             self.setCurrentWidget(self.transform)
         elif tool_name == "crop":
             self.setCurrentWidget(self.crop)
+        elif tool_name == "shape":
+            self.setCurrentWidget(self.shape)
 
     def set_selection_active(self, active: bool) -> None:
         self.rectangle_selection.deselect_button.setEnabled(active)
@@ -689,6 +858,7 @@ __all__ = [
     "EyedropperOptionsWidget",
     "MagicWandOptionsWidget",
     "RectangleSelectionOptionsWidget",
+    "ShapeOptionsWidget",
     "TransformOptionsWidget",
     "ToolOptionsPanel",
 ]

@@ -94,6 +94,27 @@ def test_pixel_preview_only_replaces_requested_source_tile(qapp) -> None:
     ) == before_second
 
 
+def test_preview_signature_is_monotonic_across_clear_and_same_frame_replace(
+    qapp,
+) -> None:
+    _ = qapp
+    document = Document.create(256, 256)
+    layer = document.active_layer
+    coordinator = CanvasRenderCoordinator()
+    coordinator.set_document(document)
+    coord = TileCoord(0, 0)
+    coordinator.set_pixel_preview(layer.id, {coord: _solid((255, 0, 0, 255))})
+    first = coordinator.display_tile_signature(layer, coord, "source")
+
+    coordinator.clear_pixel_preview()
+    coordinator.set_pixel_preview(layer.id, {coord: _solid((0, 255, 0, 255))})
+    second = coordinator.display_tile_signature(layer, coord, "source")
+
+    assert second != first
+    assert second[1] > first[1]
+    assert _pixel(coordinator.render_tile(coord), 10, 10) == (0, 255, 0, 255)
+
+
 def test_transform_return_draws_complete_latest_frame(qapp) -> None:
     _ = qapp
     document = Document.create(64, 64)

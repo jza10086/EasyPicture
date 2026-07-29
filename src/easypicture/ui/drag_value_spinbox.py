@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QCursor,
@@ -83,6 +83,7 @@ class NumericEditState(Enum):
     WAIT_DRAG = "wait_drag"
     DRAGGING = "dragging"
     TEXT_EDITING = "text_editing"
+    TEXT_SELECTING = "text_selecting"
     WAIT_ENTER_RELEASE = "wait_enter_release"
     WAIT_RIGHT_RELEASE = "wait_right_release"
     WAIT_CONTEXT_MENU = "wait_context_menu"
@@ -147,6 +148,29 @@ class _GlobalInteractionFilter(QObject):
         return self._owner._route_application_event(watched, event)
 
 
+class _NumericLineEdit(QLineEdit):
+    """Text surface whose pointer transitions belong to the numeric session."""
+
+    def __init__(self, owner: DragValueSpinBox) -> None:
+        super().__init__(owner)
+        self._owner = owner
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._owner._begin_text_selection()  # noqa: SLF001
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._owner._begin_text_selection()  # noqa: SLF001
+        super().mouseDoubleClickEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._owner._finish_text_selection()  # noqa: SLF001
+
+
 class DragValueSpinBox(QWidget):
     """Edit an integer as text or by horizontally dragging its soft range."""
 
@@ -154,6 +178,7 @@ class DragValueSpinBox(QWidget):
     editingFinished = Signal()
     interactionStarted = Signal()
     interactionCanceled = Signal()
+    interactionStateChanged = Signal(object)
 
     def __init__(
         self,
@@ -189,10 +214,11 @@ class DragValueSpinBox(QWidget):
         self._session: _InteractionSession | None = None
         self._cancel_cleanup: _CancelCleanup | None = None
         self._cursor_hidden = False
+        self._forwarding_editor_event = False
         self._global_filter_installed = False
         self._global_filter = _GlobalInteractionFilter(self)
 
-        self._editor = QLineEdit(self)
+        self._editor = _NumericLineEdit(self)
         self._editor.setObjectName("DragValueEditor")
         self._editor.setFrame(False)
         self._editor.setAlignment(
@@ -205,7 +231,7 @@ class DragValueSpinBox(QWidget):
                 color: #eeeeee;
                 background: transparent;
                 border: 0;
-                padding: 0;
+                padding: 0 5px;
                 margin: 0;
                 selection-background-color: #5d88c7;
                 selection-color: #ffffff;
@@ -213,6 +239,12 @@ class DragValueSpinBox(QWidget):
             """
         )
 
+        # Once text editing owns the interaction, even a click on the narrow
+        # painted margin must keep keyboard focus in the editor.  Without a
+        # focus proxy QWidget's default mouse handling focuses the outer drag
+        # surface; the next key then commits the session and a following click
+        # starts a new drag.
+        self.setFocusProxy(self._editor)
         self.setCursor(Qt.CursorShape.SizeHorCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
@@ -295,7 +327,7 @@ class DragValueSpinBox(QWidget):
 
     def setSuffix(self, suffix: str) -> None:
         self._spec = replace(self._spec, suffix=suffix)
-        if self._state is not NumericEditState.TEXT_EDITING:
+        if not self._is_text_active:
             self._restore_display_text()
 
     def lineEdit(self) -> QLineEdit:
@@ -345,7 +377,10 @@ class DragValueSpinBox(QWidget):
         return QSize(48, 25)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
-        self._editor.setGeometry(self.rect().adjusted(5, 1, -5, -1))
+        # The editor owns the complete hit area in text mode.  Its stylesheet
+        # supplies the visual padding, so there are no painted edge strips
+        # that can route a second click back to the drag surface.
+        self._editor.setGeometry(self.rect())
         super().resizeEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -357,7 +392,7 @@ class DragValueSpinBox(QWidget):
         path.addRoundedRect(bounds, 2.0, 2.0)
 
         painter.fillPath(path, _BACKGROUND_COLOR)
-        if self._state is not NumericEditState.TEXT_EDITING:
+        if not self._is_text_active:
             ratio = self._fill_ratio()
             if ratio > 0.0:
                 painter.save()
@@ -402,6 +437,12 @@ class DragValueSpinBox(QWidget):
             NumericEditState.DRAGGING,
         ):
             super().mouseMoveEvent(event)
+            return
+        if not event.buttons() & Qt.MouseButton.LeftButton:
+            # Cursor warping and a completed click can leave a queued hover
+            # move behind.  Such an event must never turn the next click into
+            # a drag interaction.
+            event.accept()
             return
         session = self._session
         if session is None:
@@ -485,12 +526,14 @@ class DragValueSpinBox(QWidget):
         super().changeEvent(event)
 
     def _route_application_event(self, watched: QObject, event: QEvent) -> bool:
+        if self._forwarding_editor_event:
+            return False
         state = self._state
         if state is NumericEditState.IDLE:
             return False
 
         if event.type() == QEvent.Type.WindowDeactivate:
-            if state is NumericEditState.TEXT_EDITING:
+            if self._is_text_active:
                 self._commit_text()
             else:
                 self._abort_interaction(restore_value=True)
@@ -506,6 +549,16 @@ class DragValueSpinBox(QWidget):
 
         if isinstance(event, QKeyEvent):
             if (
+                self._is_text_active
+                and event.type() == QEvent.Type.ShortcutOverride
+                and self._belongs_to_input(watched)
+            ):
+                # While the line edit owns the session, standard editing keys
+                # such as Ctrl+A and characters that are also application
+                # shortcuts (for example "-" for zoom) belong to the text.
+                event.accept()
+                return True
+            if (
                 event.type() == QEvent.Type.ShortcutOverride
                 and event.key()
                 in (
@@ -520,14 +573,14 @@ class DragValueSpinBox(QWidget):
                 return True
             if event.type() == QEvent.Type.KeyPress:
                 if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                    if state is NumericEditState.TEXT_EDITING:
+                    if self._is_text_active:
                         self._commit_text(wait_for_enter_release=True)
                         return True
                 if event.key() == Qt.Key.Key_Escape:
                     self._abort_interaction(restore_value=True)
                     return True
                 if (
-                    state is NumericEditState.TEXT_EDITING
+                    self._is_text_active
                     and event.key() in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab)
                 ):
                     backwards = event.key() == Qt.Key.Key_Backtab or bool(
@@ -537,7 +590,8 @@ class DragValueSpinBox(QWidget):
                     self.focusNextPrevChild(not backwards)
                     return True
                 if (
-                    state is NumericEditState.TEXT_EDITING
+                    self._is_text_active
+                    and not self._belongs_to_input(watched)
                     and self._keyboard_focus_is_outside()
                 ):
                     self._commit_text()
@@ -551,13 +605,30 @@ class DragValueSpinBox(QWidget):
                 self._begin_right_cancel()
                 return True
             if (
-                state is NumericEditState.TEXT_EDITING
-                and event.type() == QEvent.Type.MouseButtonPress
+                self._is_text_active
+                and event.type()
+                in (
+                    QEvent.Type.MouseButtonPress,
+                    QEvent.Type.MouseButtonDblClick,
+                )
                 and event.button() == Qt.MouseButton.LeftButton
-                and not self._belongs_to_input(watched)
             ):
+                if self._mouse_event_hits_input(event):
+                    if self._belongs_to_editor(watched):
+                        return False
+                    return self._forward_event_to_editor(event)
                 self._commit_text()
                 return False
+            if (
+                self._state is NumericEditState.TEXT_SELECTING
+                and event.type()
+                in (
+                    QEvent.Type.MouseMove,
+                    QEvent.Type.MouseButtonRelease,
+                )
+                and not self._belongs_to_editor(watched)
+            ):
+                return self._forward_event_to_editor(event)
 
         return False
 
@@ -623,9 +694,17 @@ class DragValueSpinBox(QWidget):
         self._sync_global_filter()
         self._sync_editor_mode()
         self.update()
+        self.interactionStateChanged.emit(state)
+
+    @property
+    def _is_text_active(self) -> bool:
+        return self._state in (
+            NumericEditState.TEXT_EDITING,
+            NumericEditState.TEXT_SELECTING,
+        )
 
     def _sync_editor_mode(self) -> None:
-        text_editing = self._state is NumericEditState.TEXT_EDITING
+        text_editing = self._is_text_active
         self._editor.setReadOnly(not text_editing)
         self._editor.setFocusPolicy(
             Qt.FocusPolicy.StrongFocus if text_editing else Qt.FocusPolicy.NoFocus
@@ -640,7 +719,7 @@ class DragValueSpinBox(QWidget):
             else Qt.CursorShape.SizeHorCursor
         )
         self.setCursor(
-            Qt.CursorShape.ArrowCursor
+            Qt.CursorShape.IBeamCursor
             if text_editing
             else Qt.CursorShape.SizeHorCursor
         )
@@ -663,7 +742,7 @@ class DragValueSpinBox(QWidget):
         if resolved == self._value:
             return False
         self._value = resolved
-        if self._state is not NumericEditState.TEXT_EDITING:
+        if not self._is_text_active:
             self._restore_display_text()
         self.valueChanged.emit(resolved)
         self.update()
@@ -693,7 +772,7 @@ class DragValueSpinBox(QWidget):
         self._editor.setText(self._format_value(self._value))
 
     def _commit_text(self, *, wait_for_enter_release: bool = False) -> None:
-        if self._state is not NumericEditState.TEXT_EDITING:
+        if not self._is_text_active:
             return
         session = self._session
         result = self._evaluate_text(self._editor.text())
@@ -751,6 +830,7 @@ class DragValueSpinBox(QWidget):
         left_pending = self._state in (
             NumericEditState.WAIT_DRAG,
             NumericEditState.DRAGGING,
+            NumericEditState.TEXT_SELECTING,
         )
         session = self._session
         if session is not None:
@@ -796,13 +876,63 @@ class DragValueSpinBox(QWidget):
             QCursor.setPos(lock_position)
 
     def _release_mouse(self) -> None:
-        if QWidget.mouseGrabber() is self:
+        grabber = QWidget.mouseGrabber()
+        if grabber is self:
             self.releaseMouse()
+        elif grabber is self._editor:
+            self._editor.releaseMouse()
+
+    def _begin_text_selection(self) -> None:
+        if self._state is NumericEditState.TEXT_EDITING:
+            self._set_state(NumericEditState.TEXT_SELECTING)
+
+    def _finish_text_selection(self) -> None:
+        if self._state is NumericEditState.TEXT_SELECTING:
+            self._set_state(NumericEditState.TEXT_EDITING)
+
+    def _forward_event_to_editor(self, event: QMouseEvent) -> bool:
+        """Route an active text gesture through the one editing surface."""
+
+        local_position = QPointF(
+            self._editor.mapFromGlobal(event.globalPosition().toPoint())
+        )
+        forwarded = QMouseEvent(
+            event.type(),
+            local_position,
+            event.globalPosition(),
+            event.button(),
+            event.buttons(),
+            event.modifiers(),
+        )
+        self._forwarding_editor_event = True
+        try:
+            QApplication.sendEvent(self._editor, forwarded)
+        finally:
+            self._forwarding_editor_event = False
+        event.accept()
+        return True
+
+    def _belongs_to_editor(self, watched: QObject) -> bool:
+        current: QObject | None = watched
+        while current is not None:
+            if current is self._editor:
+                return True
+            current = current.parent()
+        return False
+
+    def _mouse_event_hits_input(self, event: QMouseEvent) -> bool:
+        position = self.mapFromGlobal(event.globalPosition().toPoint())
+        return self.rect().contains(position)
 
     def _belongs_to_input(self, watched: QObject) -> bool:
         current: QObject | None = watched
         while current is not None:
             if current is self:
+                return True
+            if (
+                isinstance(current, QWidget)
+                and current.focusProxy() is self
+            ):
                 return True
             current = current.parent()
         return False
@@ -875,6 +1005,7 @@ class DragValueDoubleSpinBox(QWidget):
     editingFinished = Signal()
     interactionStarted = Signal()
     interactionCanceled = Signal()
+    interactionStateChanged = Signal(object)
 
     def __init__(
         self,
@@ -922,6 +1053,7 @@ class DragValueDoubleSpinBox(QWidget):
         self._field.editingFinished.connect(self.editingFinished)
         self._field.interactionStarted.connect(self.interactionStarted)
         self._field.interactionCanceled.connect(self.interactionCanceled)
+        self._field.interactionStateChanged.connect(self.interactionStateChanged)
 
     @property
     def interaction_state(self) -> NumericEditState:

@@ -53,6 +53,17 @@ from easypicture.imaging.selection import (
     rectangle_candidate,
     select_all_candidate,
 )
+from easypicture.imaging.shapes import (
+    ShapeGeometry,
+    ShapeKind,
+    ShapePaintStyle,
+    ShapeRasterRequest,
+    ShapeRasterResult,
+    ShapeSettings,
+    calculate_shape_raster,
+    shape_affected_pixel_area,
+    shape_affected_tile_count,
+)
 from easypicture.imaging.transform import (
     RasterTransformRequest,
     RasterTransformResult,
@@ -92,6 +103,12 @@ __all__ = [
     "SelectionBulkRequest",
     "SelectionCombineMode",
     "SelectionOperationResult",
+    "ShapeGeometry",
+    "ShapeKind",
+    "ShapePaintStyle",
+    "ShapeRasterRequest",
+    "ShapeRasterResult",
+    "ShapeSettings",
     "TransformInterpolation",
     "blend_color",
     "blend_color_behind",
@@ -105,6 +122,7 @@ __all__ = [
     "calculate_magic_selection",
     "calculate_bulk_selection",
     "calculate_selection_adjustment",
+    "calculate_shape_raster",
     "calculate_raster_transform",
     "projective_from_quad",
     "clear_selection_tiles",
@@ -118,4 +136,6 @@ __all__ = [
     "rectangle_candidate",
     "sample_document_pixel",
     "select_all_candidate",
+    "shape_affected_pixel_area",
+    "shape_affected_tile_count",
 ]

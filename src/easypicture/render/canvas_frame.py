@@ -93,6 +93,7 @@ class CanvasRenderCoordinator(QObject):
         self._pixel_preview_layer_id: UUID | None = None
         self._pixel_preview_tiles: dict[TileCoord, RGBAArray] = {}
         self._pixel_preview_revisions: dict[TileCoord, int] = {}
+        self._pixel_preview_epoch = 0
         self._transform_preview: TransformPreviewState | None = None
         self._geometry_preview: GeometryPreviewState | None = None
         self._source_cache: OrderedDict[SourceCacheKey, QImage] = OrderedDict()
@@ -203,9 +204,9 @@ class CanvasRenderCoordinator(QObject):
                 expected_height=layer.pixels.tile_size,
             )
             self._pixel_preview_tiles[coord] = pixels
-            self._pixel_preview_revisions[coord] = (
-                self._pixel_preview_revisions.get(coord, 0) + 1
-            )
+        self._pixel_preview_epoch += 1
+        for coord in updates:
+            self._pixel_preview_revisions[coord] = self._pixel_preview_epoch
         self._pixel_preview_layer_id = layer_id
         self._discard_tile_cache(layer_id, frozenset(updates))
         self.request_frame()

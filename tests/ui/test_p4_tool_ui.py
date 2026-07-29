@@ -17,6 +17,7 @@ from easypicture.tools import BucketSettings
 from easypicture.ui.dialogs import NewDocumentDialog, NewDocumentSpec
 from easypicture.ui.drag_value_spinbox import (
     DRAG_THRESHOLD,
+    DragValueDoubleSpinBox,
     DragValueSpinBox,
     NumericEditState,
     NumericPropertySpec,
@@ -351,6 +352,70 @@ def test_drag_value_text_mode_selects_once_and_never_reenters_drag(qtbot) -> Non
     assert spin.interaction_state is NumericEditState.TEXT_EDITING
     assert spin.value() == 50
     assert spin.lineEdit().cursorPosition() != first_position
+
+
+def test_double_drag_value_second_click_stays_in_normal_text_mode(qtbot) -> None:
+    spin = DragValueDoubleSpinBox(-100.0, 100.0, 12.5)
+    qtbot.addWidget(spin)
+    spin.resize(180, 26)
+    spin.show()
+
+    qtbot.mouseClick(spin._field, Qt.MouseButton.LeftButton)  # noqa: SLF001
+    assert spin.interaction_state is NumericEditState.TEXT_EDITING
+    assert spin.lineEdit().hasSelectedText()
+    assert spin.lineEdit().geometry() == spin._field.rect()  # noqa: SLF001
+    assert spin._field.cursor().shape() is Qt.CursorShape.IBeamCursor  # noqa: SLF001
+
+    qtbot.mousePress(spin, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
+    assert spin.interaction_state is NumericEditState.TEXT_SELECTING
+    qtbot.mouseRelease(spin, Qt.MouseButton.LeftButton, pos=QPoint(2, 10))
+    assert spin.interaction_state is NumericEditState.TEXT_EDITING
+    qtbot.mouseDClick(
+        spin._field,  # noqa: SLF001
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(2, 10),
+    )
+    assert spin.interaction_state is NumericEditState.TEXT_SELECTING
+    qtbot.mouseRelease(
+        spin.lineEdit(),
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(2, 10),
+    )
+    assert spin.interaction_state is NumericEditState.TEXT_EDITING
+    qtbot.mouseClick(
+        spin.lineEdit(),
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(8, 10),
+    )
+    qtbot.mousePress(
+        spin.lineEdit(),
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(8, 10),
+    )
+    assert spin.interaction_state is NumericEditState.TEXT_SELECTING
+    qtbot.mouseMove(spin.lineEdit(), QPoint(100, 10))
+    qtbot.mouseRelease(
+        spin.lineEdit(),
+        Qt.MouseButton.LeftButton,
+        pos=QPoint(100, 10),
+    )
+
+    assert spin.interaction_state is NumericEditState.TEXT_EDITING
+    assert spin.value() == pytest.approx(12.5)
+    assert not spin.lineEdit().isReadOnly()
+    assert spin.lineEdit().cursor().shape() is Qt.CursorShape.IBeamCursor
+
+    qtbot.keyClick(
+        spin.lineEdit(),
+        Qt.Key.Key_A,
+        Qt.KeyboardModifier.ControlModifier,
+    )
+    qtbot.keyClicks(spin.lineEdit(), "-20")
+    assert spin.lineEdit().text() == "-20"
+    qtbot.keyPress(spin.lineEdit(), Qt.Key.Key_Enter)
+    qtbot.keyRelease(spin.lineEdit(), Qt.Key.Key_Enter)
+    assert spin.value() == pytest.approx(-20.0)
+    assert spin.interaction_state is NumericEditState.IDLE
 
 
 def test_drag_value_wait_drag_threshold_and_editing_finished_signals(qtbot) -> None:
