@@ -177,7 +177,7 @@ V1 使用 sRGB 编码值进行合成，不实现线性光合成。这不是专�
 菜单语义固定为：
 
 - `保存/另存为`：写入 `.limg`，保留图层和项目状态；
-- `导出`：生成 PNG/JPEG/WebP/BMP/TIFF/TGA；
+- `导出`：生成 PNG/JPEG/WebP/BMP/TIFF/TGA/静态 GIF；
 - 打开普通图片：创建未命名项目；
 - 打开 `.limg`：恢复项目；
 - 导出成功不能清除项目的 modified 状态；
@@ -537,6 +537,11 @@ P7A 实现状态：**九类非破坏性颜色调整已完成自动与人工验�
 原子替换上一份完整预览，Enter 可直接应用。实现结果见
 [`docs/p7a_acceptance.md`](p7a_acceptance.md)。
 
+P7B 实现状态：**七格式统一导出已完成人工验收。** PNG、JPEG、WebP、
+BMP、TIFF、TGA 和静态 GIF 共用权威合成、后台任务、重开验证与原子替换流程；统一导出
+窗口记忆各格式常用参数，并明确处理 Alpha、ICC、元数据和覆盖确认。实现结果见
+[`docs/p7b_acceptance.md`](p7b_acceptance.md)。
+
 任务：
 
 - 通道 LUT、反相、阈值、伽马和曲线；
@@ -545,7 +550,7 @@ P7A 实现状态：**九类非破坏性颜色调整已完成自动与人工验�
 - 精确/容差颜色替换；
 - 小调色板最近色映射；
 - 全分辨率后台预览、最新请求合并和一次性提交；
-- PNG/JPEG/WebP/BMP/TIFF/TGA 导出选项；
+- PNG/JPEG/WebP/BMP/TIFF/TGA/静态 GIF 导出选项；
 - JPEG Alpha 背景处理；
 - ICC、EXIF 的明确保留/重写策略；
 - 导出进度、取消和覆盖确认。

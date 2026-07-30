@@ -20,8 +20,11 @@ from PySide6.QtWidgets import (
 
 from easypicture.domain import Document, Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
+from easypicture.persistence import detect_export_capabilities
 from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
+from easypicture.ui.export_dialog import ImageExportDialog, ImageExportSpec
+from easypicture.ui.settings import AppSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +77,13 @@ class DialogService(Protocol):
         parent: QWidget,
         suggested_name: str,
     ) -> Path | None: ...
+
+    def request_image_export(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+        initial_directory: Path,
+    ) -> ImageExportSpec | None: ...
 
     def confirm_recovery(self, parent: QWidget, display_name: str) -> RecoveryDecision: ...
 
@@ -190,6 +200,9 @@ class SelectionRadiusDialog(QDialog):
 
 
 class QtDialogService:
+    def __init__(self, settings: AppSettings | None = None) -> None:
+        self._settings = settings if settings is not None else AppSettings()
+
     def request_new_document(
         self,
         parent: QWidget,
@@ -278,6 +291,23 @@ class QtDialogService:
             return None
         result = Path(path)
         return result if result.suffix.lower() == ".png" else result.with_suffix(".png")
+
+    def request_image_export(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+        initial_directory: Path,
+    ) -> ImageExportSpec | None:
+        dialog = ImageExportDialog(
+            self._settings,
+            suggested_name,
+            initial_directory,
+            detect_export_capabilities(),
+            parent,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        return dialog.specification()
 
     def confirm_recovery(self, parent: QWidget, display_name: str) -> RecoveryDecision:
         box = QMessageBox(parent)

@@ -7,12 +7,14 @@ from PIL import Image
 from PySide6.QtWidgets import QWidget
 
 from easypicture.controller import ApplicationController
+from easypicture.persistence import GifExportOptions
 from easypicture.pixels import TileCoord
 from easypicture.ui.dialogs import (
     NewDocumentSpec,
     RecoveryDecision,
     UnsavedDecision,
 )
+from easypicture.ui.export_dialog import ImageExportSpec
 from tests.fakes import FakeDialogService, make_settings
 
 
@@ -168,6 +170,36 @@ def test_png_export_does_not_clear_modified(qtbot, tmp_path: Path) -> None:
     assert controller.document.modified
     assert controller.document.revision == revision
     assert dialogs.png_export_path.exists()
+
+
+def test_unified_export_does_not_clear_modified(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(8, 8)
+    output = tmp_path / "export.gif"
+    dialogs.image_export_spec = ImageExportSpec(
+        output,
+        GifExportOptions(colors=16, alpha_threshold=100, dither=False),
+    )
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    controller.document.record_change()
+    revision = controller.document.revision
+
+    assert controller.request_export_image(parent)
+
+    assert output.exists()
+    assert controller.document.modified
+    assert controller.document.revision == revision
+    with Image.open(output) as image:
+        assert image.format == "GIF"
+        assert image.n_frames == 1
 
 
 def test_open_image_creates_clean_source_named_document(qtbot, tmp_path: Path) -> None:

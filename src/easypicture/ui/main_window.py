@@ -255,7 +255,7 @@ class MainWindow(QMainWindow):
         self.save_action = QAction("保存(&S)", self)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_as_action = QAction("另存为", self)
-        self.export_action = QAction("导出 PNG", self)
+        self.export_action = QAction("导出图片…", self)
         for action in (self.save_action, self.save_as_action, self.export_action):
             action.setEnabled(False)
 
@@ -607,7 +607,7 @@ class MainWindow(QMainWindow):
         self.close_action.triggered.connect(self._request_close_document)
         self.save_action.triggered.connect(self._request_save_document)
         self.save_as_action.triggered.connect(self._request_save_as_document)
-        self.export_action.triggered.connect(self._request_export_png)
+        self.export_action.triggered.connect(self._request_export_image)
         self.exit_action.triggered.connect(self.close)
         self.preferences_action.triggered.connect(self._show_preferences)
         self.transform_action.triggered.connect(self._activate_transform_command)
@@ -712,8 +712,8 @@ class MainWindow(QMainWindow):
     def _request_save_as_document(self) -> None:
         self.controller.request_save_as(self)
 
-    def _request_export_png(self) -> None:
-        self.controller.request_export_png(self)
+    def _request_export_image(self) -> None:
+        self.controller.request_export_image(self)
 
     def _show_canvas_size_dialog(self) -> None:
         document = self.controller.document

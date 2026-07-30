@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
 import numpy as np
+from PIL import Image
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QSurfaceFormat
 from PySide6.QtWidgets import QApplication
@@ -16,7 +18,17 @@ from easypicture.controller import ApplicationController
 from easypicture.domain import Document
 from easypicture.jobs import CancellationToken
 from easypicture.persistence import (
+    BmpExportOptions,
     DocumentSnapshot,
+    GifExportOptions,
+    ImageExportOptions,
+    ImageExportRequest,
+    JpegExportOptions,
+    PngExportOptions,
+    TgaExportOptions,
+    TiffExportOptions,
+    WebpExportOptions,
+    export_image,
     export_png,
     import_image,
     load_project,
@@ -55,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="Render a GPU/software reference scene under DIR and exit.",
     )
+    parser.add_argument(
+        "--export-smoke-test",
+        type=Path,
+        metavar="DIR",
+        help="Export and reopen all supported still-image formats under DIR.",
+    )
     return parser
 
 
@@ -67,7 +85,9 @@ def create_window(
 ) -> MainWindow:
     """Create the P1 main window with injectable settings and dialogs."""
     resolved_settings = settings if settings is not None else AppSettings()
-    resolved_dialogs = dialogs if dialogs is not None else QtDialogService()
+    resolved_dialogs = (
+        dialogs if dialogs is not None else QtDialogService(resolved_settings)
+    )
     controller = ApplicationController(
         resolved_settings,
         resolved_dialogs,
@@ -85,6 +105,8 @@ def run(argv: Sequence[str] | None = None) -> int:
     options = build_parser().parse_args(argv)
     if options.io_smoke_test is not None:
         return _run_io_smoke_test(options.io_smoke_test)
+    if options.export_smoke_test is not None:
+        return _run_export_smoke_test(options.export_smoke_test)
     requested_backend = (
         RenderBackendKind(options.render_backend)
         if options.render_backend is not None
@@ -159,6 +181,61 @@ def _run_io_smoke_test(directory: Path) -> int:
         imported = import_image(png_path, token, progress)
         pixel = imported.document.active_layer.pixels.read_tile(0, 0)[0, 0]
         return 0 if tuple(pixel) == (255, 0, 0, 128) else 1
+    except Exception:
+        return 1
+
+
+def _run_export_smoke_test(directory: Path) -> int:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        document = Document.create(4, 4)
+        tile = np.zeros((256, 256, 4), dtype=np.uint8)
+        tile[:2, :2] = (255, 0, 0, 255)
+        tile[:2, 2:4] = (0, 255, 0, 128)
+        tile[2:4, :2] = (12, 34, 56, 0)
+        tile[2:4, 2:4] = (0, 0, 255, 255)
+        document.active_layer.pixels.replace_tile(0, 0, tile)
+        snapshot = DocumentSnapshot.capture(document)
+        token = CancellationToken()
+
+        def progress(_done: int, _total: int, _message: str) -> None:
+            return
+
+        cases: dict[str, ImageExportOptions] = {
+            "png": PngExportOptions(),
+            "jpg": JpegExportOptions(),
+            "webp": WebpExportOptions(),
+            "bmp": BmpExportOptions(),
+            "tiff": TiffExportOptions(),
+            "tga": TgaExportOptions(),
+            "gif": GifExportOptions(),
+        }
+        diagnostics: dict[str, object] = {"formats": {}}
+        format_results = diagnostics["formats"]
+        if not isinstance(format_results, dict):
+            return 1
+        for extension, export_options in cases.items():
+            destination = directory / f"export-smoke.{extension}"
+            receipt = export_image(
+                ImageExportRequest(snapshot, destination, export_options),
+                token,
+                progress,
+            )
+            with Image.open(receipt.path) as image:
+                image.load()
+                format_results[receipt.format.value] = {
+                    "path": receipt.path.name,
+                    "format": image.format,
+                    "size": list(image.size),
+                    "frames": int(getattr(image, "n_frames", 1)),
+                    "bytes": receipt.file_size,
+                }
+        diagnostics_path = directory / "diagnostics.json"
+        diagnostics_path.write_text(
+            json.dumps(diagnostics, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return 0
     except Exception:
         return 1
 

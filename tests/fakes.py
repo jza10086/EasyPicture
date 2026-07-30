@@ -12,6 +12,7 @@ from easypicture.ui.dialogs import (
     RecoveryDecision,
     UnsavedDecision,
 )
+from easypicture.ui.export_dialog import ImageExportSpec
 from easypicture.ui.settings import AppSettings
 
 
@@ -27,6 +28,7 @@ class FakeDialogService:
         self.open_path: Path | None = None
         self.project_save_path: Path | None = None
         self.png_export_path: Path | None = None
+        self.image_export_spec: ImageExportSpec | None = None
         self.unsaved_decision: UnsavedDecision | None = None
         self.recovery_decision = RecoveryDecision.KEEP
         self.errors: list[tuple[str, str]] = []
@@ -76,6 +78,15 @@ class FakeDialogService:
     ) -> Path | None:
         _ = parent, suggested_name
         return self.png_export_path
+
+    def request_image_export(
+        self,
+        parent: QWidget,
+        suggested_name: str,
+        initial_directory: Path,
+    ) -> ImageExportSpec | None:
+        _ = parent, suggested_name, initial_directory
+        return self.image_export_spec
 
     def confirm_recovery(
         self,

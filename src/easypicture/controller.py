@@ -25,10 +25,13 @@ from easypicture.jobs import JobHandle, JobOutcome, JobRunner, JobStatus
 from easypicture.jobs.runner import JobOperation
 from easypicture.persistence import (
     DocumentSnapshot,
+    ImageExportReceipt,
+    ImageExportRequest,
     ImportedImage,
     LoadedProject,
     PngExportReceipt,
     SaveReceipt,
+    export_image,
     export_png,
     import_image,
     load_project,
@@ -161,6 +164,42 @@ class ApplicationController(QObject):
         if outcome.status is JobStatus.SUCCESS and isinstance(
             outcome.value,
             PngExportReceipt,
+        ):
+            self.status_message.emit(f"已导出 {outcome.value.path.name}")
+            return True
+        self._report_job_failure(parent, "导出失败", outcome)
+        return False
+
+    def request_export_image(self, parent: QWidget) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        suggested = Path(document.display_name).stem or "Untitled"
+        initial_directory = self.settings.last_export_directory()
+        if initial_directory is None and document.project_path is not None:
+            initial_directory = document.project_path.parent
+        if initial_directory is None:
+            pictures = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.PicturesLocation
+            )
+            initial_directory = Path(pictures) if pictures else Path.cwd()
+        spec = self.dialogs.request_image_export(
+            parent,
+            suggested,
+            initial_directory,
+        )
+        if spec is None:
+            return False
+        snapshot = DocumentSnapshot.capture(document)
+        request = ImageExportRequest(snapshot, spec.path, spec.options)
+        outcome = self._run_foreground(
+            parent,
+            "导出图片",
+            lambda token, progress: export_image(request, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            ImageExportReceipt,
         ):
             self.status_message.emit(f"已导出 {outcome.value.path.name}")
             return True

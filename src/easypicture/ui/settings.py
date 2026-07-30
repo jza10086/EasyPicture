@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QMainWindow
@@ -18,6 +20,7 @@ from easypicture.imaging import (
     ShapeSettings,
     TransformInterpolation,
 )
+from easypicture.persistence import ExportFormat
 from easypicture.render import RenderBackendKind
 from easypicture.tools import BucketSettings, MagicWandSettings
 from easypicture.ui.selection_style import (
@@ -115,6 +118,39 @@ class AppSettings:
 
     def set_color_adjustment_state(self, kind: str, state: str) -> None:
         self._settings.setValue(f"color_adjustments/{kind}", state)
+
+    def last_export_format(self) -> ExportFormat:
+        value = str(
+            self._settings.value(
+                "export/last_format",
+                ExportFormat.PNG.value,
+            )
+        )
+        try:
+            return ExportFormat(value)
+        except ValueError:
+            return ExportFormat.PNG
+
+    def last_export_directory(self) -> Path | None:
+        value = self._settings.value("export/last_directory")
+        if value is None or not str(value).strip():
+            return None
+        return Path(str(value))
+
+    def export_options_state(self, export_format: ExportFormat) -> str | None:
+        value = self._settings.value(f"export/options/{export_format.value}")
+        return None if value is None else str(value)
+
+    def set_export_state(
+        self,
+        export_format: ExportFormat,
+        directory: Path,
+        state: str,
+    ) -> None:
+        self._settings.setValue("export/last_format", export_format.value)
+        self._settings.setValue("export/last_directory", str(directory))
+        self._settings.setValue(f"export/options/{export_format.value}", state)
+        self._settings.sync()
 
     def numeric_drag_sensitivity(self) -> float:
         return self._bounded_float(

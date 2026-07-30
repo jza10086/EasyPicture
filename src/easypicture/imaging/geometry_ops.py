@@ -20,7 +20,7 @@ from easypicture.imaging.transform import (
     _WorkingFiles,
 )
 from easypicture.jobs import CancellationToken
-from easypicture.persistence import DocumentSnapshot, LayerSnapshot
+from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
 from easypicture.pixels import DEFAULT_TILE_SIZE, MaskArray, Rect, RGBAArray, TileCoord
 
 type ProgressSink = Callable[[int, int, str], None]

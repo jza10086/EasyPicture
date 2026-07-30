@@ -13,7 +13,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from easypicture.imaging.brush import PaintBlendMode, RGBAColor, blend_color
-from easypicture.persistence import DocumentSnapshot, LayerSnapshot
+from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
 from easypicture.pixels import DEFAULT_TILE_SIZE, RGBAArray, TileCoord
 
 type ShapePoint = tuple[float, float]
