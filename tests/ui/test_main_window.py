@@ -3,10 +3,20 @@ from __future__ import annotations
 from PySide6.QtWidgets import QFrame, QVBoxLayout
 
 from easypicture.controller import ApplicationController
+from easypicture.runtime import RuntimePaths
 from easypicture.ui.dialogs import NewDocumentSpec
 from easypicture.ui.main_window import MainWindow
 from easypicture.ui.theme import DARK_STYLESHEET, dark_palette
 from tests.fakes import FakeDialogService, make_settings
+
+
+def _runtime_paths(tmp_path) -> RuntimePaths:
+    return RuntimePaths(
+        tmp_path / "data",
+        tmp_path / "cache",
+        tmp_path / "data" / "logs",
+        tmp_path / "cache" / "temp",
+    )
 
 
 def test_main_window_starts_without_document(qtbot, tmp_path) -> None:
@@ -130,3 +140,26 @@ def test_save_updates_window_title_and_actions(qtbot, tmp_path) -> None:
     assert window.save_action.isEnabled()
     assert window.save_as_action.isEnabled()
     assert window.export_action.isEnabled()
+
+
+def test_recent_files_and_help_actions_are_available(qtbot, tmp_path) -> None:
+    settings = make_settings(str(tmp_path / "settings.ini"))
+    first = tmp_path / "first.limg"
+    second = tmp_path / "second.png"
+    settings.add_recent_file(first)
+    settings.add_recent_file(second)
+    controller = ApplicationController(settings, FakeDialogService())
+    window = MainWindow(
+        controller,
+        settings,
+        runtime_paths=_runtime_paths(tmp_path),
+    )
+    qtbot.addWidget(window)
+
+    window._rebuild_recent_files_menu()  # noqa: SLF001
+    recent_texts = [action.text() for action in window.recent_files_menu.actions()]
+
+    assert any("second.png" in text for text in recent_texts)
+    assert any("first.limg" in text for text in recent_texts)
+    assert window.about_action.text() == "关于 EasyPicture…"
+    assert window.open_log_folder_action.text() == "打开日志目录"

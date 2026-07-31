@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -36,6 +38,13 @@ from easypicture.persistence import (
 )
 from easypicture.render import RenderBackendKind
 from easypicture.render_smoke import run_render_smoke_test
+from easypicture.runtime import (
+    RuntimePaths,
+    configure_logging,
+    install_exception_logging,
+    log_runtime_environment,
+)
+from easypicture.temp_files import TemporaryFileManager, configure_temp_root
 from easypicture.ui.dialogs import DialogService, QtDialogService
 from easypicture.ui.main_window import MainWindow
 from easypicture.ui.settings import AppSettings
@@ -82,11 +91,14 @@ def create_window(
     dialogs: DialogService | None = None,
     recovery_enabled: bool = True,
     render_backend: RenderBackendKind | None = None,
+    runtime_paths: RuntimePaths | None = None,
 ) -> MainWindow:
     """Create the P1 main window with injectable settings and dialogs."""
     resolved_settings = settings if settings is not None else AppSettings()
     resolved_dialogs = (
-        dialogs if dialogs is not None else QtDialogService(resolved_settings)
+        dialogs
+        if dialogs is not None
+        else QtDialogService(resolved_settings, runtime_paths)
     )
     controller = ApplicationController(
         resolved_settings,
@@ -97,6 +109,7 @@ def create_window(
         controller,
         resolved_settings,
         render_backend=render_backend,
+        runtime_paths=runtime_paths,
     )
 
 
@@ -119,20 +132,58 @@ def run(argv: Sequence[str] | None = None) -> int:
     app.setApplicationName("EasyPicture")
     app.setApplicationVersion(__version__)
     apply_dark_theme(app)
+    runtime_paths = _runtime_paths_for_options(
+        smoke_test=options.smoke_test,
+        render_smoke_directory=options.render_smoke_test,
+    )
+    startup_warnings: list[str] = []
+    try:
+        configure_logging(runtime_paths)
+    except OSError as error:
+        fallback_root = Path(tempfile.mkdtemp(prefix="easypicture-runtime-"))
+        runtime_paths = RuntimePaths.under(fallback_root)
+        configure_logging(runtime_paths)
+        startup_warnings.append(f"默认日志目录不可写，已使用临时目录：{error}")
+    install_exception_logging()
+    log_runtime_environment()
+    temp_manager = configure_temp_root(runtime_paths.temp)
+    cleanup_report = temp_manager.cleanup_stale()
+    logger = logging.getLogger("easypicture")
+    logger.info(
+        "startup temporary cleanup: entries=%s bytes=%s failures=%s",
+        cleanup_report.removed_entries,
+        cleanup_report.removed_bytes,
+        len(cleanup_report.failures),
+    )
+    app.aboutToQuit.connect(lambda: _shutdown_runtime(temp_manager))
 
     if options.render_smoke_test is not None:
         smoke_backend = requested_backend or RenderBackendKind.OPENGL
-        return run_render_smoke_test(
+        exit_code = run_render_smoke_test(
             app,
             options.render_smoke_test,
             smoke_backend,
         )
+        _shutdown_runtime(temp_manager)
+        return exit_code
 
     window = create_window(
         recovery_enabled=not options.smoke_test,
         render_backend=requested_backend,
+        runtime_paths=runtime_paths,
     )
     window.show()
+    if cleanup_report.failures:
+        startup_warnings.append("部分过期临时文件无法清理；软件仍可正常使用")
+    if startup_warnings:
+        QTimer.singleShot(
+            0,
+            lambda: window.controller.notifications.warning(
+                "runtime-startup-warning",
+                startup_warnings[0],
+                details="\n".join((*startup_warnings, *cleanup_report.failures)),
+            ),
+        )
 
     if options.smoke_test:
         QTimer.singleShot(0, window.close)
@@ -141,6 +192,30 @@ def run(argv: Sequence[str] | None = None) -> int:
         QTimer.singleShot(0, lambda: window.controller.offer_recovery(window))
 
     return int(app.exec())
+
+
+def _shutdown_runtime(temp_manager: TemporaryFileManager) -> None:
+    report = temp_manager.cleanup_current_session()
+    logging.getLogger("easypicture").info(
+        "shutdown temporary cleanup: entries=%s bytes=%s failures=%s",
+        report.removed_entries,
+        report.removed_bytes,
+        len(report.failures),
+    )
+    logging.getLogger("easypicture").info("EasyPicture shutdown")
+
+
+def _runtime_paths_for_options(
+    *,
+    smoke_test: bool,
+    render_smoke_directory: Path | None,
+) -> RuntimePaths:
+    if render_smoke_directory is not None:
+        return RuntimePaths.under(render_smoke_directory / "runtime")
+    if smoke_test:
+        root = Path(tempfile.mkdtemp(prefix="easypicture-smoke-"))
+        return RuntimePaths.under(root)
+    return RuntimePaths.from_qt()
 
 
 def _configure_surface_format(

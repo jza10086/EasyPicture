@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +21,7 @@ from easypicture.imaging.reference import create_region_reference, layer_by_id
 from easypicture.imaging.region import RegionQuery, RegionResult, find_region
 from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
 from easypicture.pixels import DEFAULT_TILE_SIZE, RGBAArray, TileCoord
+from easypicture.temp_files import owned_temporary_directory
 
 type ProgressReporter = Callable[[int, int, str], None]
 
@@ -65,7 +65,7 @@ def calculate_fill(
     if not 0 <= seed_x < snapshot.size.width or not 0 <= seed_y < snapshot.size.height:
         raise ValueError("fill seed lies outside the document")
 
-    with tempfile.TemporaryDirectory(prefix="easypicture-fill-") as temp_dir:
+    with owned_temporary_directory(prefix="fill-") as temp_dir:
         reference = create_region_reference(
             snapshot,
             layer,

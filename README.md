@@ -1,6 +1,6 @@
 # EasyPicture
 
-EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已实现至 P7B：
+EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已实现至 P8：
 包含单文档生命周期、分块像素/选区存储、多图层管理、完整帧
 OpenGL/软件显示、图层与像素撤销、常用图片导入、`.limg` 项目保存/恢复、自动恢复、
 七种常用图片导出，
@@ -26,6 +26,11 @@ P7A 颜色调整已完成验收：右侧非模态调整页提供反相、阈值�
 已完成人工验收：统一窗口支持 PNG、JPEG、WebP、BMP、TIFF、TGA 和静态 GIF，提供格式参数、
 白色透明背景处理、ICC/元数据规则、原子覆盖、进度和取消。文本尚未实现。
 
+P8 将项目收束为本机 0.1.0 稳定版：运行日志采用 UTF-8 轮转文件，未捕获异常和后台任务
+结果会写入日志；大图工作文件统一进入应用专属缓存并保守清理 24 小时前的遗留内容。
+文件菜单提供最近 10 个项目或图片及失效路径处理，帮助菜单提供日志目录和“关于
+EasyPicture”，其中可复制版本、依赖、渲染后端及本机数据目录诊断信息。
+
 ## 环境
 
 - Windows x64
@@ -49,6 +54,7 @@ P7A 颜色调整已完成验收：右侧非模态调整页提供反相、阈值�
 .\scripts\package.ps1
 .\scripts\smoke-standalone.ps1
 .\scripts\smoke-render-standalone.ps1
+.\scripts\smoke-export-standalone.ps1
 ```
 
 也可以直接运行：

@@ -223,6 +223,31 @@ def test_open_image_creates_clean_source_named_document(qtbot, tmp_path: Path) -
     assert controller.document.display_name == "photo.png"
     assert controller.document.project_path is None
     assert not controller.document.modified
+    assert controller.recent_files == (source,)
+
+
+def test_missing_recent_file_is_removed_without_replacing_document(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    missing = tmp_path / "missing.limg"
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(12, 10)
+    settings = make_settings(str(tmp_path / "settings.ini"))
+    settings.add_recent_file(missing)
+    controller = ApplicationController(settings, dialogs)
+    assert controller.request_new_document(parent)
+    original = controller.document
+    notices: list[object] = []
+    controller.notifications.notice.connect(notices.append)
+
+    assert not controller.open_recent_path(parent, missing)
+
+    assert controller.document is original
+    assert controller.recent_files == ()
+    assert len(notices) == 1
 
 
 def test_corrupt_open_preserves_current_document(qtbot, tmp_path: Path) -> None:

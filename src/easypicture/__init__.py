@@ -1,3 +1,5 @@
 """EasyPicture application package."""
 
-__version__ = "0.1.0a0"
+from easypicture.version import __version__
+
+__all__ = ["__version__"]

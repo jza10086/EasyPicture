@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -24,6 +23,7 @@ from easypicture.pixels import (
     Rect,
     TileCoord,
 )
+from easypicture.temp_files import owned_temporary_directory
 
 type ProgressReporter = Callable[[int, int, str], None]
 BACKGROUND_SELECTION_PIXEL_THRESHOLD = 16_000_000
@@ -196,7 +196,7 @@ def calculate_magic_selection(
 ) -> SelectionOperationResult:
     snapshot = request.snapshot
     layer = layer_by_id(snapshot, request.layer_id)
-    with tempfile.TemporaryDirectory(prefix="easypicture-wand-") as temp_dir:
+    with owned_temporary_directory(prefix="wand-") as temp_dir:
         reference = create_region_reference(
             snapshot,
             layer,
@@ -255,7 +255,7 @@ def calculate_selection_adjustment(
     progress: ProgressReporter,
 ) -> SelectionOperationResult:
     snapshot = request.snapshot
-    with tempfile.TemporaryDirectory(prefix="easypicture-selection-") as temp_dir:
+    with owned_temporary_directory(prefix="selection-") as temp_dir:
         source = _materialize_selection(
             snapshot.selection,
             snapshot.size,

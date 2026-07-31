@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from uuid import UUID
 import numpy as np
 
 from easypicture.pixels import DEFAULT_TILE_SIZE, RGBAArray, TileCoord
+from easypicture.temp_files import owned_temporary_directory
 
 if TYPE_CHECKING:
     from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
@@ -738,7 +738,7 @@ def _rgba_surface(width: int, height: int) -> Iterator[np.ndarray]:
     if byte_count <= _WORKING_MEMORY_LIMIT:
         yield np.zeros((height, width, 4), dtype=np.uint8)
         return
-    with tempfile.TemporaryDirectory(prefix="easypicture-adjustment-") as directory:
+    with owned_temporary_directory(prefix="adjustment-") as directory:
         path = Path(directory) / "surface.rgba"
         surface = np.memmap(path, mode="w+", dtype=np.uint8, shape=(height, width, 4))
         surface[:] = 0

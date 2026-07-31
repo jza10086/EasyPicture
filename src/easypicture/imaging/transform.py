@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -31,6 +30,7 @@ from easypicture.pixels import (
     TileCoord,
     TilePixelStore,
 )
+from easypicture.temp_files import OwnedTemporaryDirectory, owned_temporary_directory
 
 type ProgressSink = Callable[[int, int, str], None]
 MEMMAP_THRESHOLD_BYTES = 64 * 1024 * 1024
@@ -71,7 +71,7 @@ class _PreparedRGBA:
 
 class _WorkingFiles:
     def __init__(self) -> None:
-        self._directory: tempfile.TemporaryDirectory[str] | None = None
+        self._directory: OwnedTemporaryDirectory | None = None
         self._serial = 0
 
     def zeros(
@@ -83,7 +83,7 @@ class _WorkingFiles:
         if byte_count <= MEMMAP_THRESHOLD_BYTES:
             return np.zeros(shape, dtype=dtype)
         if self._directory is None:
-            self._directory = tempfile.TemporaryDirectory(prefix="easypicture-transform-")
+            self._directory = owned_temporary_directory(prefix="transform-")
         self._serial += 1
         path = Path(self._directory.name) / f"buffer-{self._serial}.bin"
         result = np.memmap(path, mode="w+", dtype=dtype, shape=shape)

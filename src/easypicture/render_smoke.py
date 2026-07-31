@@ -15,6 +15,7 @@ from easypicture.domain import AffineTransform, Document, RasterLayer, Size
 from easypicture.imaging import TransformInterpolation
 from easypicture.pixels import DEFAULT_TILE_SIZE, TileCoord
 from easypicture.render import RenderBackendKind
+from easypicture.runtime import package_versions
 from easypicture.ui.canvas_view import CanvasView
 
 
@@ -136,6 +137,7 @@ def run_render_smoke_test(
         )
         diagnostics = view.render_coordinator.diagnostics
         payload = {
+            "dependencies": package_versions(),
             "requested_backend": diagnostics.requested_backend.value,
             "active_backend": diagnostics.active_backend.value,
             "vendor": diagnostics.vendor,

@@ -16,6 +16,11 @@ from easypicture.jobs import CancellationToken
 from easypicture.jobs.runner import ProgressSink
 from easypicture.persistence.snapshots import DocumentSnapshot
 from easypicture.pixels import DEFAULT_TILE_SIZE, TileCoord
+from easypicture.temp_files import (
+    cleanup_stale_sibling_temps,
+    release_temporary_file,
+    temporary_file,
+)
 
 MEMMAP_PIXEL_THRESHOLD = 4096 * 4096
 
@@ -30,12 +35,7 @@ def composite_buffer(
     pixel_count = snapshot.size.width * snapshot.size.height
     temporary_path: Path | None = None
     if pixel_count > MEMMAP_PIXEL_THRESHOLD:
-        handle, raw_path = tempfile.mkstemp(
-            prefix="easypicture-composite-",
-            suffix=".rgba",
-        )
-        os.close(handle)
-        temporary_path = Path(raw_path)
+        temporary_path = temporary_file("composite-", ".rgba")
         output: np.ndarray = np.memmap(
             temporary_path,
             mode="w+",
@@ -71,7 +71,7 @@ def composite_buffer(
             output.flush()
             del output
         if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+            release_temporary_file(temporary_path)
 
 
 def srgb_profile_bytes() -> bytes:
@@ -80,6 +80,7 @@ def srgb_profile_bytes() -> bytes:
 
 
 def temporary_sibling(destination: Path) -> Path:
+    cleanup_stale_sibling_temps(destination)
     descriptor, raw_path = tempfile.mkstemp(
         prefix=f".{destination.name}.",
         suffix=".tmp",

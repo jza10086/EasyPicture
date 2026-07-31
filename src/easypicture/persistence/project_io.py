@@ -26,6 +26,7 @@ from easypicture.persistence.image_io import create_thumbnail_png
 from easypicture.persistence.migrations import CURRENT_SCHEMA_VERSION, migrate_manifest
 from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
 from easypicture.pixels import DEFAULT_TILE_SIZE, MaskTileStore, TilePixelStore
+from easypicture.temp_files import cleanup_stale_sibling_temps
 
 PROJECT_FORMAT = "easypicture"
 MANIFEST_PATH = "manifest.json"
@@ -609,6 +610,7 @@ def _write_entry(archive: zipfile.ZipFile, name: str, data: bytes) -> None:
 
 
 def _temporary_sibling(destination: Path) -> Path:
+    cleanup_stale_sibling_temps(destination)
     descriptor, raw_path = tempfile.mkstemp(
         prefix=f".{destination.name}.",
         suffix=".tmp",

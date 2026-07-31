@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings
@@ -36,6 +37,7 @@ DEFAULT_NUMERIC_DRAG_SENSITIVITY = 0.01
 DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY = 0.001
 MIN_NUMERIC_DRAG_SENSITIVITY = 0.0001
 MAX_NUMERIC_DRAG_SENSITIVITY = 0.1
+MAX_RECENT_FILES = 10
 
 
 class AppSettings:
@@ -151,6 +153,52 @@ class AppSettings:
         self._settings.setValue("export/last_directory", str(directory))
         self._settings.setValue(f"export/options/{export_format.value}", state)
         self._settings.sync()
+
+    def recent_files(self) -> tuple[Path, ...]:
+        raw = self._settings.value("files/recent", [])
+        if isinstance(raw, (list, tuple)):
+            values = list(raw)
+        elif raw is None:
+            values = []
+        else:
+            values = [raw]
+        result: list[Path] = []
+        seen: set[str] = set()
+        for value in values:
+            path = normalize_recent_path(Path(str(value)))
+            key = os.path.normcase(str(path))
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(path)
+            if len(result) >= MAX_RECENT_FILES:
+                break
+        return tuple(result)
+
+    def add_recent_file(self, path: Path) -> tuple[Path, ...]:
+        candidate = normalize_recent_path(path)
+        candidate_key = os.path.normcase(str(candidate))
+        paths = [
+            existing
+            for existing in self.recent_files()
+            if os.path.normcase(str(existing)) != candidate_key
+        ]
+        paths.insert(0, candidate)
+        self._set_recent_files(paths[:MAX_RECENT_FILES])
+        return tuple(paths[:MAX_RECENT_FILES])
+
+    def remove_recent_file(self, path: Path) -> tuple[Path, ...]:
+        candidate_key = os.path.normcase(str(normalize_recent_path(path)))
+        paths = [
+            existing
+            for existing in self.recent_files()
+            if os.path.normcase(str(existing)) != candidate_key
+        ]
+        self._set_recent_files(paths)
+        return tuple(paths)
+
+    def clear_recent_files(self) -> None:
+        self._set_recent_files([])
 
     def numeric_drag_sensitivity(self) -> float:
         return self._bounded_float(
@@ -418,6 +466,14 @@ class AppSettings:
         except ValueError:
             return PaintBlendMode.NORMAL
 
+    def _set_recent_files(self, paths: list[Path]) -> None:
+        self._settings.setValue("files/recent", [str(path) for path in paths])
+        self._settings.sync()
+
+
+def normalize_recent_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.path.normpath(str(path))))
+
 
 __all__ = [
     "AppSettings",
@@ -430,5 +486,7 @@ __all__ = [
     "DEFAULT_SELECTION_OUTLINE_WIDTH",
     "MAX_SELECTION_OUTLINE_WIDTH",
     "MAX_NUMERIC_DRAG_SENSITIVITY",
+    "MAX_RECENT_FILES",
     "MIN_NUMERIC_DRAG_SENSITIVITY",
+    "normalize_recent_path",
 ]

@@ -7,7 +7,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Protocol
 
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 from easypicture.domain import Document, Size
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
 from easypicture.persistence import detect_export_capabilities
+from easypicture.runtime import RuntimePaths
 from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.export_dialog import ImageExportDialog, ImageExportSpec
@@ -200,8 +202,15 @@ class SelectionRadiusDialog(QDialog):
 
 
 class QtDialogService:
-    def __init__(self, settings: AppSettings | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings | None = None,
+        runtime_paths: RuntimePaths | None = None,
+    ) -> None:
         self._settings = settings if settings is not None else AppSettings()
+        self._runtime_paths = (
+            runtime_paths if runtime_paths is not None else RuntimePaths.from_qt()
+        )
 
     def request_new_document(
         self,
@@ -328,7 +337,16 @@ class QtDialogService:
         return RecoveryDecision.KEEP
 
     def show_error(self, parent: QWidget, title: str, message: str) -> None:
-        QMessageBox.critical(parent, title, message)
+        box = QMessageBox(parent)
+        box.setIcon(QMessageBox.Icon.Critical)
+        box.setWindowTitle(title)
+        box.setText(message)
+        box.setInformativeText("详细信息已写入日志。")
+        box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+        log_button = box.addButton("打开日志目录", QMessageBox.ButtonRole.ActionRole)
+        box.exec()
+        if box.clickedButton() is log_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._runtime_paths.logs)))
 
     def show_warnings(
         self,
@@ -337,7 +355,13 @@ class QtDialogService:
         messages: tuple[str, ...],
     ) -> None:
         if messages:
-            QMessageBox.warning(parent, title, "\n".join(messages))
+            box = QMessageBox(parent)
+            box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            box.setIcon(QMessageBox.Icon.Warning)
+            box.setWindowTitle(title)
+            box.setText("\n".join(messages))
+            box.setStandardButtons(QMessageBox.StandardButton.Close)
+            box.open()
 
     def choose_color(
         self,

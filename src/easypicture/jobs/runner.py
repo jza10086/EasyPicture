@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -82,6 +84,9 @@ class _Worker(QRunnable):
 
     @Slot()
     def run(self) -> None:
+        logger = logging.getLogger("easypicture.jobs")
+        started = time.perf_counter()
+        logger.debug("job %s started", self.job_id)
         try:
             self.token.raise_if_cancelled()
             value = self.operation(self.token, self.signals.progress.emit)
@@ -90,7 +95,14 @@ class _Worker(QRunnable):
         except JobCancelled:
             outcome = JobOutcome(self.job_id, JobStatus.CANCELLED)
         except Exception as error:
+            logger.exception("job %s failed", self.job_id)
             outcome = JobOutcome(self.job_id, JobStatus.FAILED, error=error)
+        logger.info(
+            "job %s finished status=%s elapsed=%.3fs",
+            self.job_id,
+            outcome.status.value,
+            time.perf_counter() - started,
+        )
         self.signals.finished.emit(outcome)
 
 

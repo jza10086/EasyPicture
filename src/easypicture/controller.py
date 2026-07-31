@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import os
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -42,6 +44,7 @@ from easypicture.ui.dialogs import (
     RecoveryDecision,
     UnsavedDecision,
 )
+from easypicture.ui.notifications import NotificationService
 from easypicture.ui.settings import AppSettings
 
 DEFAULT_RECOVERY_INTERVAL_MS = 60_000
@@ -53,6 +56,7 @@ class ApplicationController(QObject):
     document_changed = Signal(object)
     document_event = Signal(object)
     status_message = Signal(str)
+    recent_files_changed = Signal(object)
 
     def __init__(
         self,
@@ -70,6 +74,8 @@ class ApplicationController(QObject):
             raise ValueError("recovery interval must be positive")
         self.settings = settings
         self.dialogs = dialogs
+        self.notifications = NotificationService(self)
+        self._logger = logging.getLogger("easypicture.controller")
         self._document: Document | None = None
         self._unsubscribe: Unsubscribe | None = None
         self._dialog_parent: QWidget | None = None
@@ -106,12 +112,17 @@ class ApplicationController(QObject):
     def set_dialog_parent(self, parent: QWidget) -> None:
         self._dialog_parent = parent
 
+    @property
+    def recent_files(self) -> tuple[Path, ...]:
+        return self.settings.recent_files()
+
     def request_new_document(self, parent: QWidget) -> bool:
         spec = self.dialogs.request_new_document(parent, self.settings.last_document_size())
         if spec is None or not self._resolve_unsaved(parent):
             return False
         self.settings.set_last_document_size(spec.size)
         self._replace_document(Document.create(spec.width, spec.height))
+        self._logger.info("created document %sx%s", spec.width, spec.height)
         return True
 
     def request_open_document(self, parent: QWidget) -> bool:
@@ -119,13 +130,34 @@ class ApplicationController(QObject):
         return False if path is None else self.open_path(parent, path)
 
     def open_path(self, parent: QWidget, path: Path) -> bool:
-        candidate = self._load_candidate(parent, Path(path))
+        resolved_path = Path(path)
+        candidate = self._load_candidate(parent, resolved_path)
         if candidate is None or not self._resolve_unsaved(parent):
             return False
         document, notices = candidate
         self._replace_document(document)
+        self._record_recent_file(resolved_path)
+        self._logger.info("opened %s", resolved_path)
         self.dialogs.show_warnings(parent, "导入提示", notices)
         return True
+
+    def open_recent_path(self, parent: QWidget, path: Path) -> bool:
+        candidate = Path(path)
+        if not candidate.exists():
+            self.settings.remove_recent_file(candidate)
+            self.recent_files_changed.emit(self.recent_files)
+            self.notifications.warning(
+                f"recent-missing:{candidate}",
+                f"最近文件已不存在，已从列表移除：{candidate.name}",
+                details=str(candidate),
+            )
+            return False
+        return self.open_path(parent, candidate)
+
+    def clear_recent_files(self) -> None:
+        self.settings.clear_recent_files()
+        self.recent_files_changed.emit(self.recent_files)
+        self.notifications.info("recent-cleared", "已清空最近文件")
 
     def request_save(self, parent: QWidget) -> bool:
         document = self._document
@@ -166,6 +198,7 @@ class ApplicationController(QObject):
             PngExportReceipt,
         ):
             self.status_message.emit(f"已导出 {outcome.value.path.name}")
+            self._logger.info("exported PNG %s", outcome.value.path)
             return True
         self._report_job_failure(parent, "导出失败", outcome)
         return False
@@ -202,6 +235,11 @@ class ApplicationController(QObject):
             ImageExportReceipt,
         ):
             self.status_message.emit(f"已导出 {outcome.value.path.name}")
+            self._logger.info(
+                "exported %s %s",
+                outcome.value.format.value,
+                outcome.value.path,
+            )
             return True
         self._report_job_failure(parent, "导出失败", outcome)
         return False
@@ -213,6 +251,7 @@ class ApplicationController(QObject):
             return False
         self._clear_recovery()
         self._replace_document(None)
+        self._logger.info("closed document")
         return True
 
     def request_exit(self, parent: QWidget) -> bool:
@@ -257,6 +296,7 @@ class ApplicationController(QObject):
         )
         self._replace_document(document)
         self.status_message.emit("已恢复自动保存草稿")
+        self._logger.info("restored recovery draft %s", self.recovery_path)
         return True
 
     def _load_candidate(
@@ -325,6 +365,8 @@ class ApplicationController(QObject):
             return False
         self._clear_recovery()
         self.status_message.emit(f"已保存 {receipt.path.name}")
+        self._record_recent_file(receipt.path)
+        self._logger.info("saved project %s", receipt.path)
         return True
 
     def _resolve_unsaved(self, parent: QWidget) -> bool:
@@ -413,7 +455,12 @@ class ApplicationController(QObject):
             self.recovery_path.unlink(missing_ok=True)
             return
         if outcome.status is JobStatus.FAILED:
-            self.status_message.emit("自动恢复草稿保存失败")
+            error = str(outcome.error) if outcome.error is not None else "未知错误"
+            self.notifications.warning(
+                "recovery-save-failed",
+                "自动恢复草稿保存失败；可继续编辑，详情已写入日志",
+                details=error,
+            )
         document = self._document
         if (
             document is not None
@@ -441,7 +488,9 @@ class ApplicationController(QObject):
         try:
             os.replace(self.recovery_path, target)
         except OSError:
+            self._logger.exception("failed to quarantine corrupt recovery draft")
             return
+        self._logger.warning("quarantined corrupt recovery draft as %s", target)
 
     def _run_foreground(
         self,
@@ -449,6 +498,8 @@ class ApplicationController(QObject):
         title: str,
         operation: JobOperation,
     ) -> JobOutcome:
+        started = time.perf_counter()
+        self._logger.info("job started: %s", title)
         dialog = QProgressDialog("准备中…", "取消", 0, 0, parent)
         dialog.setWindowTitle(title)
         dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
@@ -475,9 +526,18 @@ class ApplicationController(QObject):
         dialog.open()
         loop.exec()
         dialog.close()
-        if not outcome_box:
-            return JobOutcome(handle.job_id, JobStatus.CANCELLED)
-        return outcome_box[0]
+        outcome = (
+            JobOutcome(handle.job_id, JobStatus.CANCELLED)
+            if not outcome_box
+            else outcome_box[0]
+        )
+        self._logger.info(
+            "job finished: %s status=%s elapsed=%.3fs",
+            title,
+            outcome.status.value,
+            time.perf_counter() - started,
+        )
+        return outcome
 
     def _report_job_failure(
         self,
@@ -490,7 +550,21 @@ class ApplicationController(QObject):
             return
         error = outcome.error
         message = str(error) if error is not None else "未知错误"
+        self._logger.error(
+            "%s: %s",
+            title,
+            message,
+            exc_info=(
+                (type(error), error, error.__traceback__)
+                if error is not None
+                else None
+            ),
+        )
         self.dialogs.show_error(parent, title, message)
+
+    def _record_recent_file(self, path: Path) -> None:
+        recent = self.settings.add_recent_file(path)
+        self.recent_files_changed.emit(recent)
 
     def _confirm_undo_history_reset(self, required_bytes: int, budget_bytes: int) -> bool:
         if self._dialog_parent is None:

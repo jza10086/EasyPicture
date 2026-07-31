@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+import logging
+from pathlib import Path
+
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
     QColor,
+    QDesktopServices,
     QKeyEvent,
     QKeySequence,
     QShortcut,
@@ -18,6 +22,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QLabel,
     QMainWindow,
+    QMenu,
     QProgressDialog,
     QPushButton,
     QSizePolicy,
@@ -75,6 +80,7 @@ from easypicture.imaging import (
 from easypicture.jobs import JobHandle, JobOperation, JobOutcome, JobStatus
 from easypicture.persistence import DocumentSnapshot
 from easypicture.render import RenderBackendKind
+from easypicture.runtime import RuntimePaths
 from easypicture.tools import (
     BrushTool,
     BucketTool,
@@ -90,6 +96,7 @@ from easypicture.tools import (
     ToolController,
     TransformTool,
 )
+from easypicture.ui.about_dialog import AboutDialog
 from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_adjustment_controller import ColorAdjustmentController
 from easypicture.ui.color_adjustment_panel import ColorAdjustmentPanel
@@ -97,6 +104,7 @@ from easypicture.ui.color_panel import ColorPanel
 from easypicture.ui.drag_value_spinbox import configure_numeric_drag_sensitivity
 from easypicture.ui.geometry_dialogs import CanvasSizeDialog, ScaleGeometryDialog
 from easypicture.ui.layer_panel import LayerPanel
+from easypicture.ui.notifications import NoticeSeverity, UserNotice
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
@@ -179,10 +187,14 @@ class MainWindow(QMainWindow):
         parent: QWidget | None = None,
         *,
         render_backend: RenderBackendKind | None = None,
+        runtime_paths: RuntimePaths | None = None,
     ) -> None:
         super().__init__(parent)
         self.controller = controller
         self.settings = settings
+        self.runtime_paths = (
+            runtime_paths if runtime_paths is not None else RuntimePaths.from_qt()
+        )
         configure_numeric_drag_sensitivity(
             settings.numeric_drag_sensitivity(),
             settings.numeric_fine_drag_sensitivity(),
@@ -266,6 +278,8 @@ class MainWindow(QMainWindow):
         self.undo_action.setEnabled(False)
         self.redo_action.setEnabled(False)
         self.preferences_action = QAction("全局设置…", self)
+        self.open_log_folder_action = QAction("打开日志目录", self)
+        self.about_action = QAction("关于 EasyPicture…", self)
         self.transform_action = QAction("自由变换", self)
         self.transform_action.setShortcut(QKeySequence("Ctrl+T"))
         self.transform_action.setEnabled(False)
@@ -331,6 +345,8 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("文件(&F)")
         file_menu.addAction(self.new_action)
         file_menu.addAction(self.open_action)
+        self.recent_files_menu = file_menu.addMenu("最近文件")
+        self.recent_files_menu.aboutToShow.connect(self._rebuild_recent_files_menu)
         file_menu.addAction(self.close_action)
         file_menu.addSeparator()
         file_menu.addAction(self.save_action)
@@ -384,6 +400,11 @@ class MainWindow(QMainWindow):
         selection_menu.addAction(self.grow_selection_action)
         selection_menu.addAction(self.shrink_selection_action)
         selection_menu.addAction(self.smooth_selection_action)
+
+        help_menu = self.menuBar().addMenu("帮助(&H)")
+        help_menu.addAction(self.open_log_folder_action)
+        help_menu.addSeparator()
+        help_menu.addAction(self.about_action)
 
     def _create_toolbars(self) -> None:
         self.tool_options = QToolBar("工具选项", self)
@@ -610,6 +631,8 @@ class MainWindow(QMainWindow):
         self.export_action.triggered.connect(self._request_export_image)
         self.exit_action.triggered.connect(self.close)
         self.preferences_action.triggered.connect(self._show_preferences)
+        self.open_log_folder_action.triggered.connect(self._open_log_folder)
+        self.about_action.triggered.connect(self._show_about)
         self.transform_action.triggered.connect(self._activate_transform_command)
         self.canvas_size_action.triggered.connect(self._show_canvas_size_dialog)
         self.image_scale_action.triggered.connect(self._show_image_scale_dialog)
@@ -660,11 +683,11 @@ class MainWindow(QMainWindow):
         self.controller.document_changed.connect(self._on_document_changed)
         self.controller.document_event.connect(self._on_document_event)
         self.controller.status_message.connect(self.statusBar().showMessage)
-        self.canvas_view.render_backend_fallback.connect(
-            lambda reason: self.statusBar().showMessage(
-                f"OpenGL 渲染不可用，已回退到软件后端：{reason}",
-                10_000,
-            )
+        self.controller.recent_files_changed.connect(self._rebuild_recent_files_menu)
+        self.controller.notifications.notice.connect(self._show_user_notice)
+        self.canvas_view.render_backend_fallback.connect(self._on_render_backend_fallback)
+        self.canvas_view.render_coordinator.diagnostics_changed.connect(
+            self._on_render_diagnostics
         )
         self.canvas_view.zoom_changed.connect(self._on_zoom_changed)
         self.canvas_view.cursor_document_position_changed.connect(self._on_cursor_position)
@@ -705,6 +728,31 @@ class MainWindow(QMainWindow):
     def _request_open_document(self) -> None:
         self._cancel_color_adjustment_for_lifecycle()
         self.controller.request_open_document(self)
+
+    def _open_recent_path(self, path: Path) -> None:
+        self._cancel_color_adjustment_for_lifecycle()
+        self.controller.open_recent_path(self, path)
+
+    def _rebuild_recent_files_menu(self, *_args: object) -> None:
+        menu: QMenu = self.recent_files_menu
+        menu.clear()
+        recent = self.controller.recent_files
+        if not recent:
+            empty_action = menu.addAction("（无最近文件）")
+            empty_action.setEnabled(False)
+        else:
+            for index, path in enumerate(recent, start=1):
+                label = f"&{index}  {path.name}"
+                action = menu.addAction(label)
+                action.setToolTip(str(path))
+                action.setStatusTip(str(path))
+                action.triggered.connect(
+                    lambda _checked=False, selected=path: self._open_recent_path(selected)
+                )
+        menu.addSeparator()
+        clear_action = menu.addAction("清空最近文件")
+        clear_action.setEnabled(bool(recent))
+        clear_action.triggered.connect(self.controller.clear_recent_files)
 
     def _request_save_document(self) -> None:
         self.controller.request_save(self)
@@ -1353,6 +1401,51 @@ class MainWindow(QMainWindow):
         self.canvas_view.set_selection_outline_style(
             dialog.selection_color,
             dialog.selection_width,
+        )
+
+    def _show_about(self) -> None:
+        dialog = AboutDialog(
+            self.runtime_paths,
+            self.canvas_view.render_coordinator.diagnostics,
+            self,
+        )
+        dialog.exec()
+
+    def _open_log_folder(self) -> None:
+        self.runtime_paths.logs.mkdir(parents=True, exist_ok=True)
+        if not QDesktopServices.openUrl(
+            QUrl.fromLocalFile(str(self.runtime_paths.logs))
+        ):
+            self.controller.notifications.warning(
+                "open-log-folder-failed",
+                "无法打开日志目录",
+                details=str(self.runtime_paths.logs),
+            )
+
+    def _show_user_notice(self, notice: UserNotice) -> None:
+        prefix = {
+            NoticeSeverity.INFO: "",
+            NoticeSeverity.WARNING: "警告：",
+            NoticeSeverity.ERROR: "错误：",
+        }[notice.severity]
+        timeout = 5_000 if notice.severity is NoticeSeverity.INFO else 10_000
+        self.statusBar().showMessage(f"{prefix}{notice.message}", timeout)
+
+    def _on_render_backend_fallback(self, reason: str) -> None:
+        logging.getLogger("easypicture.render").warning(
+            "OpenGL unavailable; using software backend: %s",
+            reason,
+        )
+        self.controller.notifications.warning(
+            "render-backend-fallback",
+            "OpenGL 渲染不可用，已回退到软件后端",
+            details=reason,
+        )
+
+    def _on_render_diagnostics(self, diagnostics: object) -> None:
+        logging.getLogger("easypicture.render").info(
+            "render diagnostics: %s",
+            diagnostics,
         )
 
     def _set_editing_busy(self, busy: bool) -> None:

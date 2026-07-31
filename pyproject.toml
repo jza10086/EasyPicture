@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "easypicture"
-version = "0.1.0a0"
+dynamic = ["version"]
 description = "A lightweight offline raster image editor for Windows."
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
@@ -32,6 +32,9 @@ dev = [
 
 [tool.setuptools]
 package-dir = { "" = "src" }
+
+[tool.setuptools.dynamic]
+version = { attr = "easypicture.version.__version__" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
