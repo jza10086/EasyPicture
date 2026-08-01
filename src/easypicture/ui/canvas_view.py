@@ -32,6 +32,7 @@ from easypicture.domain import (
     Point,
     RasterLayer,
     Size,
+    TextObject,
     TransformMatrix,
 )
 from easypicture.domain.document import Unsubscribe
@@ -230,6 +231,17 @@ class CanvasView(QGraphicsView):
 
     def clear_transform_preview(self) -> None:
         self._render_coordinator.clear_transform_preview()
+
+    def replace_vector_preview(
+        self,
+        group_id: UUID,
+        objects: tuple[TextObject, ...],
+    ) -> None:
+        if self._document is not None:
+            self._render_coordinator.replace_vector_preview(group_id, objects)
+
+    def clear_vector_preview(self) -> None:
+        self._render_coordinator.clear_vector_preview()
 
     def set_geometry_preview(
         self,

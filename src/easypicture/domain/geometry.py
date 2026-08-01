@@ -29,6 +29,33 @@ class Point:
 
 
 @dataclass(frozen=True, slots=True)
+class FloatRect:
+    """A finite floating-point rectangle used by vector objects."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+
+    def __post_init__(self) -> None:
+        if not all(
+            math.isfinite(value)
+            for value in (self.x, self.y, self.width, self.height)
+        ):
+            raise ValueError("rectangle values must be finite")
+        if self.width <= 0.0 or self.height <= 0.0:
+            raise ValueError("rectangle dimensions must be positive")
+
+    @property
+    def right(self) -> float:
+        return self.x + self.width
+
+    @property
+    def bottom(self) -> float:
+        return self.y + self.height
+
+
+@dataclass(frozen=True, slots=True)
 class AffineTransform:
     """Qt-free 2D affine transform using the conventional 2x3 layout."""
 
@@ -246,6 +273,7 @@ def as_projective(transform: TransformMatrix) -> ProjectiveTransform:
 
 __all__ = [
     "AffineTransform",
+    "FloatRect",
     "PixelPoint",
     "Point",
     "ProjectiveTransform",

@@ -763,7 +763,16 @@ class ShapeTool:
         path = _shape_path(geometry)
         if lightweight_preview:
             self._add_lightweight_shape(path, geometry)
-        self._add_path(path)
+        self._add_path(
+            path,
+            miter_join=(
+                geometry.kind is ShapeKind.RECTANGLE
+                or (
+                    geometry.kind is ShapeKind.ROUNDED_RECTANGLE
+                    and geometry.effective_corner_radius <= 1e-6
+                )
+            ),
+        )
         if geometry.kind is ShapeKind.LINE:
             self._add_handle(geometry.points[0])
             self._add_handle(geometry.points[1])
@@ -777,13 +786,15 @@ class ShapeTool:
                 left, top, _, _ = geometry.bounds
                 self._add_handle((left + geometry.effective_corner_radius, top))
 
-    def _add_path(self, path: QPainterPath) -> None:
+    def _add_path(self, path: QPainterPath, *, miter_join: bool = False) -> None:
         if self._context is None:
             return
         item = QGraphicsPathItem(path)
         pen = QPen(_ORANGE)
         pen.setCosmetic(True)
         pen.setWidthF(1.0)
+        if miter_join:
+            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         item.setPen(pen)
         item.setBrush(Qt.BrushStyle.NoBrush)
         self._context.overlays.add(item)
@@ -810,6 +821,11 @@ class ShapeTool:
             pen = QPen(stroke)
             pen.setWidthF(settings.stroke_width)
             pen.setCosmetic(False)
+            if geometry.kind is ShapeKind.RECTANGLE or (
+                geometry.kind is ShapeKind.ROUNDED_RECTANGLE
+                and geometry.effective_corner_radius <= 1e-6
+            ):
+                pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
             item.setPen(pen)
         else:
             item.setPen(QPen(Qt.PenStyle.NoPen))

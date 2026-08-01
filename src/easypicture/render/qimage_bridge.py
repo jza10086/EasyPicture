@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 from PySide6.QtGui import QImage
 
 from easypicture.pixels.types import RGBAArray, validate_rgba_array
@@ -35,4 +36,27 @@ def rgba_tile_to_qimage(tile: RGBAArray) -> QImage:
     return converted.copy()
 
 
-__all__ = ["rgba_tile_to_qimage"]
+def qimage_to_rgba(image: QImage) -> RGBAArray:
+    """Copy an owned QImage into a contiguous straight-RGBA NumPy array."""
+    converted = image.convertToFormat(QImage.Format.Format_RGBA8888)
+    if converted.isNull():
+        raise ValueError("failed to convert QImage to RGBA8888")
+    height = converted.height()
+    width = converted.width()
+    stride = converted.bytesPerLine()
+    raw = np.frombuffer(
+        converted.constBits(),
+        dtype=np.uint8,
+        count=height * stride,
+    ).reshape(height, stride)
+    # ``raw`` borrows QImage storage; force an owning copy before ``converted``
+    # goes out of scope.
+    return np.array(
+        raw[:, : width * 4].reshape(height, width, 4),
+        dtype=np.uint8,
+        order="C",
+        copy=True,
+    )
+
+
+__all__ = ["qimage_to_rgba", "rgba_tile_to_qimage"]

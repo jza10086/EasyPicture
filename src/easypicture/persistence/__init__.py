@@ -34,10 +34,18 @@ from easypicture.persistence.project_io import (
     load_project,
     save_project,
 )
-from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
+from easypicture.persistence.snapshots import (
+    DocumentNodeSnapshot,
+    DocumentSnapshot,
+    LayerSnapshot,
+    RasterGroupSnapshot,
+    TextObjectSnapshot,
+    VectorGroupSnapshot,
+)
 
 __all__ = [
     "DocumentSnapshot",
+    "DocumentNodeSnapshot",
     "BmpExportOptions",
     "ExportCapability",
     "ExportFormat",
@@ -48,6 +56,9 @@ __all__ = [
     "ImportedImage",
     "JpegExportOptions",
     "LayerSnapshot",
+    "RasterGroupSnapshot",
+    "TextObjectSnapshot",
+    "VectorGroupSnapshot",
     "LoadedProject",
     "PngExportOptions",
     "PngExportReceipt",

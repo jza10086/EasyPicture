@@ -17,6 +17,7 @@ from easypicture.tools.selection_tools import (
     mode_from_modifiers,
 )
 from easypicture.tools.shape_tool import ShapeTool
+from easypicture.tools.text_tool import TextTool, TextTransformTool
 from easypicture.tools.transform_tool import TransformParameters, TransformTool
 
 __all__ = [
@@ -34,6 +35,8 @@ __all__ = [
     "Tool",
     "ToolContext",
     "ToolController",
+    "TextTool",
+    "TextTransformTool",
     "TransformParameters",
     "TransformTool",
     "mode_from_modifiers",

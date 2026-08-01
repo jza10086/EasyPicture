@@ -30,6 +30,8 @@ class ToolContext:
     jobs: JobRunner | None = None
     set_busy: Callable[[bool], None] | None = None
     status: Callable[[str], None] | None = None
+    selected_node_provider: Callable[[], object | None] | None = None
+    select_node: Callable[[object], None] | None = None
 
 
 class Tool(Protocol):

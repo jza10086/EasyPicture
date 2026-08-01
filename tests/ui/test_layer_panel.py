@@ -6,6 +6,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtTest import QTest
 
 from easypicture.controller import ApplicationController
+from easypicture.domain import RasterGroupLayer, VectorGroupLayer
 from easypicture.pixels import TileCoord
 from easypicture.ui.dialogs import NewDocumentSpec
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
@@ -40,6 +41,16 @@ def _visibility_point(window: MainWindow, row: int) -> QPoint:
 def _text_point(window: MainWindow, row: int) -> QPoint:
     panel = window.layer_panel
     return panel.list_view.text_rect(panel.model.index(row, 0)).center()
+
+
+def _tree_index_for_id(window: MainWindow, node_id):
+    model = window.layer_panel.tree_model
+    for row in range(model.rowCount()):
+        index = model.index(row, 0)
+        node = model.node_for_index(index)
+        if node is not None and node.id == node_id:
+            return index
+    return None
 
 
 def test_layer_panel_shows_top_layer_first_and_buttons_are_undoable(qtbot, tmp_path) -> None:
@@ -251,3 +262,52 @@ def test_only_text_region_changes_active_layer(qtbot, tmp_path) -> None:
         pos=_text_point(window, 1),
     )
     assert document.active_layer.name == "图层 1"
+
+
+def test_group_actions_keep_expansion_and_delete_children_with_group(
+    qtbot,
+    tmp_path,
+) -> None:
+    window, controller = _window_with_document(qtbot, tmp_path)
+    panel = window.layer_panel
+    document = controller.document
+    assert document is not None
+    window.show()
+    qtbot.wait(1)
+
+    assert not hasattr(panel, "new_text_button")
+    assert not hasattr(panel, "ungroup_button")
+    assert panel.tree_view.contextMenuPolicy() == Qt.ContextMenuPolicy.CustomContextMenu
+
+    raster_group = document.nodes[0]
+    assert isinstance(raster_group, RasterGroupLayer)
+    raster_index = _tree_index_for_id(window, raster_group.id)
+    assert raster_index is not None
+    panel.tree_view.setExpanded(raster_index, True)
+    assert panel.tree_view.isExpanded(raster_index)
+
+    panel.new_vector_group_button.click()
+    raster_index = _tree_index_for_id(window, raster_group.id)
+    assert raster_index is not None
+    assert panel.tree_view.isExpanded(raster_index)
+    qtbot.wait(1)
+    raster_index = _tree_index_for_id(window, raster_group.id)
+    assert raster_index is not None
+    assert panel.tree_view.isExpanded(raster_index)
+
+    vector_group = next(
+        node for node in document.nodes if isinstance(node, VectorGroupLayer)
+    )
+    vector_index = _tree_index_for_id(window, vector_group.id)
+    assert vector_index is not None
+    panel.tree_view.setExpanded(vector_index, True)
+    assert controller.commands.create_text_object(vector_group.id)
+    qtbot.wait(1)
+    vector_index = _tree_index_for_id(window, vector_group.id)
+    assert vector_index is not None
+    assert panel.tree_view.isExpanded(vector_index)
+
+    panel.select_node(vector_group)
+    panel.delete_button.click()
+    qtbot.wait(1)
+    assert vector_group.id not in {node.id for node in document.nodes}

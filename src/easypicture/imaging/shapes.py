@@ -263,7 +263,12 @@ def _tile_coverages(
     coord: TileCoord,
 ) -> tuple[np.ndarray, np.ndarray]:
     scale = _ANTIALIAS_SCALE if settings.antialias else 1
-    padding = _RASTER_PADDING if settings.antialias else 0
+    # The preview uses a centered QPainter pen.  Reserve the complete outer
+    # half-width here so the raster result cannot clip the outside half of a
+    # thick stroke at the tile edge.
+    padding = math.ceil(settings.stroke_width / 2.0) + (
+        _RASTER_PADDING if settings.antialias else 0
+    )
     side = (DEFAULT_TILE_SIZE + padding * 2) * scale
     fill_image = Image.new("L", (side, side), 0)
     stroke_image = Image.new("L", (side, side), 0)
@@ -285,16 +290,22 @@ def _tile_coverages(
     elif geometry.kind is ShapeKind.RECTANGLE:
         box = _normalized_box(points)
         fill_draw.rectangle(box, fill=255)
-        stroke_draw.rectangle(box, outline=255, width=width)
+        _draw_centered_stroke(stroke_draw, ShapeKind.RECTANGLE, box, width)
     elif geometry.kind is ShapeKind.ROUNDED_RECTANGLE:
         box = _normalized_box(points)
         radius = geometry.effective_corner_radius * scale
         fill_draw.rounded_rectangle(box, radius=radius, fill=255)
-        stroke_draw.rounded_rectangle(box, radius=radius, outline=255, width=width)
+        _draw_centered_stroke(
+            stroke_draw,
+            ShapeKind.ROUNDED_RECTANGLE,
+            box,
+            width,
+            radius,
+        )
     elif geometry.kind is ShapeKind.ELLIPSE:
         box = _normalized_box(points)
         fill_draw.ellipse(box, fill=255)
-        stroke_draw.ellipse(box, outline=255, width=width)
+        _draw_centered_stroke(stroke_draw, ShapeKind.ELLIPSE, box, width)
     else:
         fill_draw.polygon(points, fill=255)
         _draw_round_line(stroke_draw, (*points, points[0]), width)
@@ -337,6 +348,66 @@ def _draw_round_line(
             ),
             fill=255,
         )
+
+
+def _draw_centered_stroke(
+    draw: ImageDraw.ImageDraw,
+    kind: ShapeKind,
+    box: tuple[float, float, float, float],
+    width: int,
+    radius: float = 0.0,
+) -> None:
+    """Draw a centered outline like a QPainter path pen.
+
+    Pillow's ``outline=`` is inset into a rectangle/ellipse.  Drawing an
+    expanded outer shape and subtracting the contracted inner shape gives the
+    same centerline semantics as the live QGraphicsPathItem preview.
+    """
+    if kind is ShapeKind.ROUNDED_RECTANGLE and radius <= _GEOMETRY_EPSILON:
+        # Qt treats a zero-radius rounded rectangle as a regular rectangle,
+        # including its default BevelJoin corners.
+        kind = ShapeKind.RECTANGLE
+    half = width / 2.0
+    outer = _expanded_box(box, half)
+    if kind is ShapeKind.ROUNDED_RECTANGLE:
+        outer_radius = radius + half
+        draw.rounded_rectangle(outer, radius=outer_radius, fill=255)
+    elif kind is ShapeKind.ELLIPSE:
+        draw.ellipse(outer, fill=255)
+    else:
+        # Ordinary rectangles use a miter join in the live preview, so their
+        # outer corners remain right angles instead of being beveled.
+        draw.rectangle(outer, fill=255)
+
+    inner = _contracted_box(box, half)
+    if inner is None:
+        return
+    if kind is ShapeKind.ROUNDED_RECTANGLE:
+        inner_radius = max(0.0, radius - half)
+        draw.rounded_rectangle(inner, radius=inner_radius, fill=0)
+    elif kind is ShapeKind.ELLIPSE:
+        draw.ellipse(inner, fill=0)
+    else:
+        draw.rectangle(inner, fill=0)
+
+
+def _expanded_box(
+    box: tuple[float, float, float, float],
+    amount: float,
+) -> tuple[float, float, float, float]:
+    left, top, right, bottom = box
+    return left - amount, top - amount, right + amount, bottom + amount
+
+
+def _contracted_box(
+    box: tuple[float, float, float, float],
+    amount: float,
+) -> tuple[float, float, float, float] | None:
+    left, top, right, bottom = box
+    contracted = (left + amount, top + amount, right - amount, bottom - amount)
+    if contracted[2] <= contracted[0] or contracted[3] <= contracted[1]:
+        return None
+    return contracted
 
 
 def _normalized_box(points: tuple[ShapePoint, ...]) -> tuple[float, float, float, float]:

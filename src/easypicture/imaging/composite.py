@@ -9,7 +9,7 @@ import numpy as np
 from easypicture.pixels import DEFAULT_TILE_SIZE, Rect, RGBAArray, TileCoord
 
 if TYPE_CHECKING:
-    from easypicture.persistence.snapshots import DocumentSnapshot
+    from easypicture.persistence.snapshots import DocumentSnapshot, LayerSnapshot
 
 
 def compose_document_tile(
@@ -25,32 +25,105 @@ def compose_document_tile(
     bottom = min(top + tile_size, snapshot.size.height)
     output = np.zeros((tile_size, tile_size, 4), dtype=np.uint8)
 
-    for layer in snapshot.layers:
-        if not layer.visible or layer.opacity <= 0.0:
-            continue
-        overlap_left = max(left, layer.origin.x)
-        overlap_top = max(top, layer.origin.y)
-        overlap_right = min(right, layer.origin.x + layer.size.width)
-        overlap_bottom = min(bottom, layer.origin.y + layer.size.height)
-        if overlap_right <= overlap_left or overlap_bottom <= overlap_top:
-            continue
+    from easypicture.persistence.snapshots import RasterGroupSnapshot
 
-        source = layer.pixels.read_region(
-            Rect(
-                overlap_left - layer.origin.x,
-                overlap_top - layer.origin.y,
-                overlap_right - overlap_left,
-                overlap_bottom - overlap_top,
-            )
-        )
-        target_y = slice(overlap_top - top, overlap_bottom - top)
-        target_x = slice(overlap_left - left, overlap_right - left)
-        output[target_y, target_x] = _source_over(
-            output[target_y, target_x],
-            source,
-            layer.opacity,
-        )
+    if all(isinstance(node, RasterGroupSnapshot) for node in snapshot.nodes):
+        for node in snapshot.nodes:
+            assert isinstance(node, RasterGroupSnapshot)
+            for layer in node.children:
+                _composite_layer(output, layer, left, top, right, bottom, node.opacity)
+        return output
+    if snapshot.nodes:
+        return _compose_document_tile_with_vectors(snapshot, coord)
     return output
+
+
+def _composite_layer(
+    output: RGBAArray,
+    layer: LayerSnapshot,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    group_opacity: float,
+) -> None:
+    if not layer.visible or layer.opacity <= 0.0:
+        return
+    overlap_left = max(left, layer.origin.x)
+    overlap_top = max(top, layer.origin.y)
+    overlap_right = min(right, layer.origin.x + layer.size.width)
+    overlap_bottom = min(bottom, layer.origin.y + layer.size.height)
+    if overlap_right <= overlap_left or overlap_bottom <= overlap_top:
+        return
+    source = layer.pixels.read_region(
+        Rect(
+            overlap_left - layer.origin.x,
+            overlap_top - layer.origin.y,
+            overlap_right - overlap_left,
+            overlap_bottom - overlap_top,
+        )
+    )
+    target_y = slice(overlap_top - top, overlap_bottom - top)
+    target_x = slice(overlap_left - left, overlap_right - left)
+    output[target_y, target_x] = _source_over(
+        output[target_y, target_x],
+        source,
+        float(layer.opacity) * group_opacity,
+    )
+
+
+def _compose_document_tile_with_vectors(
+    snapshot: DocumentSnapshot,
+    coord: TileCoord,
+) -> RGBAArray:
+    """Compose a tile through the same QPainter path used for vector text."""
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter, Qt
+
+    from easypicture.persistence.snapshots import RasterGroupSnapshot
+    from easypicture.render.qimage_bridge import qimage_to_rgba, rgba_tile_to_qimage
+    from easypicture.render.text_renderer import paint_text_groups
+
+    tile_size = DEFAULT_TILE_SIZE
+    left = coord.x * tile_size
+    top = coord.y * tile_size
+    right = min(left + tile_size, snapshot.size.width)
+    bottom = min(top + tile_size, snapshot.size.height)
+    image = QImage(tile_size, tile_size, QImage.Format.Format_RGBA8888_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setClipRect(QRectF(0.0, 0.0, right - left, bottom - top))
+    painter.translate(-left, -top)
+    for group in snapshot.nodes:
+        if isinstance(group, RasterGroupSnapshot):
+            for node in group.children:
+                if not node.visible or node.opacity <= 0.0 or group.opacity <= 0.0:
+                    continue
+                painter.save()
+                painter.setOpacity(node.opacity * group.opacity)
+                overlap_left = max(left, node.origin.x)
+                overlap_top = max(top, node.origin.y)
+                overlap_right = min(right, node.origin.x + node.size.width)
+                overlap_bottom = min(bottom, node.origin.y + node.size.height)
+                if overlap_right > overlap_left and overlap_bottom > overlap_top:
+                    source = node.pixels.read_region(
+                        Rect(
+                            overlap_left - node.origin.x,
+                            overlap_top - node.origin.y,
+                            overlap_right - overlap_left,
+                            overlap_bottom - overlap_top,
+                        )
+                    )
+                    painter.drawImage(
+                        overlap_left,
+                        overlap_top,
+                        rgba_tile_to_qimage(source),
+                    )
+                painter.restore()
+        else:
+            paint_text_groups(painter, (group,))
+    painter.end()
+    return qimage_to_rgba(image)
 
 
 def _source_over(destination: RGBAArray, source: RGBAArray, opacity: float) -> RGBAArray:

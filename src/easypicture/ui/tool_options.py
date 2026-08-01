@@ -779,6 +779,16 @@ class ToolOptionsPanel(QStackedWidget):
         self.transform = TransformOptionsWidget(settings, self)
         self.crop = CropOptionsWidget(self)
         self.shape = ShapeOptionsWidget(settings, self)
+        self.text = QWidget(self)
+        text_layout = QHBoxLayout(self.text)
+        text_layout.setContentsMargins(4, 0, 4, 0)
+        text_layout.addWidget(
+            QLabel(
+                "拖动并松开创建文本框；创建期间右键取消",
+                self.text,
+            )
+        )
+        text_layout.addStretch(1)
         self.addWidget(self.brush)
         self.addWidget(self.eyedropper)
         self.addWidget(self.bucket)
@@ -787,6 +797,7 @@ class ToolOptionsPanel(QStackedWidget):
         self.addWidget(self.transform)
         self.addWidget(self.crop)
         self.addWidget(self.shape)
+        self.addWidget(self.text)
         self.brush.settings_changed.connect(self.brush_settings_changed)
         self.bucket.settings_changed.connect(self.bucket_settings_changed)
         self.eyedropper.settings_changed.connect(self.eyedropper_settings_changed)
@@ -834,6 +845,8 @@ class ToolOptionsPanel(QStackedWidget):
             self.setCurrentWidget(self.crop)
         elif tool_name == "shape":
             self.setCurrentWidget(self.shape)
+        elif tool_name == "text":
+            self.setCurrentWidget(self.text)
 
     def set_selection_active(self, active: bool) -> None:
         self.rectangle_selection.deselect_button.setEnabled(active)

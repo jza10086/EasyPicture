@@ -87,6 +87,54 @@ def test_rectangle_uses_independent_fill_and_stroke_colors() -> None:
     assert tuple(tile[0, 0]) == (0, 0, 0, 0)
 
 
+@pytest.mark.parametrize(
+    ("kind", "corner_radius"),
+    (
+        (ShapeKind.RECTANGLE, 0.0),
+        (ShapeKind.ROUNDED_RECTANGLE, 6.0),
+        (ShapeKind.ELLIPSE, 0.0),
+    ),
+)
+def test_box_stroke_is_centered_on_preview_path(
+    kind: ShapeKind,
+    corner_radius: float,
+) -> None:
+    document = Document.create(64, 64)
+    result = _raster(
+        document,
+        ShapeGeometry(kind, ((20.0, 20.0), (44.0, 44.0)), corner_radius),
+        ShapeSettings(
+            style=ShapePaintStyle.STROKE,
+            stroke_color=(255, 0, 0, 255),
+            stroke_width=4.0,
+            antialias=False,
+        ),
+    )
+    tile = result.updates[TileCoord(0, 0)]
+    # QPainter's pen is centered on the path.  A Pillow inset outline would
+    # leave these outer pixels transparent and make the final shape smaller.
+    assert tile[18, 32, 3] == 255
+    assert tile[16, 32, 3] == 0
+    assert tile[22, 32, 3] == 0
+
+
+def test_rectangle_stroke_keeps_right_angle_corners() -> None:
+    document = Document.create(64, 64)
+    result = _raster(
+        document,
+        ShapeGeometry(ShapeKind.RECTANGLE, ((20.0, 20.0), (44.0, 44.0))),
+        ShapeSettings(
+            style=ShapePaintStyle.STROKE,
+            stroke_width=4.0,
+            antialias=False,
+        ),
+    )
+    tile = result.updates[TileCoord(0, 0)]
+    # The preview uses a miter join for ordinary rectangles.  A bevel join
+    # would leave the diagonal corner pixel transparent.
+    assert tile[18, 18, 3] == 255
+
+
 def test_line_is_always_stroked_even_with_fill_style() -> None:
     document = Document.create(64, 64)
     result = _raster(

@@ -26,8 +26,10 @@ from PySide6.QtOpenGL import (
 
 from easypicture.domain import (
     ProjectiveTransform,
+    RasterGroupLayer,
     RasterLayer,
     TransformMatrix,
+    VectorGroupLayer,
     as_projective,
 )
 from easypicture.imaging import TransformInterpolation
@@ -235,7 +237,9 @@ class OpenGLCanvasBackend:
         width_pixels = max(1.0, viewport_width * device_pixel_ratio)
         height_pixels = max(1.0, viewport_height * device_pixel_ratio)
         view_rows = self._view_rows(device_transform, width_pixels, height_pixels)
+        native_active = False
         painter.beginNativePainting()
+        native_active = True
         try:
             document_id = None if document is None else document.id
             if self._document_id != document_id:
@@ -264,72 +268,93 @@ class OpenGLCanvasBackend:
             functions.glActiveTexture(GL_TEXTURE0)
             vao.bind()
             program.bind()
-            program.setUniformValue(program.uniformLocation(b"u_view_row0"), view_rows[0])
-            program.setUniformValue(program.uniformLocation(b"u_view_row1"), view_rows[1])
-            program.setUniformValue(program.uniformLocation(b"u_view_row2"), view_rows[2])
+
+            def bind_frame_state() -> None:
+                """Rebind state after a QPainter vector pass."""
+                functions.glDisable(GL_SCISSOR_TEST)
+                functions.glDisable(GL_STENCIL_TEST)
+                functions.glViewport(0, 0, int(width_pixels), int(height_pixels))
+                functions.glEnable(GL_BLEND)
+                functions.glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)
+                functions.glDisable(GL_DEPTH_TEST)
+                functions.glDisable(GL_CULL_FACE)
+                functions.glActiveTexture(GL_TEXTURE0)
+                vao.bind()
+                program.bind()
+                program.setUniformValue(
+                    program.uniformLocation(b"u_view_row0"), view_rows[0]
+                )
+                program.setUniformValue(
+                    program.uniformLocation(b"u_view_row1"), view_rows[1]
+                )
+                program.setUniformValue(
+                    program.uniformLocation(b"u_view_row2"), view_rows[2]
+                )
+
+            bind_frame_state()
             if document is not None:
                 self._draw_checker_and_border(document.width, document.height, border=False)
 
                 preview = coordinator.transform_preview
-                if preview is None:
-                    for layer in document.layers:
-                        self._draw_layer(
-                            coordinator,
-                            layer,
-                            kind="source",
-                            transform=None,
-                            clip_to_document=True,
-                        )
-                else:
+                if preview is not None:
                     try:
-                        active_index = document.layer_index(preview.layer_id)
-                        active_layer = document.layer_by_id(preview.layer_id)
+                        document.layer_by_id(preview.layer_id)
                     except ValueError:
                         coordinator.clear_transform_preview()
-                        for layer in document.layers:
-                            self._draw_layer(
-                                coordinator,
-                                layer,
-                                kind="source",
-                                transform=None,
-                                clip_to_document=True,
-                            )
-                    else:
-                        for layer in document.layers[:active_index]:
-                            self._draw_layer(
-                                coordinator,
-                                layer,
-                                kind="source",
-                                transform=None,
-                                clip_to_document=True,
-                            )
-                        if document.selection.is_active:
-                            self._draw_layer(
-                                coordinator,
-                                active_layer,
-                                kind="base",
-                                transform=None,
-                                clip_to_document=True,
-                            )
-                        self._draw_layer(
-                            coordinator,
-                            active_layer,
-                            kind=(
-                                "floating"
-                                if document.selection.is_active
-                                else "source"
-                            ),
-                            transform=preview,
-                            clip_to_document=False,
+                        preview = None
+                active_layer_id = None if preview is None else preview.layer_id
+                for group in document.nodes:
+                    if isinstance(group, RasterGroupLayer):
+                        if not group.visible or group.opacity <= 0.0:
+                            continue
+                        for layer in group.children:
+                            if layer.id == active_layer_id and preview is not None:
+                                if document.selection.is_active:
+                                    self._draw_layer(
+                                        coordinator,
+                                        layer,
+                                        kind="base",
+                                        transform=None,
+                                        clip_to_document=True,
+                                        opacity_multiplier=group.opacity,
+                                    )
+                                self._draw_layer(
+                                    coordinator,
+                                    layer,
+                                    kind=(
+                                        "floating"
+                                        if document.selection.is_active
+                                        else "source"
+                                    ),
+                                    transform=preview,
+                                    clip_to_document=False,
+                                    opacity_multiplier=group.opacity,
+                                )
+                            else:
+                                self._draw_layer(
+                                    coordinator,
+                                    layer,
+                                    kind="source",
+                                    transform=None,
+                                    clip_to_document=True,
+                                    opacity_multiplier=group.opacity,
+                                )
+                    elif isinstance(group, VectorGroupLayer):
+                        # QPainter owns vector text.  End the native pass for
+                        # this group, then restore all GL state before the
+                        # next raster group so root order remains authoritative.
+                        program.release()
+                        vao.release()
+                        painter.endNativePainting()
+                        native_active = False
+                        coordinator.paint_vector_group(
+                            painter,
+                            group,
+                            coordinator.document_rect(),
                         )
-                        for layer in document.layers[active_index + 1 :]:
-                            self._draw_layer(
-                                coordinator,
-                                layer,
-                                kind="source",
-                                transform=None,
-                                clip_to_document=True,
-                            )
+                        painter.beginNativePainting()
+                        native_active = True
+                        bind_frame_state()
                 self._draw_checker_and_border(
                     document.width,
                     document.height,
@@ -345,7 +370,8 @@ class OpenGLCanvasBackend:
             vao.release()
             functions.glDisable(GL_BLEND)
         finally:
-            painter.endNativePainting()
+            if native_active:
+                painter.endNativePainting()
         self._enforce_budget(coordinator.generation)
         coordinator.set_backend_diagnostics(
             RenderBackendKind.OPENGL,
@@ -402,6 +428,7 @@ class OpenGLCanvasBackend:
         kind: str,
         transform: TransformPreviewState | None,
         clip_to_document: bool,
+        opacity_multiplier: float = 1.0,
     ) -> None:
         if not layer.visible or layer.opacity <= 0.0:
             return
@@ -435,10 +462,10 @@ class OpenGLCanvasBackend:
             program.setUniformValue(
                 program.uniformLocation(b"u_layer_modulation"),
                 QVector4D(
-                    float(layer.opacity),
-                    float(layer.opacity),
-                    float(layer.opacity),
-                    float(layer.opacity),
+                    float(layer.opacity * opacity_multiplier),
+                    float(layer.opacity * opacity_multiplier),
+                    float(layer.opacity * opacity_multiplier),
+                    float(layer.opacity * opacity_multiplier),
                 ),
             )
             rect = self._page_document_rect(layer, page_x, page_y)

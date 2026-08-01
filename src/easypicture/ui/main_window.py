@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from uuid import UUID
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import QModelIndex, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
     QCloseEvent,
     QColor,
     QDesktopServices,
+    QFontDatabase,
     QKeyEvent,
     QKeySequence,
     QShortcut,
@@ -25,6 +27,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QProgressDialog,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QToolBar,
@@ -34,7 +37,16 @@ from PySide6.QtWidgets import (
 
 from easypicture import __version__
 from easypicture.controller import ApplicationController
-from easypicture.domain import AffineTransform, Document, DocumentEvent, Point, Size
+from easypicture.domain import (
+    AffineTransform,
+    Document,
+    DocumentEvent,
+    GroupListChanged,
+    GroupMembersChanged,
+    LayerTreeChanged,
+    Point,
+    Size,
+)
 from easypicture.imaging import (
     BACKGROUND_SELECTION_PIXEL_THRESHOLD,
     BrightnessContrastAdjustment,
@@ -91,6 +103,8 @@ from easypicture.tools import (
     NullTool,
     RectangleSelectionTool,
     ShapeTool,
+    TextTool,
+    TextTransformTool,
     Tool,
     ToolContext,
     ToolController,
@@ -109,6 +123,7 @@ from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.shape_properties import ShapePropertiesPanel
+from easypicture.ui.text_properties import TextPropertiesPanel
 from easypicture.ui.tool_options import ToolOptionsPanel
 from easypicture.ui.transform_properties import TransformPropertiesPanel
 
@@ -204,6 +219,11 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(RIGHT_SIDEBAR_STYLE)
         self.resize(1100, 720)
         self._editing_busy = False
+        self._selected_vector_object = False
+        self._warned_text_fonts: set[str] = set()
+        self._group_expansion_state: dict[UUID, bool] = {}
+        self._pending_group_expansion: dict[UUID, bool] | None = None
+        self._group_expansion_restore_scheduled = False
         self._selection_job: JobHandle | None = None
         self._selection_progress: QProgressDialog | None = None
         self._geometry_job: JobHandle | None = None
@@ -236,6 +256,12 @@ class MainWindow(QMainWindow):
             jobs=self.controller.jobs,
             set_busy=self._set_editing_busy,
             status=self.controller.status_message.emit,
+            selected_node_provider=lambda: self.layer_panel.current_node()
+            if hasattr(self, "layer_panel")
+            else None,
+            select_node=lambda node: self.layer_panel.select_node(node)
+            if hasattr(self, "layer_panel")
+            else None,
         )
         self.tool_controller = ToolController(self.tool_context, NullTool())
         self.canvas_view.set_tool_controller(self.tool_controller)
@@ -448,6 +474,15 @@ class MainWindow(QMainWindow):
                 self._set_shape_geometry,
                 self._update_undo_actions,
             ),
+            "text": TextTool(),
+            "text_transform": TextTransformTool(
+                lambda: self.layer_panel.current_node()
+                if hasattr(self, "layer_panel")
+                else None,
+                lambda text_object: self.text_properties.set_preview_object(
+                    text_object
+                ),
+            ),
         }
         self.tool_actions: dict[str, QAction] = {}
         for name, label, shortcut in (
@@ -460,10 +495,12 @@ class MainWindow(QMainWindow):
             ("crop", "裁切", "C"),
             ("transform", "自由变换", "T"),
             ("shape", "图形", "U"),
+            ("text", "文字", ""),
         ):
             action = QAction(label, self)
             action.setCheckable(True)
-            action.setShortcut(QKeySequence(shortcut))
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
             action.setData(name)
             action.triggered.connect(
                 lambda _checked=False, tool_name=name: self._activate_tool(tool_name)
@@ -520,6 +557,12 @@ class MainWindow(QMainWindow):
 
     def _create_docks(self) -> None:
         self.layer_panel = LayerPanel(self.controller.commands, self)
+        self.layer_panel.tree_view.expanded.connect(
+            lambda index: self._set_group_expanded(index, True)
+        )
+        self.layer_panel.tree_view.collapsed.connect(
+            lambda index: self._set_group_expanded(index, False)
+        )
         self.layers_dock = self._make_dock("图层", "LayersDock", self.layer_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.layers_dock)
 
@@ -548,6 +591,8 @@ class MainWindow(QMainWindow):
         self.properties_stack.addWidget(properties_placeholder)
         self.properties_stack.addWidget(self.transform_properties)
         self.properties_stack.addWidget(self.shape_properties)
+        self.text_properties = TextPropertiesPanel(self.controller.commands, self)
+        self.properties_stack.addWidget(self.text_properties)
         self.properties_stack.addWidget(self.color_adjustment_panel)
         self.color_adjustment_controller = ColorAdjustmentController(
             self.canvas_view,
@@ -599,6 +644,7 @@ class MainWindow(QMainWindow):
         self.color_adjustment_controller.sampled_color.connect(
             self.color_adjustment_panel.use_sampled_source
         )
+        self.layer_panel.node_selected.connect(self._on_layer_node_selected)
         self.properties_dock = self._make_dock(
             "属性",
             "PropertiesDock",
@@ -711,10 +757,20 @@ class MainWindow(QMainWindow):
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(4, 4, 4, 4)
         card_layout.setSpacing(0)
-        card_layout.addWidget(widget)
+        scroller = QScrollArea(card)
+        scroller.setObjectName(f"{object_name}ScrollArea")
+        scroller.setWidgetResizable(True)
+        scroller.setFrameShape(QFrame.Shape.NoFrame)
+        scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroller.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroller.setMinimumSize(0, 0)
+        widget.setMinimumHeight(0)
+        scroller.setWidget(widget)
+        card_layout.addWidget(scroller)
         sidebar_layout.addWidget(card)
 
         dock.setWidget(sidebar)
+        dock.setMinimumHeight(48)
         return dock
 
     def _request_new_document(self) -> None:
@@ -998,6 +1054,7 @@ class MainWindow(QMainWindow):
             self._geometry_progress = None
 
     def _on_document_changed(self, document: Document | None) -> None:
+        self._selected_vector_object = False
         if (
             hasattr(self, "color_adjustment_controller")
             and self.color_adjustment_controller.active
@@ -1017,6 +1074,11 @@ class MainWindow(QMainWindow):
         self.canvas_view.set_document(document)
         self.tool_controller.reset_active_tool()
         self.layer_panel.set_document(document)
+        self._group_expansion_state = {}
+        self._pending_group_expansion = None
+        self._restore_group_expansion()
+        self._schedule_group_expansion_restore()
+        self._warn_missing_text_fonts(document)
         has_document = document is not None
         self.central_stack.setCurrentWidget(self.canvas_view if has_document else self.empty_state)
         self.close_action.setEnabled(has_document)
@@ -1038,8 +1100,7 @@ class MainWindow(QMainWindow):
             self.actual_size_action,
         ):
             action.setEnabled(has_document)
-        for action in self.tool_actions.values():
-            action.setEnabled(has_document and not self._editing_busy)
+        self._refresh_tool_actions(has_document)
         self.tool_options_panel.setEnabled(has_document and not self._editing_busy)
         for action in self.color_adjustment_actions.values():
             action.setEnabled(has_document and not self._editing_busy)
@@ -1064,14 +1125,25 @@ class MainWindow(QMainWindow):
                     document.width,
                     document.height,
                 )
-        tool = self._tools[tool_name]
+        actual_tool_name = (
+            "text_transform"
+            if tool_name == "transform" and self._selected_vector_object
+            else tool_name
+        )
+        tool = self._tools[actual_tool_name]
         if tool is self.tool_controller.active_tool and isinstance(tool, TransformTool):
             tool.restart_session()
+        elif tool is self.tool_controller.active_tool and isinstance(tool, TextTransformTool):
+            self.tool_controller.reset_active_tool()
         else:
             self.tool_controller.set_tool(tool)
         self.tool_options_panel.show_tool(tool_name)
         if tool_name == "transform" and hasattr(self, "properties_stack"):
-            self.properties_stack.setCurrentWidget(self.transform_properties)
+            self.properties_stack.setCurrentWidget(
+                self.text_properties
+                if self._selected_vector_object
+                else self.transform_properties
+            )
             self.properties_dock.show()
             self.properties_dock.raise_()
         elif tool_name == "shape" and hasattr(self, "properties_stack"):
@@ -1250,11 +1322,160 @@ class MainWindow(QMainWindow):
 
     def _show_properties_for_tool(self, tool_name: str) -> None:
         if tool_name == "transform":
-            self.properties_stack.setCurrentWidget(self.transform_properties)
+            self.properties_stack.setCurrentWidget(
+                self.text_properties
+                if self._selected_vector_object
+                else self.transform_properties
+            )
         elif tool_name == "shape":
             self.properties_stack.setCurrentWidget(self.shape_properties)
+        elif tool_name == "text":
+            self.properties_stack.setCurrentWidget(self.text_properties)
         else:
             self.properties_stack.setCurrentIndex(0)
+
+    def _on_layer_node_selected(self, node: object) -> None:
+        from easypicture.domain import TextObject
+
+        self._selected_vector_object = isinstance(node, TextObject)
+        if isinstance(node, TextObject):
+            self.text_properties.set_object(node)
+            self.properties_stack.setCurrentWidget(self.text_properties)
+            self.properties_dock.show()
+            self.properties_dock.raise_()
+            if not self._editing_busy:
+                self.tool_actions["transform"].setChecked(True)
+                self._activate_tool("transform")
+        elif isinstance(self.tool_controller.active_tool, TextTransformTool):
+            self.tool_actions["brush"].setChecked(True)
+            self._activate_tool("brush")
+        self._refresh_tool_actions(self.controller.document is not None)
+
+    def _warn_missing_text_fonts(self, document: Document | None) -> None:
+        if document is None:
+            return
+        for group in document.text_groups:
+            for text_object in group.children:
+                family = text_object.font_family
+                if family in self._warned_text_fonts or QFontDatabase.hasFamily(family):
+                    continue
+                self._warned_text_fonts.add(family)
+                self.statusBar().showMessage(
+                    f"字体“{family}”不可用，文字将使用系统回退字体",
+                    8000,
+                )
+
+    def _set_group_expanded(self, index: QModelIndex, expanded: bool) -> None:
+        if not index.isValid():
+            return
+        node = self.layer_panel.tree_model.node_for_index(index)
+        from easypicture.domain import RasterGroupLayer, VectorGroupLayer
+
+        if isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
+            self._group_expansion_state[node.id] = expanded
+            if (
+                self._pending_group_expansion is not None
+                and node.id in self._pending_group_expansion
+            ):
+                self._pending_group_expansion[node.id] = expanded
+            self.settings.set_group_expanded(node.id, expanded)
+            self.settings.sync()
+
+    def _capture_group_expansion(self) -> dict[UUID, bool]:
+        """Capture expansion by UUID, independent of a pending model reset.
+
+        Document mutations happen before their domain event is forwarded.  At
+        that point the document already contains the new group while the Qt
+        model still contains the old rows, so querying ``isExpanded`` by row
+        can associate the wrong state with the wrong group.  The UUID map is
+        updated only by expansion signals and is therefore stable across that
+        gap.
+        """
+        from easypicture.domain import RasterGroupLayer, VectorGroupLayer
+
+        document = self.controller.document
+        if document is None:
+            return dict(self._group_expansion_state)
+        state: dict[UUID, bool] = {}
+        for node in document.nodes:
+            if isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
+                state[node.id] = self._group_expansion_state.get(
+                    node.id,
+                    self.settings.group_expanded(node.id),
+                )
+        return state
+
+    def _restore_group_expansion(
+        self,
+        preserved: dict[UUID, bool] | None = None,
+    ) -> None:
+        if not hasattr(self, "layer_panel"):
+            return
+        from easypicture.domain import RasterGroupLayer, VectorGroupLayer
+
+        tree = self.layer_panel.tree_view
+        model = self.layer_panel.tree_model
+        current_ids: set[UUID] = set()
+        for row in range(model.rowCount()):
+            index = model.index(row, 0)
+            node = model.node_for_index(index)
+            if isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
+                current_ids.add(node.id)
+                expanded = (
+                    preserved[node.id]
+                    if preserved is not None and node.id in preserved
+                    else self.settings.group_expanded(node.id)
+                )
+                self._group_expansion_state[node.id] = expanded
+                tree.setExpanded(index, expanded)
+        self._group_expansion_state = {
+            group_id: expanded
+            for group_id, expanded in self._group_expansion_state.items()
+            if group_id in current_ids
+        }
+
+    def _schedule_group_expansion_restore(
+        self,
+        preserved: dict[UUID, bool] | None = None,
+    ) -> None:
+        """Restore expansion after Qt finishes processing a model reset.
+
+        A single command can emit several tree events (for example
+        ``LayerTreeChanged`` followed by ``GroupListChanged``).  Restoring
+        synchronously after the first event lets the next reset discard the
+        restoration and collapse the tree.  Coalescing the whole event burst
+        and applying it on the next event-loop turn keeps the user's state
+        authoritative while still allowing Qt to finish its reset handling.
+        """
+        if preserved is not None and self._pending_group_expansion is None:
+            self._pending_group_expansion = dict(preserved)
+        if self._group_expansion_restore_scheduled:
+            return
+        self._group_expansion_restore_scheduled = True
+        QTimer.singleShot(0, self._restore_pending_group_expansion)
+
+    def _restore_pending_group_expansion(self) -> None:
+        preserved = self._pending_group_expansion
+        self._pending_group_expansion = None
+        self._group_expansion_restore_scheduled = False
+        self._restore_group_expansion(preserved)
+
+    def _refresh_tool_actions(self, has_document: bool) -> None:
+        raster_tools = {
+            "brush",
+            "eraser",
+            "eyedropper",
+            "bucket",
+            "rectangle_selection",
+            "magic_wand",
+            "crop",
+            "shape",
+        }
+        for name, action in self.tool_actions.items():
+            enabled = has_document and not self._editing_busy
+            if self._selected_vector_object and name in raster_tools:
+                enabled = False
+            action.setEnabled(enabled)
 
     def _cancel_color_adjustment_for_lifecycle(self) -> None:
         if (
@@ -1451,8 +1672,7 @@ class MainWindow(QMainWindow):
     def _set_editing_busy(self, busy: bool) -> None:
         self._editing_busy = busy
         has_document = self.controller.document is not None
-        for action in self.tool_actions.values():
-            action.setEnabled(has_document and not busy)
+        self._refresh_tool_actions(has_document)
         self.tool_options_panel.setEnabled(has_document and not busy)
         self.layer_panel.setEnabled(not busy)
         for action in self.color_adjustment_actions.values():
@@ -1471,7 +1691,27 @@ class MainWindow(QMainWindow):
         self._update_undo_actions()
 
     def _on_document_event(self, event: DocumentEvent) -> None:
+        tree_reset_event = isinstance(
+            event,
+            (LayerTreeChanged, GroupListChanged, GroupMembersChanged),
+        )
+        preserved_expansion = (
+            self._capture_group_expansion()
+            if tree_reset_event and self._pending_group_expansion is None
+            else None
+        )
         self.layer_panel.handle_event(event)
+        if tree_reset_event:
+            # Restore once in the same call stack so the reset cannot be
+            # painted as a collapsed frame, then repeat on the next event
+            # loop turn for any view-internal reset bookkeeping.
+            restore_state = (
+                self._pending_group_expansion
+                if self._pending_group_expansion is not None
+                else preserved_expansion
+            )
+            self._restore_group_expansion(restore_state)
+            self._schedule_group_expansion_restore(preserved_expansion)
         document = self.controller.document
         if document is not None:
             self.document_size_label.setText(f"{document.width} × {document.height} px")

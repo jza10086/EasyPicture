@@ -1,6 +1,6 @@
 # EasyPicture
 
-EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已实现至 P8：
+EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已实现至 P9C：
 包含单文档生命周期、分块像素/选区存储、多图层管理、完整帧
 OpenGL/软件显示、图层与像素撤销、常用图片导入、`.limg` 项目保存/恢复、自动恢复、
 七种常用图片导出，
@@ -24,7 +24,10 @@ P7A 颜色调整已完成验收：右侧非模态调整页提供反相、阈值�
 色相/饱和度/明度、渐变映射、颜色替换和 Lab 调色板映射；全分辨率结果通过后台任务
 计算并原子替换预览，应用后只形成一个像素撤销命令，并支持 Enter 应用。P7B 完整导出
 已完成人工验收：统一窗口支持 PNG、JPEG、WebP、BMP、TIFF、TGA 和静态 GIF，提供格式参数、
-白色透明背景处理、ICC/元数据规则、原子覆盖、进度和取消。文本尚未实现。
+白色透明背景处理、ICC/元数据规则、原子覆盖、进度和取消。P9A 增加文字组和可编辑
+文字对象；P9C 将图层树统一为严格两级的栅格组/矢量组结构，文字保留为矢量元数据，
+使用 QTextLayout/QPainter 参与画布、缩略图和七种图片导出；`.limg` schema v3 兼容
+读取 v1/v2。富文本、SVG、任意深度子图层和嵌入字体仍未实现。
 
 P8 将项目收束为本机 0.1.0 稳定版：运行日志采用 UTF-8 轮转文件，未捕获异常和后台任务
 结果会写入日志；大图工作文件统一进入应用专属缓存并保守清理 24 小时前的遗留内容。
@@ -69,7 +72,7 @@ uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\
 
 总体技术评估和开发路线见
 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段结果见
-[`docs/p5_acceptance.md`](docs/p5_acceptance.md)。界面输入控件约定见
+[`docs/p9c_acceptance.md`](docs/p9c_acceptance.md)。界面输入控件约定见
 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，P6A 结果见
 [`docs/p6a_acceptance.md`](docs/p6a_acceptance.md)，P6R 渲染重构见
 [`docs/p6r_acceptance.md`](docs/p6r_acceptance.md)，P6B 几何工具验收见

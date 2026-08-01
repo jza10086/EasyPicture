@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -16,14 +17,27 @@ from easypicture.domain.events import (
     DocumentPathChanged,
     DocumentRevisionChanged,
     DocumentSizeChanged,
+    GroupListChanged,
+    GroupMembersChanged,
+    GroupPropertiesChanged,
     LayerListChanged,
     LayerPixelsChanged,
     LayerPropertiesChanged,
+    LayerTreeChanged,
     SelectionChanged,
+    TextObjectChanged,
+    VectorGroupPropertiesChanged,
 )
 from easypicture.domain.geometry import PixelPoint, Size
 from easypicture.domain.layer import RasterLayer
 from easypicture.domain.selection import Selection
+from easypicture.domain.vector import (
+    LayerGroup,
+    LayerNode,
+    RasterGroupLayer,
+    TextObject,
+    VectorGroupLayer,
+)
 from easypicture.pixels import (
     DEFAULT_TILE_SIZE,
     MaskArray,
@@ -50,28 +64,83 @@ class Document:
         layers: list[RasterLayer],
         active_layer_id: UUID,
         selection: Selection,
+        nodes: list[LayerGroup] | None = None,
         project_path: Path | None = None,
         source_name: str | None = None,
         modified: bool = False,
     ) -> None:
         if not layers:
             raise ValueError("document must contain at least one layer")
-        if len(layers) > MAX_DOCUMENT_LAYERS:
-            raise ValueError(f"document cannot contain more than {MAX_DOCUMENT_LAYERS} layers")
+        legacy_nodes = list(nodes) if nodes is not None else list(layers)
+        if not legacy_nodes:
+            raise ValueError("document must contain at least one root node")
+        # P9A accepted a raster leaf as a root node. Normalize that shape at
+        # the aggregate boundary so every new document has exactly two levels,
+        # while callers loading an old snapshot remain source-compatible.
+        root_nodes: list[LayerGroup] = []
+        used_group_names: set[str] = set()
+        for node in legacy_nodes:
+            if isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
+                root_nodes.append(node)
+            elif isinstance(node, RasterLayer):
+                group_name = "栅格组"
+                suffix = 1
+                while group_name in used_group_names:
+                    group_name = f"栅格组.{suffix}"
+                    suffix += 1
+                group = RasterGroupLayer.create(group_name)
+                group.children.append(node)
+                root_nodes.append(group)
+            else:
+                raise ValueError("document contains an invalid top-level node")
+            used_group_names.add(root_nodes[-1].name)
+        if len(root_nodes) > MAX_DOCUMENT_LAYERS:
+            raise ValueError(f"document cannot contain more than {MAX_DOCUMENT_LAYERS} root groups")
         if not 1 <= size.width <= MAX_DOCUMENT_DIMENSION:
             raise ValueError("document width is out of range")
         if not 1 <= size.height <= MAX_DOCUMENT_DIMENSION:
             raise ValueError("document height is out of range")
         if selection.size != size:
             raise ValueError("selection size must match the document")
-        layer_ids = {layer.id for layer in layers}
-        if len(layer_ids) != len(layers):
-            raise ValueError("layer ids must be unique")
-        if all(layer.id != active_layer_id for layer in layers):
+        node_ids: set[UUID] = set()
+        names: set[str] = set()
+        for node in root_nodes:
+            if node.id in node_ids:
+                raise ValueError("node ids must be unique")
+            node_ids.add(node.id)
+            if node.name in names:
+                raise ValueError("document node names must be unique")
+            names.add(node.name)
+            for child in node.children:
+                if child.id in node_ids:
+                    raise ValueError("node ids must be globally unique")
+                node_ids.add(child.id)
+                if child.name in names:
+                    raise ValueError("document node names must be unique")
+                names.add(child.name)
+        raster_layers = [
+            child
+            for node in root_nodes
+            if isinstance(node, RasterGroupLayer)
+            for child in node.children
+        ]
+        if not raster_layers:
+            raise ValueError("document must contain at least one raster layer")
+        if len(raster_layers) > MAX_DOCUMENT_LAYERS:
+            raise ValueError(
+                f"document cannot contain more than {MAX_DOCUMENT_LAYERS} raster layers"
+            )
+        if all(layer.id != active_layer_id for layer in raster_layers):
             raise ValueError("active layer must belong to the document")
         self.id = document_id
         self.size = size
-        self._layers = [self._normalize_layer(layer, size) for layer in layers]
+        self._nodes = [self._normalize_group(node, size) for node in root_nodes]
+        self._layers = [
+            child
+            for node in self._nodes
+            if isinstance(node, RasterGroupLayer)
+            for child in node.children
+        ]
         self._active_layer_id = active_layer_id
         self.selection = selection
         self._project_path = Path(project_path) if project_path is not None else None
@@ -106,6 +175,7 @@ class Document:
         layers: list[RasterLayer],
         active_layer_id: UUID,
         selection: Selection,
+        nodes: list[LayerGroup] | None = None,
         project_path: Path | None = None,
         source_name: str | None = None,
         modified: bool = False,
@@ -116,6 +186,7 @@ class Document:
             layers=layers,
             active_layer_id=active_layer_id,
             selection=selection,
+            nodes=nodes,
             project_path=project_path,
             source_name=source_name,
             modified=modified,
@@ -132,6 +203,14 @@ class Document:
     @property
     def layers(self) -> tuple[RasterLayer, ...]:
         return tuple(self._layers)
+
+    @property
+    def nodes(self) -> tuple[LayerNode, ...]:
+        return tuple(self._nodes)
+
+    @property
+    def text_groups(self) -> tuple[VectorGroupLayer, ...]:
+        return tuple(node for node in self._nodes if isinstance(node, VectorGroupLayer))
 
     @property
     def active_layer_id(self) -> UUID:
@@ -183,6 +262,44 @@ class Document:
                 return layer
         raise ValueError("layer must belong to the document")
 
+    def node_by_id(self, node_id: UUID) -> LayerNode | RasterLayer | TextObject:
+        for node in self._nodes:
+            if node.id == node_id:
+                return node
+            for child in node.children:
+                if child.id == node_id:
+                    return child
+        raise ValueError("node must belong to the document")
+
+    def group_by_id(self, group_id: UUID) -> VectorGroupLayer:
+        node = self.node_by_id(group_id)
+        if not isinstance(node, VectorGroupLayer):
+            raise ValueError("node is not a vector group")
+        return node
+
+    def layer_group_by_id(self, group_id: UUID) -> LayerGroup:
+        node = self.node_by_id(group_id)
+        if not isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
+            raise ValueError("node is not a layer group")
+        return node
+
+    def raster_group_for_layer(self, layer_id: UUID) -> RasterGroupLayer:
+        for group in self._nodes:
+            if isinstance(group, RasterGroupLayer) and any(
+                child.id == layer_id for child in group.children
+            ):
+                return group
+        raise ValueError("raster layer must belong to a raster group")
+
+    def text_object_by_id(self, object_id: UUID) -> tuple[VectorGroupLayer, TextObject]:
+        node = self.node_by_id(object_id)
+        if not isinstance(node, TextObject):
+            raise ValueError("node is not a text object")
+        for group in self.text_groups:
+            if any(child.id == object_id for child in group.children):
+                return group, node
+        raise ValueError("text object must belong to the document")
+
     def layer_index(self, layer_id: UUID) -> int:
         for index, layer in enumerate(self._layers):
             if layer.id == layer_id:
@@ -204,26 +321,553 @@ class Document:
             raise IndexError("layer insertion index is out of range")
         old_active_id = self._active_layer_id
         layer = self._normalize_layer(layer, self.size)
-        self._layers.insert(index, layer)
+        raster_groups = [node for node in self._nodes if isinstance(node, RasterGroupLayer)]
+        if not raster_groups:
+            group = RasterGroupLayer.create("栅格组")
+            self._nodes.append(group)
+        else:
+            group = self.raster_group_for_layer(self._active_layer_id)
+        if index == len(self._layers):
+            child_index = len(group.children)
+        else:
+            target = self._layers[index]
+            target_group = next(
+                candidate
+                for candidate in self._nodes
+                if isinstance(candidate, RasterGroupLayer)
+                and target in candidate.children
+            )
+            if target_group is group:
+                child_index = group.children.index(target)
+            else:
+                child_index = len(group.children)
+        group.children.insert(child_index, layer)
+        group.record_change()
+        self._refresh_raster_layers()
         if activate:
             self._active_layer_id = layer.id
         revision = self._begin_content_change()
         self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, group)
         if self._active_layer_id != old_active_id:
             self._emit_active_layer_changed(revision)
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+
+    def insert_text_group(
+        self,
+        group: VectorGroupLayer,
+        index: int | None = None,
+    ) -> None:
+        """Compatibility wrapper for inserting a top-level vector group."""
+        self.insert_group(group, index)
+
+    def insert_group(
+        self,
+        group: LayerGroup,
+        index: int | None = None,
+    ) -> None:
+        """Insert a top-level group and mark the document changed."""
+        group = self._normalize_group(group, self.size)
+        if isinstance(group, RasterGroupLayer):
+            if any(not isinstance(child, RasterLayer) for child in group.children):
+                raise ValueError("raster group contains a non-raster child")
+        elif isinstance(group, VectorGroupLayer):
+            if any(not isinstance(child, TextObject) for child in group.children):
+                raise ValueError("vector group contains an unsupported child")
+        else:
+            raise ValueError("only layer groups may be inserted at the document root")
+        if len(self._nodes) >= MAX_DOCUMENT_LAYERS:
+            raise ValueError("document cannot contain more than 256 root groups")
+        existing_ids = {
+            node.id
+            for node in self._nodes
+        } | {
+            child.id
+            for node in self._nodes
+            for child in node.children
+        }
+        if group.id in existing_ids:
+            raise ValueError("group id already belongs to the document")
+        child_ids = {child.id for child in group.children}
+        if len(child_ids) != len(group.children) or child_ids & existing_ids:
+            raise ValueError("group child id already belongs to the document")
+        if group.id in child_ids:
+            raise ValueError("group and child ids must be distinct")
+        existing_names = {
+            node.name for node in self._nodes
+        } | {
+            child.name for node in self._nodes for child in node.children
+        }
+        if group.name in existing_names or any(
+            child.name in existing_names for child in group.children
+        ):
+            raise ValueError("group names must be unique")
+        target = len(self._nodes) if index is None else index
+        if not 0 <= target <= len(self._nodes):
+            raise IndexError("group insertion index is out of range")
+        self._nodes.insert(target, group)
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        if group.children:
+            self._emit_group_members_changed(revision, group)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+
+    def remove_group(self, group_id: UUID) -> tuple[LayerGroup, int]:
+        group = self.layer_group_by_id(group_id)
+        raster_count = len(self._layers)
+        if isinstance(group, RasterGroupLayer) and raster_count == len(group.children):
+            raise ValueError("document must retain at least one raster layer")
+        index = self._nodes.index(group)
+        self._nodes.pop(index)
+        old_active_id = self._active_layer_id
+        self._refresh_raster_layers()
+        if old_active_id not in {layer.id for layer in self._layers}:
+            self._active_layer_id = self._layers[max(0, min(index, len(self._layers) - 1))].id
+        revision = self._begin_content_change()
+        self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
+        if self._active_layer_id != old_active_id:
+            self._emit_active_layer_changed(revision)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return group, index
+
+    def move_group(self, group_id: UUID, target_index: int) -> bool:
+        group = self.layer_group_by_id(group_id)
+        if not 0 <= target_index < len(self._nodes):
+            raise IndexError("target group index is out of range")
+        source_index = self._nodes.index(group)
+        if source_index == target_index:
+            return False
+        self._nodes.pop(source_index)
+        self._nodes.insert(target_index, group)
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
+    def ungroup_group(
+        self,
+        group_id: UUID,
+        *,
+        target_group_id: UUID | None = None,
+        replacement_group: LayerGroup | None = None,
+    ) -> bool:
+        """Flatten one group into an adjacent compatible group.
+
+        The operation is intentionally shallow.  When no compatible adjacent
+        group exists, ``replacement_group`` is inserted at the source row and
+        receives the children, so the document remains a strict two-level
+        tree.
+        """
+        group = self.layer_group_by_id(group_id)
+        if isinstance(group, RasterGroupLayer) and len(self._layers) == len(group.children):
+            raise ValueError("document must retain at least one raster layer")
+        source_index = self._nodes.index(group)
+        target: LayerGroup | None = None
+        if target_group_id is not None:
+            target = self.layer_group_by_id(target_group_id)
+            if type(target) is not type(group):
+                raise ValueError("groups must have the same kind")
+            if target is group:
+                raise ValueError("a group cannot be ungrouped into itself")
+        if target is None and replacement_group is None:
+            raise ValueError("ungroup requires a compatible target group")
+        if replacement_group is not None:
+            if type(replacement_group) is not type(group):
+                raise ValueError("replacement group has an incompatible kind")
+            target = replacement_group
+
+        self._nodes.pop(source_index)
+        if isinstance(group, RasterGroupLayer):
+            if isinstance(replacement_group, RasterGroupLayer):
+                replacement_group.children.extend(group.children)
+                self._nodes.insert(source_index, replacement_group)
+            else:
+                if not isinstance(target, RasterGroupLayer):
+                    raise ValueError("raster group target is invalid")
+                target_index = self._nodes.index(target)
+                if target_index < source_index:
+                    target.children.extend(group.children)
+                else:
+                    target.children[0:0] = group.children
+        else:
+            if isinstance(replacement_group, VectorGroupLayer):
+                replacement_group.children.extend(group.children)
+                self._nodes.insert(source_index, replacement_group)
+            else:
+                if not isinstance(target, VectorGroupLayer):
+                    raise ValueError("vector group target is invalid")
+                target_index = self._nodes.index(target)
+                if target_index < source_index:
+                    target.children.extend(group.children)
+                else:
+                    target.children[0:0] = group.children
+        if isinstance(group, RasterGroupLayer):
+            self._refresh_raster_layers()
+        revision = self._begin_content_change()
+        self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
+        if replacement_group is not None:
+            self._emit_group_members_changed(revision, replacement_group)
+        elif target is not None:
+            self._emit_group_members_changed(revision, target)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
+    def restore_group_structure(
+        self,
+        nodes: tuple[LayerGroup, ...],
+        active_layer_id: UUID,
+    ) -> None:
+        """Restore a previously captured shallow group structure for undo."""
+        self._nodes = list(nodes)
+        self._refresh_raster_layers()
+        self.layer_by_id(active_layer_id)
+        old_active_id = self._active_layer_id
+        self._active_layer_id = active_layer_id
+        revision = self._begin_content_change()
+        self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
+        for group in self._nodes:
+            self._emit_group_members_changed(revision, group)
+        if old_active_id != active_layer_id:
+            self._emit_active_layer_changed(revision)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+
+    def move_raster_layer_to_group(
+        self,
+        layer_id: UUID,
+        target_group_id: UUID,
+        target_index: int,
+    ) -> bool:
+        source_group = self.raster_group_for_layer(layer_id)
+        target_group = self.layer_group_by_id(target_group_id)
+        if not isinstance(target_group, RasterGroupLayer):
+            raise ValueError("raster layer must move into a raster group")
+        if source_group.locked or target_group.locked:
+            raise PermissionError("raster group is locked")
+        layer = source_group.child_by_id(layer_id)
+        source_index = source_group.children.index(layer)
+        if source_group is target_group and source_index == target_index:
+            return False
+        if not 0 <= target_index <= len(target_group.children):
+            raise IndexError("target raster child index is out of range")
+        source_group.children.pop(source_index)
+        if source_group is target_group and source_index < target_index:
+            target_index -= 1
+        target_group.children.insert(target_index, layer)
+        source_group.record_change()
+        if source_group is not target_group:
+            target_group.record_change()
+        self._refresh_raster_layers()
+        revision = self._begin_content_change()
+        self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, source_group)
+        if target_group is not source_group:
+            self._emit_group_members_changed(revision, target_group)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
+    def move_vector_object_to_group(
+        self,
+        object_id: UUID,
+        target_group_id: UUID,
+        target_index: int,
+    ) -> bool:
+        source_group, text_object = self.text_object_by_id(object_id)
+        target_group = self.group_by_id(target_group_id)
+        if source_group.locked or target_group.locked:
+            raise PermissionError("vector group is locked")
+        source_index = source_group.children.index(text_object)
+        if not 0 <= target_index <= len(target_group.children):
+            raise IndexError("target vector child index is out of range")
+        if source_group is target_group and source_index == target_index:
+            return False
+        source_group.children.pop(source_index)
+        if source_group is target_group and source_index < target_index:
+            target_index -= 1
+        target_group.children.insert(target_index, text_object)
+        source_group.record_change()
+        if source_group is not target_group:
+            target_group.record_change()
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, source_group)
+        if target_group is not source_group:
+            self._emit_group_members_changed(revision, target_group)
+        self._emit(
+            TextObjectChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=target_group.id,
+                object_id=object_id,
+                properties=frozenset({"group", "order"}),
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
+    def remove_text_group(self, group_id: UUID) -> tuple[VectorGroupLayer, int]:
+        group = self.group_by_id(group_id)
+        index = self._nodes.index(group)
+        self._nodes.pop(index)
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, group)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return group, index
+
+    def insert_text_object(
+        self,
+        group_id: UUID,
+        text_object: TextObject,
+        index: int | None = None,
+    ) -> None:
+        group = self.group_by_id(group_id)
+        if group.locked:
+            raise PermissionError("text group is locked")
+        if any(existing.id == text_object.id for node in self._nodes for existing in (
+            node.children if isinstance(node, VectorGroupLayer) else ()
+        )) or any(node.id == text_object.id for node in self._nodes):
+            raise ValueError("text object id already belongs to the document")
+        target = len(group.children) if index is None else index
+        if not 0 <= target <= len(group.children):
+            raise IndexError("text object insertion index is out of range")
+        group.children.insert(target, text_object)
+        group.record_change()
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, group)
+        self._emit(
+            TextObjectChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=group.id,
+                object_id=text_object.id,
+                properties=frozenset({"created"}),
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+
+    def remove_text_object(
+        self,
+        group_id: UUID,
+        object_id: UUID,
+    ) -> tuple[TextObject, int]:
+        group = self.group_by_id(group_id)
+        if group.locked:
+            raise PermissionError("text group is locked")
+        text_object = group.child_by_id(object_id)
+        index = group.children.index(text_object)
+        group.children.pop(index)
+        group.record_change()
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, group)
+        self._emit(
+            TextObjectChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=group.id,
+                object_id=object_id,
+                properties=frozenset({"deleted"}),
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return text_object, index
+
+    def move_text_object(
+        self,
+        group_id: UUID,
+        object_id: UUID,
+        target_index: int,
+    ) -> bool:
+        group = self.group_by_id(group_id)
+        if group.locked:
+            raise PermissionError("text group is locked")
+        if not 0 <= target_index < len(group.children):
+            raise IndexError("target text object index is out of range")
+        source_index = next(
+            index for index, child in enumerate(group.children) if child.id == object_id
+        )
+        if source_index == target_index:
+            return False
+        child = group.children.pop(source_index)
+        group.children.insert(target_index, child)
+        group.record_change()
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, group)
+        self._emit(
+            TextObjectChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=group.id,
+                object_id=object_id,
+                properties=frozenset({"order"}),
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
+    def move_node(self, node_id: UUID, target_index: int) -> bool:
+        """Move a root node, preserving the raster compatibility view."""
+        node = next((candidate for candidate in self._nodes if candidate.id == node_id), None)
+        if node is None:
+            raise ValueError("root node must belong to the document")
+        if not 0 <= target_index < len(self._nodes):
+            raise IndexError("target root index is out of range")
+        source_index = self._nodes.index(node)
+        if source_index == target_index:
+            return False
+        self._nodes.pop(source_index)
+        self._nodes.insert(target_index, node)
+        old_raster_ids = tuple(layer.id for layer in self._layers)
+        self._refresh_raster_layers()
+        revision = self._begin_content_change()
+        if old_raster_ids != tuple(layer.id for layer in self._layers):
+            self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
+    def set_vector_group_property(
+        self,
+        group_id: UUID,
+        property_name: str,
+        value: object,
+    ) -> bool:
+        return self.set_group_property(group_id, property_name, value)
+
+    def set_group_property(
+        self,
+        group_id: UUID,
+        property_name: str,
+        value: object,
+    ) -> bool:
+        group = self.layer_group_by_id(group_id)
+        if property_name == "name":
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError("group name must not be empty")
+            value = value.strip()
+        elif property_name == "opacity":
+            if not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
+                raise ValueError("group opacity must be between 0 and 1")
+            value = float(value)
+        elif property_name in {"visible", "locked"} and not isinstance(value, bool):
+            raise ValueError(f"group {property_name} must be a boolean")
+        if property_name not in {"name", "visible", "opacity", "locked"}:
+            raise ValueError("unsupported group property")
+        if getattr(group, property_name) == value:
+            return False
+        setattr(group, property_name, value)
+        group.record_change()
+        revision = self._begin_content_change()
+        self._emit_layer_tree_changed(revision)
+        self._emit(
+            GroupPropertiesChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=group.id,
+                properties=frozenset({property_name}),
+            )
+        )
+        if isinstance(group, VectorGroupLayer):
+            self._emit(
+                VectorGroupPropertiesChanged(
+                    document_id=self.id,
+                    revision=revision,
+                    group_id=group.id,
+                    properties=frozenset({property_name}),
+                )
+            )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
+
+    def set_text_object_properties(
+        self,
+        object_id: UUID,
+        **changes: object,
+    ) -> frozenset[str]:
+        group, text_object = self.text_object_by_id(object_id)
+        if group.locked or text_object.locked:
+            raise PermissionError("text object is locked")
+        allowed = {
+            "name", "text", "frame", "font_family", "font_size", "font_weight",
+            "italic", "color", "stroke_color", "stroke_width",
+            "horizontal_alignment", "vertical_alignment",
+            "wrap_mode", "line_spacing", "visible", "opacity", "locked", "transform",
+            "transform_pivot",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise ValueError(f"unsupported text object properties: {sorted(unknown)}")
+        values: dict[str, Any] = {
+            "id": text_object.id,
+            "name": text_object.name,
+            "text": text_object.text,
+            "frame": text_object.frame,
+            "font_family": text_object.font_family,
+            "font_size": text_object.font_size,
+            "font_weight": text_object.font_weight,
+            "italic": text_object.italic,
+            "color": text_object.color,
+            "stroke_color": text_object.stroke_color,
+            "stroke_width": text_object.stroke_width,
+            "horizontal_alignment": text_object.horizontal_alignment,
+            "vertical_alignment": text_object.vertical_alignment,
+            "wrap_mode": text_object.wrap_mode,
+            "line_spacing": text_object.line_spacing,
+            "visible": text_object.visible,
+            "opacity": text_object.opacity,
+            "locked": text_object.locked,
+            "transform": text_object.transform,
+            "transform_pivot": text_object.transform_pivot,
+        }
+        values.update(changes)
+        candidate = TextObject(**values)
+        changed = frozenset(
+            name for name in allowed if getattr(text_object, name) != getattr(candidate, name)
+        )
+        if not changed:
+            return frozenset()
+        for name in changed:
+            setattr(text_object, name, getattr(candidate, name))
+        text_object.record_change()
+        group.record_change()
+        revision = self._begin_content_change()
+        self._emit(
+            TextObjectChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=group.id,
+                object_id=text_object.id,
+                properties=changed,
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return changed
 
     def remove_layer(self, layer_id: UUID) -> tuple[RasterLayer, int]:
         if len(self._layers) == 1:
             raise ValueError("document must retain at least one layer")
         index = self.layer_index(layer_id)
         old_active_id = self._active_layer_id
-        layer = self._layers.pop(index)
+        group = self.raster_group_for_layer(layer_id)
+        layer = group.child_by_id(layer_id)
+        child_index = group.children.index(layer)
+        group.children.pop(child_index)
+        group.record_change()
+        self._refresh_raster_layers()
         if layer_id == old_active_id:
             fallback_index = index - 1 if index > 0 else 0
             self._active_layer_id = self._layers[fallback_index].id
         revision = self._begin_content_change()
         self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
+        self._emit_group_members_changed(revision, group)
         if self._active_layer_id != old_active_id:
             self._emit_active_layer_changed(revision)
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
@@ -235,10 +879,29 @@ class Document:
         source_index = self.layer_index(layer_id)
         if source_index == target_index:
             return False
-        layer = self._layers.pop(source_index)
-        self._layers.insert(target_index, layer)
+        source_group = self.raster_group_for_layer(layer_id)
+        layer = source_group.child_by_id(layer_id)
+        source_group.children.remove(layer)
+        self._refresh_raster_layers()
+        if target_index == len(self._layers):
+            target_group = next(
+                group
+                for group in reversed(self._nodes)
+                if isinstance(group, RasterGroupLayer)
+            )
+            target_child_index = len(target_group.children)
+        else:
+            target_layer = self._layers[target_index]
+            target_group = self.raster_group_for_layer(target_layer.id)
+            target_child_index = target_group.children.index(target_layer)
+        target_group.children.insert(target_child_index, layer)
+        source_group.record_change()
+        if target_group is not source_group:
+            target_group.record_change()
+        self._refresh_raster_layers()
         revision = self._begin_content_change()
         self._emit_layer_list_changed(revision)
+        self._emit_layer_tree_changed(revision)
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
         return True
 
@@ -269,8 +932,8 @@ class Document:
     ) -> dict[TileCoord, RGBAArray | None]:
         """Validate and normalize proposed full-Tile writes without mutating."""
         layer = self.layer_by_id(layer_id)
-        if layer.locked:
-            raise PermissionError("layer is locked")
+        if layer.locked or self.raster_group_for_layer(layer_id).locked:
+            raise PermissionError("layer or raster group is locked")
         tile_size = layer.pixels.tile_size
         max_tx = (layer.size.width - 1) // tile_size
         max_ty = (layer.size.height - 1) // tile_size
@@ -312,6 +975,8 @@ class Document:
     ) -> frozenset[TileCoord]:
         """Apply already-normalized Tile replacements and emit one content change."""
         layer = self.layer_by_id(layer_id)
+        if layer.locked or self.raster_group_for_layer(layer_id).locked:
+            raise PermissionError("layer or raster group is locked")
         changed: set[TileCoord] = set()
         for coord, pixels in updates.items():
             if layer.pixels.replace_tile(coord.x, coord.y, pixels):
@@ -707,6 +1372,20 @@ class Document:
         layer.pixels = target
         return layer
 
+    @classmethod
+    def _normalize_group(cls, group: LayerGroup, canvas_size: Size) -> LayerGroup:
+        if isinstance(group, RasterGroupLayer):
+            group.children = [cls._normalize_layer(child, canvas_size) for child in group.children]
+        return group
+
+    def _refresh_raster_layers(self) -> None:
+        self._layers = [
+            child
+            for node in self._nodes
+            if isinstance(node, RasterGroupLayer)
+            for child in node.children
+        ]
+
     def _begin_content_change(self) -> int:
         self._revision += 1
         if not self._modified:
@@ -756,6 +1435,8 @@ class Document:
 
     def _set_layer_property(self, layer_id: UUID, property_name: str, value: object) -> bool:
         layer = self.layer_by_id(layer_id)
+        if self.raster_group_for_layer(layer_id).locked and property_name != "locked":
+            raise PermissionError("raster group is locked")
         if getattr(layer, property_name) == value:
             return False
         setattr(layer, property_name, value)
@@ -823,6 +1504,51 @@ class Document:
                 document_id=self.id,
                 revision=revision,
                 layer_ids=tuple(layer.id for layer in self._layers),
+            )
+        )
+
+    def _emit_layer_tree_changed(self, revision: int) -> None:
+        self._emit(
+            LayerTreeChanged(
+                document_id=self.id,
+                revision=revision,
+                node_ids=tuple(node.id for node in self._nodes),
+            )
+        )
+        self._emit(
+            GroupListChanged(
+                document_id=self.id,
+                revision=revision,
+                group_ids=tuple(node.id for node in self._nodes),
+            )
+        )
+
+    def _emit_group_members_changed(
+        self,
+        revision: int,
+        group: RasterGroupLayer | VectorGroupLayer,
+    ) -> None:
+        self._emit(
+            GroupMembersChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=group.id,
+                child_ids=tuple(child.id for child in group.children),
+            )
+        )
+
+    def _emit_group_properties_changed(
+        self,
+        revision: int,
+        group: RasterGroupLayer | VectorGroupLayer,
+        properties: frozenset[str],
+    ) -> None:
+        self._emit(
+            GroupPropertiesChanged(
+                document_id=self.id,
+                revision=revision,
+                group_id=group.id,
+                properties=properties,
             )
         )
 

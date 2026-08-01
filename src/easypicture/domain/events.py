@@ -53,6 +53,55 @@ class LayerListChanged:
 
 
 @dataclass(frozen=True, slots=True)
+class LayerTreeChanged:
+    document_id: UUID
+    revision: int
+    node_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GroupListChanged:
+    """Top-level group order or membership changed."""
+
+    document_id: UUID
+    revision: int
+    group_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GroupPropertiesChanged:
+    document_id: UUID
+    revision: int
+    group_id: UUID
+    properties: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class GroupMembersChanged:
+    document_id: UUID
+    revision: int
+    group_id: UUID
+    child_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class TextObjectChanged:
+    document_id: UUID
+    revision: int
+    group_id: UUID
+    object_id: UUID
+    properties: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
+class VectorGroupPropertiesChanged:
+    document_id: UUID
+    revision: int
+    group_id: UUID
+    properties: frozenset[str]
+
+
+@dataclass(frozen=True, slots=True)
 class LayerPropertiesChanged:
     document_id: UUID
     revision: int
@@ -86,6 +135,12 @@ type DocumentEvent = (
     | DocumentRevisionChanged
     | DocumentSizeChanged
     | LayerListChanged
+    | LayerTreeChanged
+    | GroupListChanged
+    | GroupPropertiesChanged
+    | GroupMembersChanged
+    | TextObjectChanged
+    | VectorGroupPropertiesChanged
     | LayerPropertiesChanged
     | LayerPixelsChanged
     | SelectionChanged
@@ -105,7 +160,13 @@ __all__ = [
     "DocumentRevisionChanged",
     "DocumentSizeChanged",
     "LayerListChanged",
+    "LayerTreeChanged",
+    "GroupListChanged",
+    "GroupPropertiesChanged",
+    "GroupMembersChanged",
     "LayerPixelsChanged",
     "LayerPropertiesChanged",
     "SelectionChanged",
+    "TextObjectChanged",
+    "VectorGroupPropertiesChanged",
 ]

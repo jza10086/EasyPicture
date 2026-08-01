@@ -1,6 +1,7 @@
 """Qt-free EasyPicture document domain."""
 
 from easypicture.domain.document import Document
+from easypicture.domain.effective import EffectiveLeaf, iter_effective_leaves
 from easypicture.domain.events import (
     ActiveLayerChanged,
     DocumentEvent,
@@ -8,13 +9,20 @@ from easypicture.domain.events import (
     DocumentPathChanged,
     DocumentRevisionChanged,
     DocumentSizeChanged,
+    GroupListChanged,
+    GroupMembersChanged,
+    GroupPropertiesChanged,
     LayerListChanged,
     LayerPixelsChanged,
     LayerPropertiesChanged,
+    LayerTreeChanged,
     SelectionChanged,
+    TextObjectChanged,
+    VectorGroupPropertiesChanged,
 )
 from easypicture.domain.geometry import (
     AffineTransform,
+    FloatRect,
     PixelPoint,
     Point,
     ProjectiveTransform,
@@ -24,24 +32,57 @@ from easypicture.domain.geometry import (
 )
 from easypicture.domain.layer import RasterLayer
 from easypicture.domain.selection import Selection
+from easypicture.domain.vector import (
+    LayerGroup,
+    LayerGroupKind,
+    LayerNode,
+    LayerNodeKind,
+    RasterGroupLayer,
+    TextHorizontalAlignment,
+    TextObject,
+    TextVerticalAlignment,
+    TextWrapMode,
+    VectorGroupLayer,
+    VectorObject,
+)
 
 __all__ = [
     "ActiveLayerChanged",
     "AffineTransform",
+    "FloatRect",
     "Document",
+    "EffectiveLeaf",
+    "iter_effective_leaves",
     "DocumentEvent",
     "DocumentModifiedChanged",
     "DocumentPathChanged",
     "DocumentRevisionChanged",
     "DocumentSizeChanged",
+    "GroupListChanged",
+    "GroupMembersChanged",
+    "GroupPropertiesChanged",
     "LayerListChanged",
+    "LayerTreeChanged",
     "LayerPixelsChanged",
     "LayerPropertiesChanged",
     "SelectionChanged",
+    "TextObjectChanged",
+    "VectorGroupPropertiesChanged",
     "PixelPoint",
     "Point",
     "ProjectiveTransform",
     "RasterLayer",
+    "LayerNode",
+    "LayerNodeKind",
+    "LayerGroupKind",
+    "LayerGroup",
+    "TextHorizontalAlignment",
+    "TextObject",
+    "TextVerticalAlignment",
+    "TextWrapMode",
+    "VectorObject",
+    "RasterGroupLayer",
+    "VectorGroupLayer",
     "Selection",
     "Size",
     "TransformMatrix",

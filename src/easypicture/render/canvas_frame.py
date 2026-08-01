@@ -18,9 +18,12 @@ from easypicture.domain import (
     DocumentEvent,
     LayerListChanged,
     LayerPixelsChanged,
+    RasterGroupLayer,
     RasterLayer,
     Size,
+    TextObject,
     TransformMatrix,
+    VectorGroupLayer,
     as_projective,
 )
 from easypicture.domain.document import Unsubscribe
@@ -28,6 +31,7 @@ from easypicture.imaging import TransformInterpolation
 from easypicture.pixels import Rect, RGBAArray, TileCoord
 from easypicture.pixels.types import validate_rgba_array
 from easypicture.render.qimage_bridge import rgba_tile_to_qimage
+from easypicture.render.text_renderer import paint_text_objects
 
 DEFAULT_SOURCE_CACHE_BYTES = 256 * 1024 * 1024
 
@@ -67,6 +71,12 @@ class GeometryPreviewState:
     interpolation: TransformInterpolation = TransformInterpolation.LINEAR
 
 
+@dataclass(frozen=True, slots=True)
+class VectorTextPreviewState:
+    group_id: UUID
+    objects: tuple[TextObject, ...]
+
+
 type SourceCacheKey = tuple[UUID, TileCoord, int, int, str]
 
 
@@ -96,6 +106,7 @@ class CanvasRenderCoordinator(QObject):
         self._pixel_preview_epoch = 0
         self._transform_preview: TransformPreviewState | None = None
         self._geometry_preview: GeometryPreviewState | None = None
+        self._vector_text_preview: VectorTextPreviewState | None = None
         self._source_cache: OrderedDict[SourceCacheKey, QImage] = OrderedDict()
         self._generation = 0
         self._active_backend = RenderBackendKind.SOFTWARE
@@ -169,6 +180,7 @@ class CanvasRenderCoordinator(QObject):
         self._pixel_preview_revisions.clear()
         self._transform_preview = None
         self._geometry_preview = None
+        self._vector_text_preview = None
         self._source_cache.clear()
         if document is not None:
             self._unsubscribe = document.subscribe(self._on_document_event)
@@ -184,6 +196,7 @@ class CanvasRenderCoordinator(QObject):
         self._pixel_preview_revisions.clear()
         self._transform_preview = None
         self._geometry_preview = None
+        self._vector_text_preview = None
 
     def set_pixel_preview(
         self,
@@ -302,6 +315,22 @@ class CanvasRenderCoordinator(QObject):
         self._geometry_preview = None
         self.request_frame()
 
+    def replace_vector_preview(
+        self,
+        group_id: UUID,
+        objects: tuple[TextObject, ...],
+    ) -> None:
+        """Atomically replace a transient text-object preview mapping."""
+        self._require_document().group_by_id(group_id)
+        self._vector_text_preview = VectorTextPreviewState(group_id, tuple(objects))
+        self.request_frame()
+
+    def clear_vector_preview(self) -> None:
+        if self._vector_text_preview is None:
+            return
+        self._vector_text_preview = None
+        self.request_frame()
+
     def request_frame(self) -> None:
         self._generation += 1
         self.frame_requested.emit()
@@ -331,6 +360,42 @@ class CanvasRenderCoordinator(QObject):
         painter.setPen(QColor("#707070"))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(self.document_rect())
+        painter.restore()
+
+    def paint_vector_text_overlay(self, painter: QPainter, document_rect: QRectF) -> None:
+        """Draw vector text after a native backend frame when needed.
+
+        The software compositor remains the reference for ordering; this small
+        overlay lets the OpenGL backend show editable text without uploading
+        font rasterizations into its texture atlas.
+        """
+        if self.document is None or not self.document.text_groups:
+            return
+        painter.save()
+        painter.setClipRect(document_rect)
+        for group in self.document.text_groups:
+            self._paint_text_group(painter, group)
+        painter.restore()
+
+    def paint_vector_group(
+        self,
+        painter: QPainter,
+        group: VectorGroupLayer,
+        document_rect: QRectF | None = None,
+    ) -> None:
+        """Paint one vector group at its stored position in the frame order.
+
+        The OpenGL backend uses this narrow bridge between native raster
+        passes.  Keeping the operation on the same QPainter preserves the
+        QGraphicsView scene transform while allowing vector groups to remain
+        correctly interleaved with raster groups.
+        """
+        if self.document is None or not group.visible or group.opacity <= 0.0:
+            return
+        rect = self.document_rect() if document_rect is None else document_rect
+        painter.save()
+        painter.setClipRect(rect)
+        self._paint_text_group(painter, group)
         painter.restore()
 
     def document_rect(self) -> QRectF:
@@ -450,19 +515,18 @@ class CanvasRenderCoordinator(QObject):
             document = self._require_document()
             painter.save()
             painter.setClipRect(document_rect)
-            for layer in document.layers:
-                if layer.id == geometry.layer_id:
-                    self._draw_transformed_layer(
-                        painter,
-                        layer,
-                        TransformPreviewState(
-                            layer.id,
-                            geometry.matrix,
-                            geometry.interpolation,
-                        ),
-                    )
-                else:
-                    self._draw_normal_layer(painter, layer, document_rect)
+            transform_preview = TransformPreviewState(
+                geometry.layer_id,
+                geometry.matrix,
+                geometry.interpolation,
+            )
+            for group in document.nodes:
+                self._paint_group(
+                    painter,
+                    group,
+                    document_rect,
+                    transform_preview=transform_preview,
+                )
             painter.restore()
             return
         self._paint_document_layers(painter, document_rect)
@@ -475,29 +539,97 @@ class CanvasRenderCoordinator(QObject):
         document = self._require_document()
         preview = self._transform_preview
         if preview is None:
-            for layer in document.layers:
-                self._draw_normal_layer(painter, layer, document_rect)
+            painter.save()
+            painter.setClipRect(document_rect)
+            for group in document.nodes:
+                self._paint_group(painter, group, document_rect)
+            painter.restore()
         else:
             try:
-                active_index = document.layer_index(preview.layer_id)
-                active_layer = document.layer_by_id(preview.layer_id)
+                document.layer_by_id(preview.layer_id)
             except ValueError:
                 self._transform_preview = None
-                for layer in document.layers:
-                    self._draw_normal_layer(painter, layer, document_rect)
+                painter.save()
+                painter.setClipRect(document_rect)
+                for group in document.nodes:
+                    self._paint_group(painter, group, document_rect)
+                painter.restore()
             else:
-                for layer in document.layers[:active_index]:
-                    self._draw_normal_layer(painter, layer, document_rect)
-                if document.selection.is_active:
+                painter.save()
+                for group in document.nodes:
+                    self._paint_group(
+                        painter,
+                        group,
+                        document_rect,
+                        transform_preview=preview,
+                    )
+                painter.restore()
+
+    def _paint_group(
+        self,
+        painter: QPainter,
+        group: RasterGroupLayer | VectorGroupLayer,
+        document_rect: QRectF,
+        *,
+        transform_preview: TransformPreviewState | None = None,
+    ) -> None:
+        """Paint one top-level group with inherited group properties.
+
+        P9C deliberately keeps groups as transparent containers: children are
+        painted in their stored bottom-to-top order and inherit visibility and
+        opacity without creating an intermediate surface.
+        """
+        if not group.visible or group.opacity <= 0.0:
+            return
+        if isinstance(group, RasterGroupLayer):
+            for layer in group.children:
+                if transform_preview is not None and layer.id == transform_preview.layer_id:
+                    if self._require_document().selection.is_active:
+                        self._draw_normal_layer(
+                            painter,
+                            layer,
+                            document_rect,
+                            source_kind="base",
+                            opacity_multiplier=group.opacity,
+                        )
+                    self._draw_transformed_layer(
+                        painter,
+                        layer,
+                        transform_preview,
+                        opacity_multiplier=group.opacity,
+                    )
+                else:
                     self._draw_normal_layer(
                         painter,
-                        active_layer,
+                        layer,
                         document_rect,
-                        source_kind="base",
+                        opacity_multiplier=group.opacity,
                     )
-                self._draw_transformed_layer(painter, active_layer, preview)
-                for layer in document.layers[active_index + 1 :]:
-                    self._draw_normal_layer(painter, layer, document_rect)
+            return
+        self._paint_text_group(painter, group, opacity_multiplier=group.opacity)
+
+    def _paint_text_group(
+        self,
+        painter: QPainter,
+        group: VectorGroupLayer,
+        *,
+        opacity_multiplier: float = 1.0,
+    ) -> None:
+        preview = self._vector_text_preview
+        if preview is not None and getattr(group, "id", None) == preview.group_id:
+            paint_text_objects(
+                painter,
+                preview.objects,
+                group_opacity=float(getattr(group, "opacity", 1.0))
+                * opacity_multiplier,
+            )
+            return
+        paint_text_objects(
+            painter,
+            group.children,
+            group_opacity=float(getattr(group, "opacity", 1.0))
+            * opacity_multiplier,
+        )
 
     def _draw_normal_layer(
         self,
@@ -506,12 +638,13 @@ class CanvasRenderCoordinator(QObject):
         document_rect: QRectF,
         *,
         source_kind: str = "source",
+        opacity_multiplier: float = 1.0,
     ) -> None:
         if not layer.visible or layer.opacity <= 0.0:
             return
         painter.save()
         painter.setClipRect(document_rect)
-        painter.setOpacity(layer.opacity)
+        painter.setOpacity(layer.opacity * opacity_multiplier)
         for coord, _pixels in layer.pixels.iter_allocated_tiles():
             source = self._source_image(layer, coord, source_kind)
             painter.drawImage(
@@ -536,12 +669,14 @@ class CanvasRenderCoordinator(QObject):
         painter: QPainter,
         layer: RasterLayer,
         preview: TransformPreviewState,
+        *,
+        opacity_multiplier: float = 1.0,
     ) -> None:
         if not layer.visible or layer.opacity <= 0.0:
             return
         transform = self._qt_transform(preview.matrix)
         painter.save()
-        painter.setOpacity(layer.opacity)
+        painter.setOpacity(layer.opacity * opacity_multiplier)
         painter.setRenderHint(
             QPainter.RenderHint.SmoothPixmapTransform,
             preview.interpolation is not TransformInterpolation.NEAREST,
@@ -680,8 +815,18 @@ class CanvasRenderCoordinator(QObject):
                 self._pixel_preview_layer_id = None
                 self._pixel_preview_tiles.clear()
                 self._pixel_preview_revisions.clear()
+            if self._vector_text_preview is not None:
+                try:
+                    document.group_by_id(self._vector_text_preview.group_id)
+                except ValueError:
+                    self._vector_text_preview = None
         else:
             self._source_cache.clear()
+        if self._vector_text_preview is not None:
+            try:
+                document.group_by_id(self._vector_text_preview.group_id)
+            except ValueError:
+                self._vector_text_preview = None
         self.request_frame()
 
     def _discard_layer_cache(self, layer_id: UUID) -> None:
@@ -732,4 +877,5 @@ __all__ = [
     "GeometryPreviewState",
     "RenderBackendKind",
     "TransformPreviewState",
+    "VectorTextPreviewState",
 ]

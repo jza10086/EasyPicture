@@ -1,5 +1,9 @@
 .venv/
 .cache/
+.lock
+CACHEDIR.TAG
+interpreter-v4/
+sdists-v9/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
