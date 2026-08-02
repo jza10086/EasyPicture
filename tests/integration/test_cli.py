@@ -73,6 +73,32 @@ def test_export_smoke_test_writes_all_static_formats(tmp_path) -> None:
     assert diagnostics["formats"]["gif"]["frames"] == 1
 
 
+def test_svg_smoke_test_round_trips_and_exports_both_modes(tmp_path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "easypicture",
+            "--svg-smoke-test",
+            str(tmp_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    diagnostics = json.loads(
+        (tmp_path / "svg-diagnostics.json").read_text(encoding="utf-8")
+    )
+    assert diagnostics["schema"] == 4
+    assert diagnostics["imported"] >= 2
+    assert (tmp_path / "svg-smoke.limg").exists()
+    assert (tmp_path / "svg-smoke-preserved.svg").exists()
+    assert (tmp_path / "svg-smoke-rasterized.svg").exists()
+
+
 def test_software_render_smoke_outputs_reference_and_diagnostics(tmp_path) -> None:
     environment = os.environ.copy()
     environment["QT_QPA_PLATFORM"] = "offscreen"

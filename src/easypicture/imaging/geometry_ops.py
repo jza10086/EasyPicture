@@ -106,13 +106,6 @@ class LayerScaleRequest:
 
 
 @dataclass(frozen=True, slots=True)
-class LayerBoundsRequest:
-    snapshot: DocumentSnapshot
-    layer_id: UUID
-    crop_to_content: bool
-
-
-@dataclass(frozen=True, slots=True)
 class TrimTransparentRequest:
     snapshot: DocumentSnapshot
 
@@ -127,9 +120,9 @@ def calculate_crop_document(
     target_size = Size(rect.width, rect.height)
     working = _WorkingFiles()
     layers: list[LayerGeometryResult] = []
-    maximum = len(request.snapshot.layers) + 1
+    maximum = len(request.snapshot.raster_layers) + 1
     try:
-        for index, layer in enumerate(request.snapshot.layers, start=1):
+        for index, layer in enumerate(request.snapshot.raster_layers, start=1):
             token.raise_if_cancelled()
             source = _layer_canvas_pixels(
                 layer,
@@ -179,9 +172,9 @@ def calculate_canvas_resize(
     offset = canvas_anchor_offset(request.snapshot.size, request.size, request.anchor)
     working = _WorkingFiles()
     layers: list[LayerGeometryResult] = []
-    maximum = len(request.snapshot.layers) + 1
+    maximum = len(request.snapshot.raster_layers) + 1
     try:
-        for index, layer in enumerate(request.snapshot.layers, start=1):
+        for index, layer in enumerate(request.snapshot.raster_layers, start=1):
             token.raise_if_cancelled()
             source = _layer_canvas_pixels(
                 layer,
@@ -231,9 +224,9 @@ def calculate_image_scale(
     snapshot = request.snapshot
     working = _WorkingFiles()
     results: list[LayerGeometryResult] = []
-    maximum = len(snapshot.layers) + 1
+    maximum = len(snapshot.raster_layers) + 1
     try:
-        for index, layer in enumerate(snapshot.layers, start=1):
+        for index, layer in enumerate(snapshot.raster_layers, start=1):
             token.raise_if_cancelled()
             source = _layer_canvas_pixels(layer, snapshot.size, token, working)
             resized = _resize_rgba(source, request.size, request.interpolation)
@@ -245,7 +238,7 @@ def calculate_image_scale(
                     _rgba_tiles(resized),
                 )
             )
-            progress(index, maximum, f"正在缩放图层 {index}/{len(snapshot.layers)}")
+            progress(index, maximum, f"正在缩放图层 {index}/{len(snapshot.raster_layers)}")
         selection_source = snapshot.selection.read_region(
             Rect(0, 0, snapshot.size.width, snapshot.size.height)
         )
@@ -290,36 +283,6 @@ def calculate_layer_scale(
         working.cleanup()
 
 
-def calculate_layer_bounds(
-    request: LayerBoundsRequest,
-    token: CancellationToken,
-    progress: ProgressSink,
-) -> DocumentGeometryResult:
-    """Normalize a legacy layer to the canvas.
-
-    Layers no longer have independent bounds.  The operation remains as a
-    compatibility entry point for older callers and becomes a no-op for
-    already-normalized documents.
-    """
-    snapshot = request.snapshot
-    layer = _layer(snapshot, request.layer_id)
-    _require_editable_layer(layer)
-    working = _WorkingFiles()
-    try:
-        source = _layer_canvas_pixels(layer, snapshot.size, token, working)
-        token.raise_if_cancelled()
-        replacement = LayerGeometryResult(
-            layer.id,
-            snapshot.size,
-            PixelPoint(),
-            _rgba_tiles(source),
-        )
-        progress(1, 1, "正在规范化图层")
-        return _single_layer_result(snapshot, replacement)
-    finally:
-        working.cleanup()
-
-
 def calculate_trim_transparent(
     request: TrimTransparentRequest,
     token: CancellationToken,
@@ -331,8 +294,8 @@ def calculate_trim_transparent(
     working = _WorkingFiles()
     bounds: tuple[int, int, int, int] | None = None
     try:
-        maximum = max(1, len(snapshot.layers))
-        for index, layer in enumerate(snapshot.layers, start=1):
+        maximum = max(1, len(snapshot.raster_layers))
+        for index, layer in enumerate(snapshot.raster_layers, start=1):
             token.raise_if_cancelled()
             source = _layer_canvas_pixels(layer, snapshot.size, token, working)
             ys, xs = np.nonzero(source[..., 3])
@@ -361,7 +324,7 @@ def calculate_trim_transparent(
             snapshot.size,
             tuple(
                 LayerGeometryResult(layer.id, snapshot.size, PixelPoint())
-                for layer in snapshot.layers
+                for layer in snapshot.raster_layers
             ),
             {
                 coord: tile
@@ -375,7 +338,7 @@ def calculate_trim_transparent(
             snapshot.size,
             tuple(
                 LayerGeometryResult(layer.id, snapshot.size, PixelPoint())
-                for layer in snapshot.layers
+                for layer in snapshot.raster_layers
             ),
             {
                 coord: tile
@@ -464,7 +427,7 @@ def _single_layer_result(
         replacement
         if layer.id == replacement.layer_id
         else LayerGeometryResult(layer.id, snapshot.size, PixelPoint())
-        for layer in snapshot.layers
+        for layer in snapshot.raster_layers
     )
     selection = {
         coord: tile
@@ -646,7 +609,7 @@ def _mask_tiles(source: MaskArray) -> Mapping[TileCoord, MaskArray]:
 
 
 def _layer(snapshot: DocumentSnapshot, layer_id: UUID) -> LayerSnapshot:
-    for layer in snapshot.layers:
+    for layer in snapshot.raster_layers:
         if layer.id == layer_id:
             return layer
     raise ValueError("layer must belong to the snapshot")
@@ -674,14 +637,12 @@ __all__ = [
     "DocumentGeometryResult",
     "GeometryRect",
     "ImageScaleRequest",
-    "LayerBoundsRequest",
     "LayerGeometryResult",
     "LayerScaleRequest",
     "TrimTransparentRequest",
     "calculate_canvas_resize",
     "calculate_crop_document",
     "calculate_image_scale",
-    "calculate_layer_bounds",
     "calculate_layer_scale",
     "calculate_trim_transparent",
     "canvas_anchor_offset",

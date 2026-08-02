@@ -262,9 +262,9 @@ class QtDialogService:
             "打开图片或项目",
             "",
             (
-                "支持的文件 (*.limg *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.tga);;"
+                "支持的文件 (*.limg *.svg *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.tga);;"
                 "EasyPicture 项目 (*.limg);;图片 (*.png *.jpg *.jpeg *.webp *.bmp *.tif "
-                "*.tiff *.tga);;所有文件 (*)"
+                "*.tiff *.tga);;SVG 矢量图 (*.svg);;所有文件 (*)"
             ),
         )
         return Path(path) if path else None

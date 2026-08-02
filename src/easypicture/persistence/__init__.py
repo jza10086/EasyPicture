@@ -10,6 +10,8 @@ from easypicture.persistence.image_export import (
     ImageExportRequest,
     JpegExportOptions,
     PngExportOptions,
+    SvgExportOptions,
+    SvgVectorExportMode,
     TgaExportOptions,
     TiffCompression,
     TiffExportOptions,
@@ -34,14 +36,17 @@ from easypicture.persistence.project_io import (
     load_project,
     save_project,
 )
+from easypicture.persistence.schema import PROJECT_SCHEMA_VERSION
 from easypicture.persistence.snapshots import (
     DocumentNodeSnapshot,
     DocumentSnapshot,
     LayerSnapshot,
     RasterGroupSnapshot,
+    SvgElementSnapshot,
     TextObjectSnapshot,
     VectorGroupSnapshot,
 )
+from easypicture.persistence.svg_io import SvgImportResult, SvgImportWarning, import_svg
 
 __all__ = [
     "DocumentSnapshot",
@@ -57,16 +62,22 @@ __all__ = [
     "JpegExportOptions",
     "LayerSnapshot",
     "RasterGroupSnapshot",
+    "SvgElementSnapshot",
+    "SvgImportResult",
+    "SvgImportWarning",
     "TextObjectSnapshot",
     "VectorGroupSnapshot",
     "LoadedProject",
     "PngExportOptions",
     "PngExportReceipt",
     "ProjectFormatError",
+    "PROJECT_SCHEMA_VERSION",
     "SaveReceipt",
     "TgaExportOptions",
     "TiffCompression",
     "TiffExportOptions",
+    "SvgExportOptions",
+    "SvgVectorExportMode",
     "WebpExportOptions",
     "canonical_extension",
     "default_export_options",
@@ -75,6 +86,7 @@ __all__ = [
     "export_image",
     "export_png",
     "import_image",
+    "import_svg",
     "load_project",
     "normalize_export_path",
     "save_project",

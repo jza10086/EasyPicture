@@ -229,9 +229,27 @@ def test_export_writes_fresh_icc_and_strips_source_metadata(
     with Image.open(output) as image:
         assert isinstance(image.info.get("icc_profile"), bytes)
         assert "exif" not in image.info
+        assert "software" not in image.info
+        assert "comment" not in image.info
         exif = image.getexif()
         assert 274 not in exif
         assert 34853 not in exif
+
+
+def test_tiff_export_does_not_write_application_identity(tmp_path: Path) -> None:
+    output = tmp_path / "neutral.tiff"
+    export_image(
+        ImageExportRequest(
+            _snapshot(_sample_pixels()),
+            output,
+            TiffExportOptions(),
+        ),
+        CancellationToken(),
+        _progress,
+    )
+
+    with Image.open(output) as image:
+        assert image.tag_v2.get(305) is None
 
 
 def test_cancelled_export_preserves_existing_target(tmp_path: Path) -> None:

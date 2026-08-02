@@ -10,13 +10,14 @@ from easypicture.domain import (
     AffineTransform,
     Document,
     FloatRect,
-    LayerNodeKind,
+    LayerGroupKind,
     PixelPoint,
     Point,
     RasterGroupLayer,
     RasterLayer,
     Selection,
     Size,
+    SvgElementObject,
     TextHorizontalAlignment,
     TextObject,
     TextVerticalAlignment,
@@ -140,21 +141,81 @@ class TextObjectSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class VectorGroupSnapshot:
+class SvgElementSnapshot:
     id: UUID
     name: str
-    children: tuple[TextObjectSnapshot, ...]
+    element_kind: str
+    svg: str
+    intrinsic_bounds: FloatRect
+    transform: AffineTransform
+    transform_pivot: Point | None
+    fill_override: tuple[int, int, int, int] | None
+    stroke_override: tuple[int, int, int, int] | None
+    stroke_width_override: float | None
     visible: bool
     opacity: float
     locked: bool
-    kind: LayerNodeKind = LayerNodeKind.VECTOR_GROUP
+
+    @classmethod
+    def capture(cls, element: SvgElementObject) -> SvgElementSnapshot:
+        return cls(
+            id=element.id,
+            name=element.name,
+            element_kind=element.element_kind,
+            svg=element.svg,
+            intrinsic_bounds=element.intrinsic_bounds,
+            transform=element.transform,
+            transform_pivot=element.transform_pivot,
+            fill_override=element.fill_override,
+            stroke_override=element.stroke_override,
+            stroke_width_override=element.stroke_width_override,
+            visible=element.visible,
+            opacity=element.opacity,
+            locked=element.locked,
+        )
+
+    def to_object(self) -> SvgElementObject:
+        return SvgElementObject(
+            id=self.id,
+            name=self.name,
+            element_kind=self.element_kind,
+            svg=self.svg,
+            intrinsic_bounds=self.intrinsic_bounds,
+            transform=self.transform,
+            transform_pivot=self.transform_pivot,
+            fill_override=self.fill_override,
+            stroke_override=self.stroke_override,
+            stroke_width_override=self.stroke_width_override,
+            visible=self.visible,
+            opacity=self.opacity,
+            locked=self.locked,
+        )
+
+
+VectorObjectSnapshot = TextObjectSnapshot | SvgElementSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class VectorGroupSnapshot:
+    id: UUID
+    name: str
+    children: tuple[VectorObjectSnapshot, ...]
+    visible: bool
+    opacity: float
+    locked: bool
+    kind: LayerGroupKind = LayerGroupKind.VECTOR
 
     @classmethod
     def capture(cls, group: VectorGroupLayer) -> VectorGroupSnapshot:
         return cls(
             id=group.id,
             name=group.name,
-            children=tuple(TextObjectSnapshot.capture(child) for child in group.children),
+            children=tuple(
+                TextObjectSnapshot.capture(child)
+                if isinstance(child, TextObject)
+                else SvgElementSnapshot.capture(child)
+                for child in group.children
+            ),
             visible=group.visible,
             opacity=group.opacity,
             locked=group.locked,
@@ -179,7 +240,7 @@ class RasterGroupSnapshot:
     visible: bool
     opacity: float
     locked: bool
-    kind: LayerNodeKind = LayerNodeKind.RASTER_GROUP
+    kind: LayerGroupKind = LayerGroupKind.RASTER
 
     @classmethod
     def capture(cls, group: RasterGroupLayer) -> RasterGroupSnapshot:
@@ -210,12 +271,20 @@ class DocumentSnapshot:
     document_id: UUID
     revision: int
     size: Size
-    layers: tuple[LayerSnapshot, ...]
     active_layer_id: UUID
     selection: MaskTileStore
     project_path: Path | None
     source_name: str | None
-    nodes: tuple[DocumentNodeSnapshot, ...] = ()
+    nodes: tuple[DocumentNodeSnapshot, ...]
+
+    @property
+    def raster_layers(self) -> tuple[LayerSnapshot, ...]:
+        return tuple(
+            child
+            for node in self.nodes
+            if isinstance(node, RasterGroupSnapshot)
+            for child in node.children
+        )
 
     @classmethod
     def capture(cls, document: Document) -> DocumentSnapshot:
@@ -223,7 +292,6 @@ class DocumentSnapshot:
             document_id=document.id,
             revision=document.revision,
             size=document.size,
-            layers=tuple(LayerSnapshot.capture(layer) for layer in document.layers),
             active_layer_id=document.active_layer_id,
             selection=document.selection.mask.clone_shared(),
             project_path=document.project_path,
@@ -242,17 +310,13 @@ class DocumentSnapshot:
         project_path: Path | None = None,
         modified: bool = False,
     ) -> Document:
-        nodes = [
-            node.to_group()
-            for node in self.nodes
-        ]
+        nodes = [node.to_group() for node in self.nodes]
         return Document.restore(
             document_id=self.document_id,
             size=self.size,
-            layers=[layer.to_layer() for layer in self.layers],
             active_layer_id=self.active_layer_id,
             selection=Selection(size=self.size, mask=self.selection.clone_shared()),
-            nodes=nodes or None,
+            nodes=nodes,
             project_path=project_path,
             source_name=self.source_name,
             modified=modified,
@@ -264,6 +328,8 @@ __all__ = [
     "DocumentSnapshot",
     "LayerSnapshot",
     "RasterGroupSnapshot",
+    "SvgElementSnapshot",
     "TextObjectSnapshot",
     "VectorGroupSnapshot",
+    "VectorObjectSnapshot",
 ]

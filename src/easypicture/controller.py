@@ -17,10 +17,14 @@ from easypicture.domain import (
     Document,
     DocumentEvent,
     DocumentModifiedChanged,
-    LayerListChanged,
+    DocumentSizeChanged,
+    GroupListChanged,
+    GroupMembersChanged,
+    GroupPropertiesChanged,
     LayerPixelsChanged,
     LayerPropertiesChanged,
     SelectionChanged,
+    VectorObjectChanged,
 )
 from easypicture.domain.document import Unsubscribe
 from easypicture.jobs import JobHandle, JobOutcome, JobRunner, JobStatus
@@ -33,9 +37,11 @@ from easypicture.persistence import (
     LoadedProject,
     PngExportReceipt,
     SaveReceipt,
+    SvgImportResult,
     export_image,
     export_png,
     import_image,
+    import_svg,
     load_project,
     save_project,
 )
@@ -329,6 +335,36 @@ class ApplicationController(QObject):
             self._report_job_failure(parent, "打开项目失败", outcome)
             return None
 
+        if path.suffix.lower() == ".svg":
+            outcome = self._run_foreground(
+                parent,
+                "导入 SVG",
+                lambda token, progress: import_svg(path, token, progress),
+            )
+            if outcome.status is JobStatus.SUCCESS and isinstance(
+                outcome.value,
+                SvgImportResult,
+            ):
+                imported_svg = outcome.value
+                notices = tuple(
+                    f"{item.element_id or 'SVG'}：{item.message}"
+                    for item in imported_svg.warnings[:20]
+                )
+                if len(imported_svg.warnings) > 20:
+                    notices += (
+                        f"另有 {len(imported_svg.warnings) - 20} 条警告已写入日志。",
+                    )
+                for warning in imported_svg.warnings:
+                    self._logger.warning(
+                        "SVG import %s [%s]: %s",
+                        warning.element_id or "document",
+                        warning.category,
+                        warning.message,
+                    )
+                return imported_svg.document, notices
+            self._report_job_failure(parent, "导入 SVG 失败", outcome)
+            return None
+
         outcome = self._run_foreground(
             parent,
             "导入图片",
@@ -403,10 +439,14 @@ class ApplicationController(QObject):
                 event,
                 (
                     DocumentModifiedChanged,
-                    LayerListChanged,
+                    DocumentSizeChanged,
+                    GroupListChanged,
+                    GroupMembersChanged,
+                    GroupPropertiesChanged,
                     LayerPixelsChanged,
                     LayerPropertiesChanged,
                     SelectionChanged,
+                    VectorObjectChanged,
                 ),
             )
         ):

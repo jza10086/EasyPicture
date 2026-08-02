@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from easypicture.commands import DocumentCommandService
-from easypicture.domain import Document, LayerPixelsChanged, PixelPoint, RasterLayer
+from easypicture.domain import Document, LayerPixelsChanged, RasterLayer
 from easypicture.pixels import TileCoord
 
 
@@ -154,26 +154,20 @@ def test_pixel_command_rejects_non_contiguous_input_without_change() -> None:
     assert not document.modified
 
 
-def test_pixel_event_maps_non_aligned_layer_tile_to_document_tiles() -> None:
+def test_pixel_event_maps_canvas_aligned_layer_tile_to_document_tile() -> None:
     document = Document.create(600, 600)
-    layer = RasterLayer.create_blank(
-        "偏移层",
-        document.size,
-        origin=PixelPoint(10, 20),
-    )
-    document.insert_layer(layer, 1)
-    assert layer.origin == PixelPoint()
+    layer = document.active_layer
     document.mark_clean()
     events: list[object] = []
     document.subscribe(events.append)
     service = DocumentCommandService()
     service.attach_document(document)
 
-    assert service.apply_pixel_tiles(layer.id, {TileCoord(0, 0): _tile()}, "偏移写入")
+    assert service.apply_pixel_tiles(layer.id, {TileCoord(1, 1): _tile()}, "像素写入")
 
     event = next(event for event in events if isinstance(event, LayerPixelsChanged))
-    assert event.layer_tiles == frozenset({TileCoord(0, 0)})
-    assert event.document_tiles == frozenset({TileCoord(0, 0)})
+    assert event.layer_tiles == frozenset({TileCoord(1, 1)})
+    assert event.document_tiles == frozenset({TileCoord(1, 1)})
 
 
 def test_delete_clears_selection_alpha_preserves_rgb_and_is_undoable() -> None:

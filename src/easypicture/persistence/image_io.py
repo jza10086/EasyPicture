@@ -11,7 +11,14 @@ from uuid import UUID, uuid4
 import numpy as np
 from PIL import Image, ImageCms, ImageOps
 
-from easypicture.domain import Document, PixelPoint, RasterLayer, Selection, Size
+from easypicture.domain import (
+    Document,
+    PixelPoint,
+    RasterGroupLayer,
+    RasterLayer,
+    Selection,
+    Size,
+)
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
 from easypicture.jobs import CancellationToken
 from easypicture.jobs.runner import ProgressSink
@@ -95,12 +102,14 @@ def import_image(
         origin=PixelPoint(),
         pixels=store,
     )
+    group = RasterGroupLayer.create("栅格组")
+    group.children.append(layer)
     document = Document.restore(
         document_id=uuid4(),
         size=size,
-        layers=[layer],
         active_layer_id=layer.id,
         selection=Selection.create_empty(size),
+        nodes=[group],
         source_name=source_path.name,
     )
     return ImportedImage(document, tuple(notices))

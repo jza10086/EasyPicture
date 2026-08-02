@@ -1,6 +1,6 @@
 # ADR-0012：临时像素预览与单命令提交
 
-- 状态：Accepted
+- 状态：Partially superseded by ADR-0018/ADR-0030（会话与单命令规则保留，旧 TileRenderer/stale 渲染规则被取代）
 - 日期：2026-07-24
 
 ## 决策

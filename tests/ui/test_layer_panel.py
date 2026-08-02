@@ -6,7 +6,9 @@ from PySide6.QtGui import QIcon
 from PySide6.QtTest import QTest
 
 from easypicture.controller import ApplicationController
-from easypicture.domain import RasterGroupLayer, VectorGroupLayer
+from easypicture.domain import RasterGroupLayer, SvgElementObject, VectorGroupLayer
+from easypicture.jobs import CancellationToken
+from easypicture.persistence import import_svg
 from easypicture.pixels import TileCoord
 from easypicture.ui.dialogs import NewDocumentSpec
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
@@ -311,3 +313,38 @@ def test_group_actions_keep_expansion_and_delete_children_with_group(
     panel.delete_button.click()
     qtbot.wait(1)
     assert vector_group.id not in {node.id for node in document.nodes}
+
+
+def test_selecting_svg_child_updates_layer_buttons_without_text_lookup_error(
+    qtbot,
+    tmp_path,
+) -> None:
+    window, controller = _window_with_document(qtbot, tmp_path)
+    source = tmp_path / "layer.svg"
+    source.write_text(
+        """<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64">
+        <rect id="box" x="8" y="8" width="32" height="24" fill="#478cbf"/>
+        </svg>""",
+        encoding="utf-8",
+    )
+    imported = import_svg(
+        source,
+        CancellationToken(),
+        lambda _done, _total, _message: None,
+    )
+    controller._replace_document(imported.document)
+    qtbot.wait(1)
+    group = next(
+        node
+        for node in imported.document.nodes
+        if isinstance(node, VectorGroupLayer)
+    )
+    child = group.children[0]
+    assert isinstance(child, SvgElementObject)
+
+    window.layer_panel.select_node(child)
+    window.layer_panel._update_buttons()
+
+    assert window.layer_panel.duplicate_button.isEnabled()
+    assert not window.layer_panel.up_button.isEnabled()
+    assert not window.layer_panel.down_button.isEnabled()

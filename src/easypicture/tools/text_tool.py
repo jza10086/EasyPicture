@@ -179,10 +179,10 @@ class TextTool:
             else:
                 insertion_index = group.children.index(selected_object)
         if group is None:
-            if not context.commands.create_text_group():
+            if not context.commands.create_vector_group():
                 self._cancel_draft()
                 return
-            group = document.text_groups[-1] if document.text_groups else None
+            group = document.vector_groups[-1] if document.vector_groups else None
         if group is None:
             self._cancel_draft()
             return
@@ -247,11 +247,11 @@ class TextTool:
         group = existing[0] if existing is not None else None
         if self._group_provider is not None:
             group = group or self._group_provider()
-        if group is None and document.text_groups:
-            group = document.text_groups[-1]
+        if group is None and document.vector_groups:
+            group = document.vector_groups[-1]
         if group is None and context.commands is not None:
-            context.commands.create_text_group()
-            group = document.text_groups[-1] if document.text_groups else None
+            context.commands.create_vector_group()
+            group = document.vector_groups[-1] if document.vector_groups else None
         if group is None:
             self._status("请先创建文字组")
             return
@@ -289,12 +289,16 @@ class TextTool:
         if document is None:
             return (preview,)
         try:
-            group = document.group_by_id(group_id)
+            group = document.vector_group_by_id(group_id)
         except ValueError:
             return (preview,)
-        return tuple(
-            preview if child.id == preview.id else child for child in group.children
-        )
+        result: list[TextObject] = []
+        for child in group.children:
+            if child.id == preview.id:
+                result.append(preview)
+            elif isinstance(child, TextObject):
+                result.append(child)
+        return tuple(result)
 
     def _show_draft_overlay(self, rect: QRectF) -> None:
         if self._context is None:
@@ -367,10 +371,12 @@ class TextTool:
         if document is None:
             return None
         point = Point(scene_point.x(), scene_point.y())
-        for group in reversed(document.text_groups):
+        for group in reversed(document.vector_groups):
             if not group.visible:
                 continue
             for text_object in reversed(group.children):
+                if not isinstance(text_object, TextObject):
+                    continue
                 if not text_object.visible:
                     continue
                 try:
@@ -623,14 +629,17 @@ class TextTransformTool:
         objects: tuple[TextObject, ...] = (session.current,)
         if document is not None:
             try:
-                group = document.group_by_id(session.group_id)
+                group = document.vector_group_by_id(session.group_id)
             except ValueError:
                 pass
             else:
-                objects = tuple(
-                    session.current if child.id == session.object_id else child
-                    for child in group.children
-                )
+                current_objects: list[TextObject] = []
+                for child in group.children:
+                    if child.id == session.object_id:
+                        current_objects.append(session.current)
+                    elif isinstance(child, TextObject):
+                        current_objects.append(child)
+                objects = tuple(current_objects)
         context.canvas.replace_vector_preview(session.group_id, objects)
         self._show_overlay(session.current)
         if self._preview_sink is not None:

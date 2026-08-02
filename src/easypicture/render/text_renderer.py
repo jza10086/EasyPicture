@@ -20,17 +20,23 @@ from PySide6.QtGui import (
 )
 
 from easypicture.domain import (
+    SvgElementObject,
     TextHorizontalAlignment,
     TextObject,
     TextVerticalAlignment,
     TextWrapMode,
     VectorGroupLayer,
 )
+from easypicture.persistence.snapshots import SvgElementSnapshot
 
 if TYPE_CHECKING:
-    from easypicture.persistence.snapshots import TextObjectSnapshot, VectorGroupSnapshot
+    from easypicture.persistence.snapshots import (
+        TextObjectSnapshot,
+        VectorGroupSnapshot,
+    )
 
 type TextLike = TextObject | TextObjectSnapshot
+type VectorLike = TextLike | SvgElementObject | SvgElementSnapshot
 type GroupLike = VectorGroupLayer | VectorGroupSnapshot
 
 
@@ -155,25 +161,30 @@ def paint_text_object(
     painter.restore()
 
 
-def paint_text_groups(
+def paint_vector_groups(
     painter: QPainter,
     groups: Iterable[GroupLike],
 ) -> None:
-    """Paint visible text groups in their already ordered node sequence."""
+    """Paint visible vector groups in their already ordered node sequence."""
     for group in groups:
         if not group.visible or group.opacity <= 0.0:
             continue
-        paint_text_objects(painter, group.children, group_opacity=group.opacity)
+        paint_vector_objects(painter, group.children, group_opacity=group.opacity)
 
 
-def paint_text_objects(
+def paint_vector_objects(
     painter: QPainter,
-    objects: Iterable[TextLike],
+    objects: Iterable[VectorLike],
     *,
     group_opacity: float = 1.0,
 ) -> None:
-    for text_object in objects:
-        paint_text_object(painter, text_object, group_opacity=group_opacity)
+    from easypicture.render.svg_renderer import paint_svg_object
+
+    for vector_object in objects:
+        if isinstance(vector_object, (SvgElementObject, SvgElementSnapshot)):
+            paint_svg_object(painter, vector_object, group_opacity=group_opacity)
+        else:
+            paint_text_object(painter, vector_object, group_opacity=group_opacity)
 
 
-__all__ = ["paint_text_groups", "paint_text_object", "paint_text_objects"]
+__all__ = ["paint_text_object", "paint_vector_groups", "paint_vector_objects"]

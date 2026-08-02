@@ -750,7 +750,7 @@ def _rgba_surface(width: int, height: int) -> Iterator[np.ndarray]:
 
 
 def _layer_by_id(snapshot: DocumentSnapshot, layer_id: UUID) -> LayerSnapshot:
-    for layer in snapshot.layers:
+    for layer in snapshot.raster_layers:
         if layer.id == layer_id:
             return layer
     raise ValueError(f"unknown layer id: {layer_id}")

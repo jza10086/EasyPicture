@@ -11,7 +11,8 @@
 
 - 已实现 PNG/JPEG/WebP/BMP/TIFF/TGA 导入、EXIF Orientation 和 ICC→sRGB；
 - 已实现普通图片 clean 文档身份、项目路径和文件名窗口标题；
-- 已实现 `.limg` v1 稀疏 RGBA/selection Tile、缩略图、迁移入口和完整校验；
+- 当时实现 `.limg` v1 稀疏 RGBA/selection Tile、缩略图、迁移入口和完整校验；
+  预发布收敛后迁移入口已删除，Tile 安全校验与原子写入继续保留；
 - 已实现同目录临时文件、flush/fsync、重读复核及原子替换；
 - 已实现打开、保存、另存为、最小 PNG 导出和保存/放弃/取消生命周期；
 - 已实现无 Qt 权威 source-over 合成和大画布临时 memmap；

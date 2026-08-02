@@ -32,6 +32,8 @@ from easypicture.persistence import (
     ImageExportOptions,
     JpegExportOptions,
     PngExportOptions,
+    SvgExportOptions,
+    SvgVectorExportMode,
     TgaExportOptions,
     TiffCompression,
     TiffExportOptions,
@@ -59,6 +61,7 @@ _FORMAT_LABELS = {
     ExportFormat.TIFF: "TIFF",
     ExportFormat.TGA: "TGA",
     ExportFormat.GIF: "GIF（静态）",
+    ExportFormat.SVG: "SVG（静态）",
 }
 
 
@@ -185,6 +188,10 @@ class ImageExportDialog(QDialog):
                 self.gif_alpha_threshold.value(),
                 self.gif_dither.isChecked(),
             )
+        if export_format is ExportFormat.SVG:
+            return SvgExportOptions(
+                SvgVectorExportMode(str(self.svg_vector_mode.currentData()))
+            )
         raise ValueError(f"unsupported export format: {export_format!r}")
 
     def specification(self) -> ImageExportSpec:
@@ -229,6 +236,15 @@ class ImageExportDialog(QDialog):
         self.gif_colors = DragValueSpinBox(2, 256, 256, parent=self)
         self.gif_alpha_threshold = DragValueSpinBox(0, 255, 128, parent=self)
         self.gif_dither = QCheckBox("Floyd–Steinberg 抖动", self)
+        self.svg_vector_mode = BlenderComboBox(self)
+        self.svg_vector_mode.addItem(
+            "保留矢量对象",
+            SvgVectorExportMode.PRESERVE_VECTOR.value,
+        )
+        self.svg_vector_mode.addItem(
+            "将矢量组栅格化",
+            SvgVectorExportMode.RASTERIZE_VECTOR.value,
+        )
 
         self._add_page(
             ExportFormat.PNG,
@@ -282,6 +298,19 @@ class ImageExportDialog(QDialog):
                     "",
                     QLabel(
                         "静态单帧；GIF 只有一位透明度，不保留半透明和 ICC。",
+                        self,
+                    ),
+                ),
+            ],
+        )
+        self._add_page(
+            ExportFormat.SVG,
+            [
+                ("矢量内容", self.svg_vector_mode),
+                (
+                    "",
+                    QLabel(
+                        "静态 SVG；栅格组将作为透明 PNG 嵌入，不生成外部资源。",
                         self,
                     ),
                 ),
@@ -368,6 +397,10 @@ class ImageExportDialog(QDialog):
             self.gif_colors.setValue(options.colors)
             self.gif_alpha_threshold.setValue(options.alpha_threshold)
             self.gif_dither.setChecked(options.dither)
+        elif isinstance(options, SvgExportOptions):
+            self.svg_vector_mode.setCurrentIndex(
+                max(0, self.svg_vector_mode.findData(options.vector_mode.value))
+            )
 
 
 def _serialize_options(options: ImageExportOptions) -> str:
@@ -390,6 +423,8 @@ def _serialize_options(options: ImageExportOptions) -> str:
             "alpha_threshold": options.alpha_threshold,
             "dither": options.dither,
         }
+    elif isinstance(options, SvgExportOptions):
+        data = {"vector_mode": options.vector_mode.value}
     else:
         raise TypeError(f"unsupported export options: {type(options)!r}")
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
@@ -425,6 +460,10 @@ def _deserialize_options(
                 int(raw["colors"]),
                 int(raw["alpha_threshold"]),
                 bool(raw["dither"]),
+            )
+        if export_format is ExportFormat.SVG:
+            return SvgExportOptions(
+                SvgVectorExportMode(str(raw["vector_mode"]))
             )
     except KeyError, TypeError, ValueError, json.JSONDecodeError:
         return default_export_options(export_format)

@@ -75,8 +75,7 @@ def test_transform_tool_keyboard_translation_previews_and_commits_once(
         modifier=Qt.KeyboardModifier.ShiftModifier,
     )
 
-    renderer = window.canvas_view.renderer
-    assert renderer is not None
+    renderer = window.canvas_view.render_coordinator
     preview = QImage(
         64,
         48,
@@ -84,10 +83,10 @@ def test_transform_tool_keyboard_translation_previews_and_commits_once(
     )
     preview.fill(Qt.GlobalColor.transparent)
     painter = QPainter(preview)
-    assert renderer.paint_transform_preview(painter, QRectF(0.0, 0.0, 64.0, 48.0))
+    renderer.paint_software(painter, QRectF(0.0, 0.0, 64.0, 48.0))
     painter.end()
     assert preview.pixelColor(15, 5).red() == 255
-    assert preview.pixelColor(5, 5).alpha() == 0
+    assert preview.pixelColor(5, 5).getRgb()[:3] != (255, 0, 0)
     assert document.active_layer.origin.x == 0
     assert controller.commands.undo_stack.count() == 0
 
@@ -277,7 +276,7 @@ def test_deleting_transformed_layer_exits_session_and_can_restart(
 
     assert controller.commands.delete_layer(transformed_id)
     assert window.overlay_manager.count == 0
-    assert window.canvas_view.renderer is not None
+    assert window.canvas_view.render_coordinator is not None
 
     window.transform_action.trigger()
     assert window.overlay_manager.count == 14

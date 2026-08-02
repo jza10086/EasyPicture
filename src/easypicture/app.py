@@ -27,12 +27,15 @@ from easypicture.persistence import (
     ImageExportRequest,
     JpegExportOptions,
     PngExportOptions,
+    SvgExportOptions,
+    SvgVectorExportMode,
     TgaExportOptions,
     TiffExportOptions,
     WebpExportOptions,
     export_image,
     export_png,
     import_image,
+    import_svg,
     load_project,
     save_project,
 )
@@ -82,6 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="Export and reopen all supported still-image formats under DIR.",
     )
+    parser.add_argument(
+        "--svg-smoke-test",
+        type=Path,
+        metavar="DIR",
+        help="Import, persist, export and rasterize a static SVG under DIR.",
+    )
     return parser
 
 
@@ -120,6 +129,8 @@ def run(argv: Sequence[str] | None = None) -> int:
         return _run_io_smoke_test(options.io_smoke_test)
     if options.export_smoke_test is not None:
         return _run_export_smoke_test(options.export_smoke_test)
+    if options.svg_smoke_test is not None:
+        return _run_svg_smoke_test(options.svg_smoke_test)
     requested_backend = (
         RenderBackendKind(options.render_backend)
         if options.render_backend is not None
@@ -312,6 +323,69 @@ def _run_export_smoke_test(directory: Path) -> int:
         )
         return 0
     except Exception:
+        return 1
+
+
+def _run_svg_smoke_test(directory: Path) -> int:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        app = QApplication.instance() or QApplication(["easypicture-svg-smoke"])
+        _ = app
+        source = directory / "svg-smoke-source.svg"
+        source.write_text(
+            """
+            <svg xmlns="http://www.w3.org/2000/svg" width="128" height="96">
+              <rect id="background" x="8" y="8" width="112" height="80"
+                    rx="8" fill="#315a8a"/>
+              <circle id="marker" cx="64" cy="48" r="22" fill="#ff8a00"/>
+              <text id="caption" x="38" y="54" font-size="16">SVG</text>
+            </svg>
+            """,
+            encoding="utf-8",
+        )
+        token = CancellationToken()
+
+        def progress(_done: int, _total: int, _message: str) -> None:
+            return
+
+        imported = import_svg(source, token, progress)
+        snapshot = DocumentSnapshot.capture(imported.document)
+        project = directory / "svg-smoke.limg"
+        save_project(snapshot, project, token, progress)
+        reopened = load_project(project, token, progress)
+        preserved = export_image(
+            ImageExportRequest(
+                reopened.snapshot,
+                directory / "svg-smoke-preserved.svg",
+                SvgExportOptions(),
+            ),
+            token,
+            progress,
+        )
+        rasterized = export_image(
+            ImageExportRequest(
+                reopened.snapshot,
+                directory / "svg-smoke-rasterized.svg",
+                SvgExportOptions(SvgVectorExportMode.RASTERIZE_VECTOR),
+            ),
+            token,
+            progress,
+        )
+        diagnostics = {
+            "imported": imported.imported_count,
+            "skipped": imported.skipped_count,
+            "project": project.name,
+            "preserved": preserved.path.name,
+            "rasterized": rasterized.path.name,
+            "schema": 4,
+        }
+        (directory / "svg-diagnostics.json").write_text(
+            json.dumps(diagnostics, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return 0
+    except Exception:
+        logging.getLogger("easypicture.svg_smoke").exception("SVG smoke failed")
         return 1
 
 

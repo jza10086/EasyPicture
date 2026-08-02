@@ -1,6 +1,6 @@
 # EasyPicture
 
-EasyPicture 是一个面向 Windows 的本地离线轻量位图编辑器。当前仓库已实现至 P9C：
+EasyPicture 是一个面向 Windows 的本地离线轻量图像编辑器。当前仓库已实现至 P9B：
 包含单文档生命周期、分块像素/选区存储、多图层管理、完整帧
 OpenGL/软件显示、图层与像素撤销、常用图片导入、`.limg` 项目保存/恢复、自动恢复、
 七种常用图片导出，
@@ -25,9 +25,14 @@ P7A 颜色调整已完成验收：右侧非模态调整页提供反相、阈值�
 计算并原子替换预览，应用后只形成一个像素撤销命令，并支持 Enter 应用。P7B 完整导出
 已完成人工验收：统一窗口支持 PNG、JPEG、WebP、BMP、TIFF、TGA 和静态 GIF，提供格式参数、
 白色透明背景处理、ICC/元数据规则、原子覆盖、进度和取消。P9A 增加文字组和可编辑
-文字对象；P9C 将图层树统一为严格两级的栅格组/矢量组结构，文字保留为矢量元数据，
-使用 QTextLayout/QPainter 参与画布、缩略图和七种图片导出；`.limg` schema v3 兼容
-读取 v1/v2。富文本、SVG、任意深度子图层和嵌入字体仍未实现。
+文字对象；P9C 将图层树统一为严格两级的栅格组/矢量组结构。P9B 增加静态 SVG 导入与
+导出：每个受支持的 SVG 图元成为独立矢量子层，不支持或存在外部资源风险的内容会被跳过并
+汇总警告；SVG 导出会嵌入栅格组，并可选择保留矢量子层或将其栅格化。矢量组/子层也可通过
+图层右键菜单转换为普通栅格组。当前 `.limg` 仅支持正式发布前重置后的 schema v1，
+不读取开发期 v1～v4 项目。动画 SVG、脚本、
+外部资源、滤镜、富文本、任意深度子图层和嵌入字体仍未实现。
+所有普通图片和 SVG 导出均作为中立交换格式，不包含 EasyPicture 内部 UUID、图层树或应用身份；
+这些可编辑工程信息只保存在 `.limg`。
 
 P8 将项目收束为本机 0.1.0 稳定版：运行日志采用 UTF-8 轮转文件，未捕获异常和后台任务
 结果会写入日志；大图工作文件统一进入应用专属缓存并保守清理 24 小时前的遗留内容。
@@ -68,11 +73,12 @@ uv run python -m easypicture
 uv run python -m easypicture --smoke-test
 uv run python -m easypicture --io-smoke-test .cache\io-smoke
 uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\render-smoke
+uv run python -m easypicture --svg-smoke-test .cache\svg-smoke
 ```
 
 总体技术评估和开发路线见
 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段结果见
-[`docs/p9c_acceptance.md`](docs/p9c_acceptance.md)。界面输入控件约定见
+[`docs/p9b_acceptance.md`](docs/p9b_acceptance.md)。界面输入控件约定见
 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，P6A 结果见
 [`docs/p6a_acceptance.md`](docs/p6a_acceptance.md)，P6R 渲染重构见
 [`docs/p6r_acceptance.md`](docs/p6r_acceptance.md)，P6B 几何工具验收见

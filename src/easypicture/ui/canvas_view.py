@@ -32,8 +32,8 @@ from easypicture.domain import (
     Point,
     RasterLayer,
     Size,
-    TextObject,
     TransformMatrix,
+    VectorObject,
 )
 from easypicture.domain.document import Unsubscribe
 from easypicture.imaging import TransformInterpolation
@@ -146,11 +146,6 @@ class CanvasView(QGraphicsView):
     def render_coordinator(self) -> CanvasRenderCoordinator:
         return self._render_coordinator
 
-    @property
-    def renderer(self) -> CanvasRenderCoordinator | None:
-        """Compatibility alias for P6A callers while P6R lands."""
-        return self._render_coordinator if self._document is not None else None
-
     def set_tool_controller(self, controller: ToolController) -> None:
         self._tool_controller = controller
 
@@ -235,7 +230,7 @@ class CanvasView(QGraphicsView):
     def replace_vector_preview(
         self,
         group_id: UUID,
-        objects: tuple[TextObject, ...],
+        objects: tuple[VectorObject, ...],
     ) -> None:
         if self._document is not None:
             self._render_coordinator.replace_vector_preview(group_id, objects)

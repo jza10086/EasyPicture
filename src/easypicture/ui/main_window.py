@@ -43,9 +43,10 @@ from easypicture.domain import (
     DocumentEvent,
     GroupListChanged,
     GroupMembersChanged,
-    LayerTreeChanged,
     Point,
     Size,
+    SvgElementObject,
+    TextObject,
 )
 from easypicture.imaging import (
     BACKGROUND_SELECTION_PIXEL_THRESHOLD,
@@ -123,6 +124,7 @@ from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.shape_properties import ShapePropertiesPanel
+from easypicture.ui.svg_properties import SvgPropertiesPanel
 from easypicture.ui.text_properties import TextPropertiesPanel
 from easypicture.ui.tool_options import ToolOptionsPanel
 from easypicture.ui.transform_properties import TransformPropertiesPanel
@@ -593,6 +595,8 @@ class MainWindow(QMainWindow):
         self.properties_stack.addWidget(self.shape_properties)
         self.text_properties = TextPropertiesPanel(self.controller.commands, self)
         self.properties_stack.addWidget(self.text_properties)
+        self.svg_properties = SvgPropertiesPanel(self.controller.commands, self)
+        self.properties_stack.addWidget(self.svg_properties)
         self.properties_stack.addWidget(self.color_adjustment_panel)
         self.color_adjustment_controller = ColorAdjustmentController(
             self.canvas_view,
@@ -1337,7 +1341,7 @@ class MainWindow(QMainWindow):
     def _on_layer_node_selected(self, node: object) -> None:
         from easypicture.domain import TextObject
 
-        self._selected_vector_object = isinstance(node, TextObject)
+        self._selected_vector_object = isinstance(node, (TextObject, SvgElementObject))
         if isinstance(node, TextObject):
             self.text_properties.set_object(node)
             self.properties_stack.setCurrentWidget(self.text_properties)
@@ -1346,6 +1350,12 @@ class MainWindow(QMainWindow):
             if not self._editing_busy:
                 self.tool_actions["transform"].setChecked(True)
                 self._activate_tool("transform")
+        elif isinstance(node, SvgElementObject):
+            self.text_properties.set_object(None)
+            self.svg_properties.set_object(node)
+            self.properties_stack.setCurrentWidget(self.svg_properties)
+            self.properties_dock.show()
+            self.properties_dock.raise_()
         elif isinstance(self.tool_controller.active_tool, TextTransformTool):
             self.tool_actions["brush"].setChecked(True)
             self._activate_tool("brush")
@@ -1354,8 +1364,10 @@ class MainWindow(QMainWindow):
     def _warn_missing_text_fonts(self, document: Document | None) -> None:
         if document is None:
             return
-        for group in document.text_groups:
+        for group in document.vector_groups:
             for text_object in group.children:
+                if not isinstance(text_object, TextObject):
+                    continue
                 family = text_object.font_family
                 if family in self._warned_text_fonts or QFontDatabase.hasFamily(family):
                     continue
@@ -1440,12 +1452,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Restore expansion after Qt finishes processing a model reset.
 
-        A single command can emit several tree events (for example
-        ``LayerTreeChanged`` followed by ``GroupListChanged``).  Restoring
-        synchronously after the first event lets the next reset discard the
-        restoration and collapse the tree.  Coalescing the whole event burst
-        and applying it on the next event-loop turn keeps the user's state
-        authoritative while still allowing Qt to finish its reset handling.
+        Coalescing a structural event burst and applying it on the next event-loop
+        turn keeps the user's state authoritative while Qt finishes reset handling.
         """
         if preserved is not None and self._pending_group_expansion is None:
             self._pending_group_expansion = dict(preserved)
@@ -1693,7 +1701,7 @@ class MainWindow(QMainWindow):
     def _on_document_event(self, event: DocumentEvent) -> None:
         tree_reset_event = isinstance(
             event,
-            (LayerTreeChanged, GroupListChanged, GroupMembersChanged),
+            (GroupListChanged, GroupMembersChanged),
         )
         preserved_expansion = (
             self._capture_group_expansion()

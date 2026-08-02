@@ -11,7 +11,6 @@ from uuid import UUID
 import numpy as np
 from PIL import Image, features
 
-from easypicture import __version__
 from easypicture.jobs import CancellationToken
 from easypicture.jobs.runner import ProgressSink
 from easypicture.persistence.image_buffers import (
@@ -32,6 +31,12 @@ class ExportFormat(StrEnum):
     TIFF = "tiff"
     TGA = "tga"
     GIF = "gif"
+    SVG = "svg"
+
+
+class SvgVectorExportMode(StrEnum):
+    PRESERVE_VECTOR = "preserve_vector"
+    RASTERIZE_VECTOR = "rasterize_vector"
 
 
 class TiffCompression(StrEnum):
@@ -96,6 +101,11 @@ class GifExportOptions:
             raise ValueError("GIF alpha threshold must be between 0 and 255")
 
 
+@dataclass(frozen=True, slots=True)
+class SvgExportOptions:
+    vector_mode: SvgVectorExportMode = SvgVectorExportMode.PRESERVE_VECTOR
+
+
 ImageExportOptions = (
     PngExportOptions
     | JpegExportOptions
@@ -104,6 +114,7 @@ ImageExportOptions = (
     | TiffExportOptions
     | TgaExportOptions
     | GifExportOptions
+    | SvgExportOptions
 )
 
 
@@ -140,6 +151,7 @@ _FORMAT_CODES = {
     ExportFormat.TIFF: "TIFF",
     ExportFormat.TGA: "TGA",
     ExportFormat.GIF: "GIF",
+    ExportFormat.SVG: "SVG",
 }
 _CANONICAL_EXTENSIONS = {
     ExportFormat.PNG: ".png",
@@ -149,6 +161,7 @@ _CANONICAL_EXTENSIONS = {
     ExportFormat.TIFF: ".tiff",
     ExportFormat.TGA: ".tga",
     ExportFormat.GIF: ".gif",
+    ExportFormat.SVG: ".svg",
 }
 _EXTENSION_ALIASES = {
     ExportFormat.PNG: frozenset({".png"}),
@@ -158,6 +171,7 @@ _EXTENSION_ALIASES = {
     ExportFormat.TIFF: frozenset({".tif", ".tiff"}),
     ExportFormat.TGA: frozenset({".tga"}),
     ExportFormat.GIF: frozenset({".gif"}),
+    ExportFormat.SVG: frozenset({".svg"}),
 }
 
 
@@ -176,6 +190,8 @@ def export_format_for_options(options: ImageExportOptions) -> ExportFormat:
         return ExportFormat.TGA
     if isinstance(options, GifExportOptions):
         return ExportFormat.GIF
+    if isinstance(options, SvgExportOptions):
+        return ExportFormat.SVG
     raise TypeError(f"unsupported export options: {type(options)!r}")
 
 
@@ -194,6 +210,8 @@ def default_export_options(export_format: ExportFormat) -> ImageExportOptions:
         return TgaExportOptions()
     if export_format is ExportFormat.GIF:
         return GifExportOptions()
+    if export_format is ExportFormat.SVG:
+        return SvgExportOptions()
     raise ValueError(f"unsupported export format: {export_format!r}")
 
 
@@ -228,6 +246,7 @@ def detect_export_capabilities() -> tuple[ExportCapability, ...]:
         ),
         ExportFormat.TGA: ("TGA" in registered, "Pillow 未提供 TGA 编码器"),
         ExportFormat.GIF: ("GIF" in registered, "Pillow 未提供 GIF 编码器"),
+        ExportFormat.SVG: (True, None),
     }
     return tuple(
         ExportCapability(export_format, available, None if available else reason)
@@ -246,6 +265,11 @@ def export_image(
     )
     if not capability.available:
         raise RuntimeError(capability.reason or "导出编码器不可用")
+
+    if isinstance(request.options, SvgExportOptions):
+        from easypicture.persistence.svg_export import export_svg
+
+        return export_svg(request, token, progress)
 
     destination = normalize_export_path(Path(request.path), export_format)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -304,7 +328,6 @@ def _prepare_image(
     clean_rgba = Image.fromarray(rgba, "RGBA")
     clean_rgba.info.clear()
     profile = srgb_profile_bytes()
-    software = f"EasyPicture {__version__}"
     if isinstance(options, PngExportOptions):
         return clean_rgba, {
             "compress_level": options.compression,
@@ -340,7 +363,6 @@ def _prepare_image(
         return clean_rgba, {
             "compression": compression,
             "icc_profile": profile,
-            "software": software,
         }
     if isinstance(options, TgaExportOptions):
         kwargs: dict[str, object] = {"orientation": 1}
@@ -536,6 +558,8 @@ __all__ = [
     "TiffCompression",
     "TiffExportOptions",
     "WebpExportOptions",
+    "SvgExportOptions",
+    "SvgVectorExportMode",
     "canonical_extension",
     "default_export_options",
     "detect_export_capabilities",

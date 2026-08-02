@@ -57,18 +57,17 @@ from easypicture.domain import (
     GroupListChanged,
     GroupMembersChanged,
     GroupPropertiesChanged,
-    LayerListChanged,
     LayerPixelsChanged,
     LayerPropertiesChanged,
-    LayerTreeChanged,
     RasterGroupLayer,
     RasterLayer,
+    SvgElementObject,
     TextObject,
-    TextObjectChanged,
     VectorGroupLayer,
-    VectorGroupPropertiesChanged,
+    VectorObject,
+    VectorObjectChanged,
 )
-from easypicture.render import paint_text_objects, rgba_tile_to_qimage
+from easypicture.render import paint_vector_objects, rgba_tile_to_qimage
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 
 LAYER_MIME_TYPE = "application/x-easypicture-layer-id"
@@ -238,7 +237,7 @@ def _render_raster_group_thumbnail(
 
 
 def _render_text_thumbnail(
-    objects: Sequence[TextObject],
+    objects: Sequence[VectorObject],
     document_width: int,
     document_height: int,
     *,
@@ -251,7 +250,7 @@ def _render_text_thumbnail(
         QImage.Format.Format_RGBA8888_Premultiplied,
     )
     thumbnail.fill(QColor("#1b1b1b"))
-    if normalize_single and len(objects) == 1:
+    if normalize_single and len(objects) == 1 and isinstance(objects[0], TextObject):
         source_width = max(1.0, objects[0].frame.width)
         source_height = max(1.0, objects[0].frame.height)
     else:
@@ -281,16 +280,16 @@ def _render_text_thumbnail(
     painter.setClipRect(left, top, content_width, content_height)
     painter.translate(left, top)
     painter.scale(scale, scale)
-    if normalize_single and len(objects) == 1:
+    if normalize_single and len(objects) == 1 and isinstance(objects[0], TextObject):
         source = objects[0]
         normalized = replace(
             source,
             frame=FloatRect(0.0, 0.0, source.frame.width, source.frame.height),
             transform=AffineTransform(),
         )
-        paint_text_objects(painter, (normalized,), group_opacity=group_opacity)
+        paint_vector_objects(painter, (normalized,), group_opacity=group_opacity)
     else:
-        paint_text_objects(painter, objects, group_opacity=group_opacity)
+        paint_vector_objects(painter, objects, group_opacity=group_opacity)
     painter.restore()
     painter.setPen(QPen(QColor("#151515"), 1.0))
     painter.drawRect(left, top, content_width - 1, content_height - 1)
@@ -451,7 +450,7 @@ class LayerListModel(QAbstractListModel):
         return len(self._document.layers) - 1 - storage_index
 
     def handle_event(self, event: DocumentEvent) -> None:
-        if isinstance(event, LayerListChanged):
+        if isinstance(event, (GroupListChanged, GroupMembersChanged)):
             self._thumbnail_cache.clear()
             self.beginResetModel()
             self.endResetModel()
@@ -547,7 +546,7 @@ class LayerTreeModel(QAbstractItemModel):
             return ()
         return tuple(reversed(self._document.nodes))
 
-    def _children(self, node: object) -> tuple[RasterLayer | TextObject, ...]:
+    def _children(self, node: object) -> tuple[RasterLayer | VectorObject, ...]:
         if isinstance(node, RasterGroupLayer):
             return tuple(reversed(node.children))
         if isinstance(node, VectorGroupLayer):
@@ -571,7 +570,7 @@ class LayerTreeModel(QAbstractItemModel):
         if not index.isValid() or self._document is None:
             return QModelIndex()
         child = index.internalPointer()
-        if not isinstance(child, (RasterLayer, TextObject)):
+        if not isinstance(child, (RasterLayer, TextObject, SvgElementObject)):
             return QModelIndex()
         for root_row, root in enumerate(self._roots()):
             if isinstance(root, (RasterGroupLayer, VectorGroupLayer)) and any(
@@ -592,11 +591,14 @@ class LayerTreeModel(QAbstractItemModel):
     def node_for_index(
         self,
         index: ModelIndex,
-    ) -> RasterGroupLayer | RasterLayer | VectorGroupLayer | TextObject | None:
+    ) -> RasterGroupLayer | RasterLayer | VectorGroupLayer | VectorObject | None:
         if not index.isValid():
             return None
         node = index.internalPointer()
-        if isinstance(node, (RasterGroupLayer, RasterLayer, VectorGroupLayer, TextObject)):
+        if isinstance(
+            node,
+            (RasterGroupLayer, RasterLayer, VectorGroupLayer, TextObject, SvgElementObject),
+        ):
             return node
         return None
 
@@ -625,7 +627,7 @@ class LayerTreeModel(QAbstractItemModel):
                 return f"栅格组；不透明度 {node.opacity * 100:.0f}%"
             if isinstance(node, VectorGroupLayer):
                 return f"矢量组；不透明度 {node.opacity * 100:.0f}%"
-            if isinstance(node, TextObject):
+            if isinstance(node, (TextObject, SvgElementObject)):
                 return f"文字；不透明度 {node.opacity * 100:.0f}%"
             locks = []
             if node.locked:
@@ -712,7 +714,7 @@ class LayerTreeModel(QAbstractItemModel):
                     destination.id,
                     max(0, target_index),
                 )
-            if isinstance(source, TextObject):
+            if isinstance(source, (TextObject, SvgElementObject)):
                 destination_vector = self.node_for_index(parent)
                 if not isinstance(destination_vector, VectorGroupLayer):
                     return False
@@ -779,7 +781,7 @@ class LayerTreeModel(QAbstractItemModel):
         return False
 
     def handle_event(self, event: DocumentEvent) -> None:
-        if isinstance(event, (LayerTreeChanged, GroupListChanged, GroupMembersChanged)):
+        if isinstance(event, (GroupListChanged, GroupMembersChanged)):
             self.beginResetModel()
             self._thumbnail_cache.clear()
             self.endResetModel()
@@ -813,8 +815,7 @@ class LayerTreeModel(QAbstractItemModel):
             event,
             (
                 LayerPropertiesChanged,
-                TextObjectChanged,
-                VectorGroupPropertiesChanged,
+                VectorObjectChanged,
                 GroupPropertiesChanged,
             ),
         ):
@@ -840,7 +841,7 @@ class LayerTreeModel(QAbstractItemModel):
 
     def _thumbnail(
         self,
-        node: RasterGroupLayer | RasterLayer | VectorGroupLayer | TextObject,
+        node: RasterGroupLayer | RasterLayer | VectorGroupLayer | VectorObject,
     ) -> QIcon:
         cached = self._thumbnail_cache.get(node.id)
         if cached is not None:
@@ -1170,7 +1171,7 @@ class LayerPanel(QWidget):
         self.tree_view.selectionModel().currentChanged.connect(self._on_tree_current_changed)
         self.new_button.clicked.connect(self.commands.create_layer)
         self.new_group_button.clicked.connect(self._create_raster_group)
-        self.new_vector_group_button.clicked.connect(self._create_text_group)
+        self.new_vector_group_button.clicked.connect(self._create_vector_group)
         self.delete_button.clicked.connect(self._delete_current)
         self.duplicate_button.clicked.connect(self._duplicate_current)
         self.up_button.clicked.connect(self._move_current_up)
@@ -1193,7 +1194,7 @@ class LayerPanel(QWidget):
     def handle_event(self, event: DocumentEvent) -> None:
         self.model.handle_event(event)
         self.tree_model.handle_event(event)
-        if isinstance(event, (LayerListChanged, ActiveLayerChanged)):
+        if isinstance(event, (GroupListChanged, GroupMembersChanged, ActiveLayerChanged)):
             self._sync_active_layer()
         elif isinstance(event, LayerPropertiesChanged):
             document = self.model.document
@@ -1216,14 +1217,17 @@ class LayerPanel(QWidget):
 
     def current_node(
         self,
-    ) -> RasterGroupLayer | RasterLayer | VectorGroupLayer | TextObject | None:
+    ) -> RasterGroupLayer | RasterLayer | VectorGroupLayer | VectorObject | None:
         if self.tree_view.isVisible():
             return self.tree_model.node_for_index(self.tree_view.currentIndex())
         return self.current_layer()
 
     def select_node(self, node: object) -> None:
         """Select a node from a canvas tool without changing document content."""
-        if not isinstance(node, (RasterGroupLayer, RasterLayer, VectorGroupLayer, TextObject)):
+        if not isinstance(
+            node,
+            (RasterGroupLayer, RasterLayer, VectorGroupLayer, TextObject, SvgElementObject),
+        ):
             return
         if self.tree_view.isVisible():
             index = self._tree_index_for_id(node.id)
@@ -1301,11 +1305,11 @@ class LayerPanel(QWidget):
                     return child_index
         return QModelIndex()
 
-    def _create_text_group(self) -> None:
+    def _create_vector_group(self) -> None:
         document = self.model.document
         if document is None or not self.commands.create_vector_group():
             return
-        self.select_node(document.text_groups[-1])
+        self.select_node(document.vector_groups[-1])
 
     def _create_raster_group(self) -> None:
         document = self.model.document
@@ -1323,13 +1327,13 @@ class LayerPanel(QWidget):
         if isinstance(node, VectorGroupLayer):
             group = node
             insertion_index = None
-        elif isinstance(node, TextObject):
+        elif isinstance(node, (TextObject, SvgElementObject)):
             group, selected_object = document.text_object_by_id(node.id)
             insertion_index = group.children.index(selected_object)
         else:
             if not self.commands.create_vector_group():
                 return
-            group = document.text_groups[-1]
+            group = document.vector_groups[-1]
             insertion_index = None
         if self.commands.create_text_object(group.id, index=insertion_index):
             created = (
@@ -1345,29 +1349,55 @@ class LayerPanel(QWidget):
             self.commands.delete_layer(node.id)
         elif isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
             self.commands.delete_group(node.id)
-        elif isinstance(node, TextObject):
+        elif isinstance(node, (TextObject, SvgElementObject)):
             self.commands.delete_text_object(node.id)
 
     def _show_context_menu(self, position: QPoint) -> None:
         """Show Blender-like actions for the row under the pointer."""
         index = self.tree_view.indexAt(position)
-        if not index.isValid():
-            return
-        self.tree_view.setCurrentIndex(index)
         menu = QMenu(self)
-        duplicate_action = menu.addAction("复制")
-        move_up_action = menu.addAction("上移")
-        move_down_action = menu.addAction("下移")
-        delete_action = menu.addAction("删除")
-        duplicate_action.setEnabled(self.duplicate_button.isEnabled())
-        move_up_action.setEnabled(self.up_button.isEnabled())
-        move_down_action.setEnabled(self.down_button.isEnabled())
-        delete_action.setEnabled(self.delete_button.isEnabled())
-        duplicate_action.triggered.connect(self._duplicate_current)
-        move_up_action.triggered.connect(self._move_current_up)
-        move_down_action.triggered.connect(self._move_current_down)
-        delete_action.triggered.connect(self._delete_current)
+        if index.isValid():
+            self.tree_view.setCurrentIndex(index)
+            node = self.current_node()
+            duplicate_action = menu.addAction("复制")
+            move_up_action = menu.addAction("上移")
+            move_down_action = menu.addAction("下移")
+            delete_action = menu.addAction("删除")
+            duplicate_action.setEnabled(self.duplicate_button.isEnabled())
+            move_up_action.setEnabled(self.up_button.isEnabled())
+            move_down_action.setEnabled(self.down_button.isEnabled())
+            delete_action.setEnabled(self.delete_button.isEnabled())
+            duplicate_action.triggered.connect(self._duplicate_current)
+            move_up_action.triggered.connect(self._move_current_up)
+            move_down_action.triggered.connect(self._move_current_down)
+            delete_action.triggered.connect(self._delete_current)
+            if isinstance(node, (VectorGroupLayer, TextObject, SvgElementObject)):
+                rasterize_action = menu.addAction("栅格化")
+                parent_locked = False
+                document = self.model.document
+                if (
+                    document is not None
+                    and isinstance(node, (TextObject, SvgElementObject))
+                ):
+                    try:
+                        parent_locked = document.vector_object_by_id(node.id)[0].locked
+                    except ValueError:
+                        parent_locked = True
+                rasterize_action.setEnabled(not node.locked and not parent_locked)
+                rasterize_action.triggered.connect(self._rasterize_current)
+            menu.addSeparator()
+        expand_all_action = menu.addAction("全部展开")
+        collapse_all_action = menu.addAction("全部折叠")
+        expand_all_action.triggered.connect(self.tree_view.expandAll)
+        collapse_all_action.triggered.connect(self.tree_view.collapseAll)
         menu.exec(self.tree_view.viewport().mapToGlobal(position))
+
+    def _rasterize_current(self) -> None:
+        node = self.current_node()
+        if isinstance(node, VectorGroupLayer):
+            self.commands.rasterize_vector_group(node.id)
+        elif isinstance(node, (TextObject, SvgElementObject)):
+            self.commands.rasterize_vector_object(node.id)
 
     def _ungroup_current(self) -> None:
         node = self.current_node()
@@ -1380,7 +1410,7 @@ class LayerPanel(QWidget):
             self.commands.duplicate_layer(node.id)
         elif isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
             self.commands.duplicate_group(node.id)
-        elif isinstance(node, TextObject):
+        elif isinstance(node, (TextObject, SvgElementObject)):
             self.commands.duplicate_text_object(node.id)
 
     def _move_current_up(self) -> None:
@@ -1397,7 +1427,7 @@ class LayerPanel(QWidget):
             if index < len(document.nodes) - 1:
                 self.commands.move_group(node.id, index + 1)
         else:
-            group, _ = document.text_object_by_id(node.id)
+            group, _ = document.vector_object_by_id(node.id)
             index = group.children.index(node)
             if index < len(group.children) - 1:
                 self.commands.move_text_object(node.id, index + 1)
@@ -1429,7 +1459,7 @@ class LayerPanel(QWidget):
             self.commands.set_layer_opacity(node.id, self.opacity_spin.value() / 100.0)
         elif isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
             self.commands.set_group_opacity(node.id, self.opacity_spin.value() / 100.0)
-        elif isinstance(node, TextObject):
+        elif isinstance(node, (TextObject, SvgElementObject)):
             self.commands.set_text_object_opacity(
                 node.id, self.opacity_spin.value() / 100.0
             )
@@ -1442,7 +1472,7 @@ class LayerPanel(QWidget):
             self.commands.set_layer_locked(node.id, locked)
         elif isinstance(node, (RasterGroupLayer, VectorGroupLayer)):
             self.commands.set_group_locked(node.id, locked)
-        elif isinstance(node, TextObject):
+        elif isinstance(node, (TextObject, SvgElementObject)):
             self.commands.set_text_object_locked(node.id, locked)
 
     def _commit_alpha_locked(self, locked: bool) -> None:

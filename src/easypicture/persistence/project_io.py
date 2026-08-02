@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 import zipfile
 import zlib
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import numpy as np
 from PIL import Image
@@ -25,6 +26,7 @@ from easypicture.domain import (
     PixelPoint,
     Point,
     Size,
+    SvgElementObject,
     TextHorizontalAlignment,
     TextObject,
     TextVerticalAlignment,
@@ -34,11 +36,12 @@ from easypicture.domain.document import MAX_DOCUMENT_DIMENSION, MAX_DOCUMENT_LAY
 from easypicture.jobs import CancellationToken
 from easypicture.jobs.runner import ProgressSink
 from easypicture.persistence.image_io import create_thumbnail_png
-from easypicture.persistence.migrations import CURRENT_SCHEMA_VERSION, migrate_manifest
+from easypicture.persistence.schema import PROJECT_SCHEMA_VERSION, require_current_schema
 from easypicture.persistence.snapshots import (
     DocumentSnapshot,
     LayerSnapshot,
     RasterGroupSnapshot,
+    SvgElementSnapshot,
     TextObjectSnapshot,
     VectorGroupSnapshot,
 )
@@ -53,6 +56,9 @@ MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024
 MAX_DECODED_BYTES = 4 * 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 1000
 MAX_ARCHIVE_ENTRIES = MAX_DOCUMENT_LAYERS * 1024 + 1027
+MAX_SVG_RESOURCE_BYTES = 16 * 1024 * 1024
+MAX_SVG_DECODED_BYTES = 256 * 1024 * 1024
+_SVG_URL_PATTERN = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
 RGBA_TILE_BYTES = DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE * 4
 MASK_TILE_BYTES = DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE
 
@@ -89,12 +95,11 @@ def save_project(
     try:
         thumbnail, thumbnail_size = create_thumbnail_png(snapshot, token, progress)
         token.raise_if_cancelled()
-        manifest_layers: list[dict[str, Any]] = []
         manifest_layers_by_id: dict[UUID, dict[str, Any]] = {}
         manifest_nodes: list[dict[str, Any]] = []
         selection_tiles: list[dict[str, Any]] = []
         total_tiles = (
-            sum(layer.pixels.allocated_tile_count for layer in snapshot.layers)
+            sum(layer.pixels.allocated_tile_count for layer in snapshot.raster_layers)
             + snapshot.selection.allocated_tile_count
         )
         completed = 0
@@ -106,7 +111,7 @@ def save_project(
             allowZip64=True,
         ) as archive:
             _write_entry(archive, THUMBNAIL_PATH, thumbnail)
-            for layer in snapshot.layers:
+            for layer in snapshot.raster_layers:
                 descriptors: list[dict[str, Any]] = []
                 for coord, tile in layer.pixels.iter_allocated_tiles():
                     token.raise_if_cancelled()
@@ -142,7 +147,6 @@ def save_project(
                     "alpha_locked": layer.alpha_locked,
                     "tiles": descriptors,
                 }
-                manifest_layers.append(layer_manifest)
                 manifest_layers_by_id[layer.id] = layer_manifest
 
             for coord, tile in snapshot.selection.iter_allocated_tiles():
@@ -182,6 +186,18 @@ def save_project(
                         }
                     )
                 elif isinstance(node, VectorGroupSnapshot):
+                    vector_children: list[dict[str, Any]] = []
+                    for child in node.children:
+                        if isinstance(child, TextObjectSnapshot):
+                            vector_children.append(_text_object_manifest(child))
+                            continue
+                        raw_svg = child.svg.encode("utf-8")
+                        member = f"vectors/{child.id}.svg.z"
+                        encoded = zlib.compress(raw_svg, level=1)
+                        _write_entry(archive, member, encoded)
+                        vector_children.append(
+                            _svg_object_manifest(child, member, raw_svg)
+                        )
                     manifest_nodes.append(
                         {
                             "type": "vector_group",
@@ -190,29 +206,12 @@ def save_project(
                             "visible": node.visible,
                             "opacity": node.opacity,
                             "locked": node.locked,
-                            "children": [
-                                _text_object_manifest(child) for child in node.children
-                            ],
+                            "children": vector_children,
                         }
                     )
-            if not snapshot.nodes:
-                manifest_nodes.append(
-                    {
-                        "type": "raster_group",
-                        "id": str(uuid4()),
-                        "name": "栅格组",
-                        "visible": True,
-                        "opacity": 1.0,
-                        "locked": False,
-                        "children": [
-                            manifest_layers_by_id[layer.id] for layer in snapshot.layers
-                        ],
-                    }
-                )
-
             manifest = {
                 "format": PROJECT_FORMAT,
-                "schema_version": CURRENT_SCHEMA_VERSION,
+                "schema_version": PROJECT_SCHEMA_VERSION,
                 "app_version": __version__,
                 "document_id": str(snapshot.document_id),
                 "canvas": {
@@ -223,8 +222,6 @@ def save_project(
                 "active_layer_id": str(snapshot.active_layer_id),
                 "source_name": snapshot.source_name,
                 "nodes": manifest_nodes,
-                # Kept as a compatibility mirror for v1 tooling and diagnostics.
-                "layers": manifest_layers,
                 "selection": {"tiles": selection_tiles},
                 "thumbnail": {
                     "path": THUMBNAIL_PATH,
@@ -316,9 +313,10 @@ def _read_project(
         if not isinstance(manifest_value, dict):
             raise ProjectFormatError("project manifest must be an object")
         try:
-            manifest = migrate_manifest(manifest_value)
+            require_current_schema(manifest_value)
         except ValueError as error:
             raise ProjectFormatError(str(error)) from error
+        manifest = manifest_value
 
         if manifest.get("format") != PROJECT_FORMAT:
             raise ProjectFormatError("project format marker is invalid")
@@ -331,27 +329,12 @@ def _read_project(
         size = Size(width, height)
         active_layer_id = _uuid_field(manifest, "active_layer_id")
         source_name = _optional_filename(manifest.get("source_name"))
-        layers_value = manifest.get("layers")
-        if layers_value is not None and (
-            not isinstance(layers_value, list)
-            or not 1 <= len(layers_value) <= MAX_DOCUMENT_LAYERS
-        ):
-            raise ProjectFormatError("project layer count is invalid")
-        nodes_value = manifest.get("nodes", layers_value)
+        nodes_value = manifest.get("nodes")
         if (
             not isinstance(nodes_value, list)
             or not 1 <= len(nodes_value) <= MAX_DOCUMENT_LAYERS
         ):
             raise ProjectFormatError("project node count is invalid")
-        legacy_layers_by_id: dict[UUID, dict[str, Any]] = {}
-        if isinstance(layers_value, list):
-            for legacy_layer in layers_value:
-                if not isinstance(legacy_layer, dict):
-                    raise ProjectFormatError("layer entry must be an object")
-                legacy_id = _uuid_field(legacy_layer, "id")
-                if legacy_id in legacy_layers_by_id:
-                    raise ProjectFormatError("layer UUIDs must be unique")
-                legacy_layers_by_id[legacy_id] = legacy_layer
         raster_node_values: list[dict[str, Any]] = []
         group_node_values: list[dict[str, Any]] = []
         raster_group_values: list[dict[str, Any]] = []
@@ -381,11 +364,10 @@ def _read_project(
                     if not isinstance(child, dict) or child.get("type") != "raster":
                         raise ProjectFormatError("raster group contains an invalid child")
                     child_id = _uuid_field(child, "id")
-                    source = legacy_layers_by_id.get(child_id, child)
                     if child_id in root_ids:
                         raise ProjectFormatError("node UUIDs must be unique")
                     root_ids.add(child_id)
-                    raster_node_values.append(source)
+                    raster_node_values.append(child)
             else:
                 group_node_values.append(node_value)
         if not raster_node_values:
@@ -432,6 +414,8 @@ def _read_project(
                 or any(abs(value) > MAX_DOCUMENT_DIMENSION * 4 for value in origin_value)
             ):
                 raise ProjectFormatError("layer origin is invalid")
+            if layer_size != size or origin_value != [0, 0]:
+                raise ProjectFormatError("raster layer geometry must match the canvas")
             visible = _bool_field(layer_value, "visible")
             locked = _bool_field(layer_value, "locked")
             alpha_locked = _bool_field(layer_value, "alpha_locked")
@@ -519,9 +503,20 @@ def _read_project(
             )
         group_snapshots_by_id: dict[UUID, VectorGroupSnapshot] = {}
         used_object_ids = set(layer_ids) | root_ids
+        decoded_counter = [decoded_total]
+        svg_decoded_counter = [0]
         for group_value in group_node_values:
-            group_snapshot = _parse_text_group(group_value, used_object_ids)
+            group_snapshot = _parse_vector_group(
+                group_value,
+                used_object_ids,
+                archive,
+                by_name,
+                expected_names,
+                decoded_counter,
+                svg_decoded_counter,
+            )
             group_snapshots_by_id[group_snapshot.id] = group_snapshot
+        decoded_total = decoded_counter[0]
 
         node_snapshots: list[RasterGroupSnapshot | VectorGroupSnapshot] = []
         for node_value in nodes_value:
@@ -588,7 +583,6 @@ def _read_project(
             document_id=document_id,
             revision=0,
             size=size,
-            layers=tuple(layer_snapshots),
             active_layer_id=active_layer_id,
             selection=selection_store,
             project_path=original_path if is_recovery else path,
@@ -624,7 +618,7 @@ def _text_object_manifest(text_object: TextObjectSnapshot) -> dict[str, Any]:
     # The snapshot type is deliberately duck-typed here to keep this module's
     # archive code independent from the domain implementation details.
     return {
-        "type": "text",
+        "type": "svg_text",
         "id": str(text_object.id),
         "name": text_object.name,
         "text": text_object.text,
@@ -661,24 +655,90 @@ def _text_object_manifest(text_object: TextObjectSnapshot) -> dict[str, Any]:
     }
 
 
-def _parse_text_group(
+def _svg_object_manifest(
+    element: SvgElementSnapshot,
+    member: str,
+    raw_svg: bytes,
+) -> dict[str, Any]:
+    return {
+        "type": "svg_element",
+        "id": str(element.id),
+        "name": element.name,
+        "element_kind": element.element_kind,
+        "resource": {
+            "path": member,
+            "encoding": "svg-utf8-zlib",
+            "raw_size": len(raw_svg),
+            "sha256": hashlib.sha256(raw_svg).hexdigest(),
+        },
+        "bounds": [
+            element.intrinsic_bounds.x,
+            element.intrinsic_bounds.y,
+            element.intrinsic_bounds.width,
+            element.intrinsic_bounds.height,
+        ],
+        "transform": list(element.transform.values),
+        "transform_pivot": (
+            None
+            if element.transform_pivot is None
+            else [element.transform_pivot.x, element.transform_pivot.y]
+        ),
+        "fill_override": (
+            None if element.fill_override is None else list(element.fill_override)
+        ),
+        "stroke_override": (
+            None if element.stroke_override is None else list(element.stroke_override)
+        ),
+        "stroke_width_override": element.stroke_width_override,
+        "visible": element.visible,
+        "opacity": element.opacity,
+        "locked": element.locked,
+    }
+
+
+def _parse_vector_group(
     value: dict[str, Any],
     used_ids: set[UUID],
+    archive: zipfile.ZipFile,
+    by_name: dict[str, zipfile.ZipInfo],
+    expected_names: set[str],
+    decoded_counter: list[int],
+    svg_decoded_counter: list[int],
 ) -> VectorGroupSnapshot:
     group_id = _uuid_field(value, "id")
     name = value.get("name")
     if not isinstance(name, str) or not name.strip() or len(name) > 1024:
-        raise ProjectFormatError("text group name is invalid")
+        raise ProjectFormatError("vector group name is invalid")
     visible = _bool_field(value, "visible")
     locked = _bool_field(value, "locked")
     opacity = _bounded_float(value, "opacity", 0.0, 1.0)
     children_value = value.get("children")
     if not isinstance(children_value, list) or len(children_value) > 256:
-        raise ProjectFormatError("text group children are invalid")
-    snapshots: list[TextObjectSnapshot] = []
+        raise ProjectFormatError("vector group children are invalid")
+    snapshots: list[TextObjectSnapshot | SvgElementSnapshot] = []
     for child_value in children_value:
-        if not isinstance(child_value, dict) or child_value.get("type") != "text":
-            raise ProjectFormatError("text group contains an invalid child")
+        if not isinstance(child_value, dict):
+            raise ProjectFormatError("vector group contains an invalid child")
+        child_type = child_value.get("type")
+        if child_type == "svg_element":
+            svg_snapshot, member, raw_size = _parse_svg_element(
+                child_value,
+                archive,
+                by_name,
+            )
+            if svg_snapshot.id in used_ids:
+                raise ProjectFormatError("project node UUIDs must be globally unique")
+            used_ids.add(svg_snapshot.id)
+            expected_names.add(member)
+            decoded_counter[0] += raw_size
+            _check_decoded_total(decoded_counter[0])
+            svg_decoded_counter[0] += raw_size
+            if svg_decoded_counter[0] > MAX_SVG_DECODED_BYTES:
+                raise ProjectFormatError("project SVG resources exceed the size limit")
+            snapshots.append(svg_snapshot)
+            continue
+        if child_type != "svg_text":
+            raise ProjectFormatError("vector group contains an invalid child")
         object_id = _uuid_field(child_value, "id")
         if object_id in used_ids:
             raise ProjectFormatError("project node UUIDs must be globally unique")
@@ -720,10 +780,7 @@ def _parse_text_group(
             )
         ):
             raise ProjectFormatError("text color is invalid")
-        stroke_value = child_value.get(
-            "stroke",
-            {"color": [0, 0, 0, 255], "width": 0.0},
-        )
+        stroke_value = child_value.get("stroke")
         if not isinstance(stroke_value, dict):
             raise ProjectFormatError("text stroke is invalid")
         stroke_color_value = stroke_value.get("color")
@@ -741,7 +798,7 @@ def _parse_text_group(
         stroke_width = _bounded_float(stroke_value, "width", 0.0, 128.0)
         horizontal_value = child_value.get("horizontal_alignment")
         vertical_value = child_value.get("vertical_alignment")
-        wrap_value = child_value.get("wrap_mode", TextWrapMode.AUTO.value)
+        wrap_value = child_value.get("wrap_mode")
         if not isinstance(horizontal_value, str) or not isinstance(vertical_value, str):
             raise ProjectFormatError("text alignment is invalid")
         if not isinstance(wrap_value, str):
@@ -846,6 +903,197 @@ def _parse_text_group(
         opacity=opacity,
         locked=locked,
     )
+
+
+def _parse_svg_element(
+    value: dict[str, Any],
+    archive: zipfile.ZipFile,
+    by_name: dict[str, zipfile.ZipInfo],
+) -> tuple[SvgElementSnapshot, str, int]:
+    import xml.etree.ElementTree as ET
+
+    object_id = _uuid_field(value, "id")
+    name = value.get("name")
+    element_kind = value.get("element_kind")
+    if not isinstance(name, str) or not name.strip() or len(name) > 1024:
+        raise ProjectFormatError("SVG object name is invalid")
+    if (
+        not isinstance(element_kind, str)
+        or not element_kind.strip()
+        or len(element_kind) > 64
+    ):
+        raise ProjectFormatError("SVG element kind is invalid")
+    resource = _object_field(value, "resource")
+    member = resource.get("path")
+    if not isinstance(member, str):
+        raise ProjectFormatError("SVG resource path is invalid")
+    _validate_member_name(member)
+    if member != f"vectors/{object_id}.svg.z":
+        raise ProjectFormatError("SVG resource path does not match its object")
+    if resource.get("encoding") != "svg-utf8-zlib":
+        raise ProjectFormatError("SVG resource encoding is unsupported")
+    raw_size = _bounded_int(resource, "raw_size", 1, MAX_SVG_RESOURCE_BYTES)
+    checksum = resource.get("sha256")
+    if (
+        not isinstance(checksum, str)
+        or len(checksum) != 64
+        or any(character not in "0123456789abcdef" for character in checksum)
+    ):
+        raise ProjectFormatError("SVG resource checksum is invalid")
+    info = by_name.get(member)
+    if info is None or info.file_size > raw_size + 1024:
+        raise ProjectFormatError("SVG resource is missing or too large")
+    try:
+        encoded = archive.read(info)
+    except (KeyError, RuntimeError, zipfile.BadZipFile) as error:
+        raise ProjectFormatError("SVG resource cannot be read") from error
+    if raw_size / max(len(encoded), 1) > MAX_COMPRESSION_RATIO:
+        raise ProjectFormatError("SVG resource compression ratio is unsafe")
+    raw = _safe_zlib_decompress(encoded, raw_size)
+    if hashlib.sha256(raw).hexdigest() != checksum:
+        raise ProjectFormatError("SVG resource checksum does not match")
+    lowered = raw.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
+        raise ProjectFormatError("SVG resource contains unsafe declarations")
+    try:
+        svg = raw.decode("utf-8")
+        root = ET.fromstring(svg)
+    except (UnicodeDecodeError, ET.ParseError) as error:
+        raise ProjectFormatError("SVG resource XML is invalid") from error
+    if root.tag.rsplit("}", 1)[-1] != "svg":
+        raise ProjectFormatError("SVG resource root is invalid")
+    _validate_persisted_svg(root)
+
+    bounds_value = value.get("bounds")
+    transform_value = value.get("transform")
+    pivot_value = value.get("transform_pivot")
+    if (
+        not isinstance(bounds_value, list)
+        or len(bounds_value) != 4
+        or not all(_is_finite_number(item) for item in bounds_value)
+    ):
+        raise ProjectFormatError("SVG object bounds are invalid")
+    if (
+        not isinstance(transform_value, list)
+        or len(transform_value) != 6
+        or not all(_is_finite_number(item) for item in transform_value)
+    ):
+        raise ProjectFormatError("SVG object transform is invalid")
+    if pivot_value is not None and (
+        not isinstance(pivot_value, list)
+        or len(pivot_value) != 2
+        or not all(_is_finite_number(item) for item in pivot_value)
+    ):
+        raise ProjectFormatError("SVG object pivot is invalid")
+    stroke_width_value = value.get("stroke_width_override")
+    if stroke_width_value is not None and (
+        not _is_finite_number(stroke_width_value)
+        or not 0.0 <= float(cast(int | float, stroke_width_value)) <= 8192.0
+    ):
+        raise ProjectFormatError("SVG stroke width override is invalid")
+    try:
+        snapshot = SvgElementSnapshot(
+            id=object_id,
+            name=name.strip(),
+            element_kind=element_kind.strip(),
+            svg=svg,
+            intrinsic_bounds=FloatRect(
+                *[float(cast(int | float, item)) for item in bounds_value]
+            ),
+            transform=AffineTransform(
+                *[float(cast(int | float, item)) for item in transform_value]
+            ),
+            transform_pivot=(
+                None
+                if pivot_value is None
+                else Point(
+                    float(cast(int | float, pivot_value[0])),
+                    float(cast(int | float, pivot_value[1])),
+                )
+            ),
+            fill_override=_optional_rgba(value.get("fill_override")),
+            stroke_override=_optional_rgba(value.get("stroke_override")),
+            stroke_width_override=(
+                None
+                if stroke_width_value is None
+                else float(cast(int | float, stroke_width_value))
+            ),
+            visible=_bool_field(value, "visible"),
+            opacity=_bounded_float(value, "opacity", 0.0, 1.0),
+            locked=_bool_field(value, "locked"),
+        )
+        SvgElementObject(
+            id=snapshot.id,
+            name=snapshot.name,
+            element_kind=snapshot.element_kind,
+            svg=snapshot.svg,
+            intrinsic_bounds=snapshot.intrinsic_bounds,
+            transform=snapshot.transform,
+            transform_pivot=snapshot.transform_pivot,
+            fill_override=snapshot.fill_override,
+            stroke_override=snapshot.stroke_override,
+            stroke_width_override=snapshot.stroke_width_override,
+            visible=snapshot.visible,
+            opacity=snapshot.opacity,
+            locked=snapshot.locked,
+        )
+    except (TypeError, ValueError) as error:
+        raise ProjectFormatError("SVG object values are invalid") from error
+    return snapshot, member, raw_size
+
+
+def _optional_rgba(value: object) -> tuple[int, int, int, int] | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(
+            isinstance(channel, int)
+            and not isinstance(channel, bool)
+            and 0 <= channel <= 255
+            for channel in value
+        )
+    ):
+        raise ProjectFormatError("SVG color override is invalid")
+    return cast(tuple[int, int, int, int], tuple(value))
+
+
+def _validate_persisted_svg(root: object) -> None:
+    import xml.etree.ElementTree as ET
+
+    if not isinstance(root, ET.Element):
+        raise ProjectFormatError("SVG resource root is invalid")
+    forbidden = {
+        "animate",
+        "animatemotion",
+        "animatetransform",
+        "set",
+        "script",
+        "foreignobject",
+        "image",
+        "audio",
+        "video",
+        "filter",
+    }
+    for element in root.iter():
+        kind = element.tag.rsplit("}", 1)[-1].lower()
+        if kind in forbidden:
+            raise ProjectFormatError(f"SVG resource contains forbidden <{kind}>")
+        if kind == "style" and element.text:
+            css = element.text.lower()
+            if "@import" in css or "@keyframes" in css:
+                raise ProjectFormatError("SVG resource contains unsupported CSS")
+        for attribute, raw_value in element.attrib.items():
+            name = attribute.rsplit("}", 1)[-1].lower()
+            value = raw_value.strip()
+            if name.startswith("on") or "javascript:" in value.lower():
+                raise ProjectFormatError("SVG resource contains scripting")
+            if name == "href" and not value.startswith("#"):
+                raise ProjectFormatError("SVG resource contains an external reference")
+            urls = [match.group(2).strip() for match in _SVG_URL_PATTERN.finditer(value)]
+            if any(not item.startswith("#") for item in urls):
+                raise ProjectFormatError("SVG resource contains an external URL")
 
 
 def _read_tile(

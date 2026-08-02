@@ -7,6 +7,7 @@ from typing import Protocol
 from uuid import UUID
 
 from easypicture.domain.geometry import Size
+from easypicture.domain.vector import VectorObjectKind
 from easypicture.pixels import TileCoord
 
 
@@ -46,20 +47,6 @@ class DocumentPathChanged:
 
 
 @dataclass(frozen=True, slots=True)
-class LayerListChanged:
-    document_id: UUID
-    revision: int
-    layer_ids: tuple[UUID, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class LayerTreeChanged:
-    document_id: UUID
-    revision: int
-    node_ids: tuple[UUID, ...]
-
-
-@dataclass(frozen=True, slots=True)
 class GroupListChanged:
     """Top-level group order or membership changed."""
 
@@ -85,19 +72,12 @@ class GroupMembersChanged:
 
 
 @dataclass(frozen=True, slots=True)
-class TextObjectChanged:
+class VectorObjectChanged:
     document_id: UUID
     revision: int
     group_id: UUID
     object_id: UUID
-    properties: frozenset[str]
-
-
-@dataclass(frozen=True, slots=True)
-class VectorGroupPropertiesChanged:
-    document_id: UUID
-    revision: int
-    group_id: UUID
+    object_kind: VectorObjectKind
     properties: frozenset[str]
 
 
@@ -134,13 +114,10 @@ type DocumentEvent = (
     | ActiveLayerChanged
     | DocumentRevisionChanged
     | DocumentSizeChanged
-    | LayerListChanged
-    | LayerTreeChanged
     | GroupListChanged
     | GroupPropertiesChanged
     | GroupMembersChanged
-    | TextObjectChanged
-    | VectorGroupPropertiesChanged
+    | VectorObjectChanged
     | LayerPropertiesChanged
     | LayerPixelsChanged
     | SelectionChanged
@@ -159,14 +136,11 @@ __all__ = [
     "DocumentPathChanged",
     "DocumentRevisionChanged",
     "DocumentSizeChanged",
-    "LayerListChanged",
-    "LayerTreeChanged",
     "GroupListChanged",
     "GroupPropertiesChanged",
     "GroupMembersChanged",
     "LayerPixelsChanged",
     "LayerPropertiesChanged",
     "SelectionChanged",
-    "TextObjectChanged",
-    "VectorGroupPropertiesChanged",
+    "VectorObjectChanged",
 ]

@@ -76,7 +76,7 @@ def create_region_reference(
 
 
 def layer_by_id(snapshot: DocumentSnapshot, layer_id: object) -> LayerSnapshot:
-    for layer in snapshot.layers:
+    for layer in snapshot.raster_layers:
         if layer.id == layer_id:
             return layer
     raise ValueError("layer does not belong to the document")

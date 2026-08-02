@@ -82,7 +82,7 @@ def _compose_document_tile_with_vectors(
 
     from easypicture.persistence.snapshots import RasterGroupSnapshot
     from easypicture.render.qimage_bridge import qimage_to_rgba, rgba_tile_to_qimage
-    from easypicture.render.text_renderer import paint_text_groups
+    from easypicture.render.text_renderer import paint_vector_groups
 
     tile_size = DEFAULT_TILE_SIZE
     left = coord.x * tile_size
@@ -121,7 +121,7 @@ def _compose_document_tile_with_vectors(
                     )
                 painter.restore()
         else:
-            paint_text_groups(painter, (group,))
+            paint_vector_groups(painter, (group,))
     painter.end()
     return qimage_to_rgba(image)
 

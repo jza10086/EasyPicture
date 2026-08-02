@@ -2,7 +2,7 @@
 
 ## 状态
 
-Accepted for P9C.
+Accepted for P9C；其中 schema v3 与迁移部分已被 ADR-0030 取代。
 
 ## 决策
 

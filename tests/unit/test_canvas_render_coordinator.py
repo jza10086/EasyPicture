@@ -81,7 +81,7 @@ def test_pixel_preview_only_replaces_requested_source_tile(qapp) -> None:
         {TileCoord(0, 0): _solid((255, 0, 0, 255))},
     )
 
-    assert _pixel(coordinator.render_tile(TileCoord(0, 0)), 10, 10) == (
+    assert _pixel(_paint_frame(coordinator, 512, 256), 10, 10) == (
         255,
         0,
         0,
@@ -112,7 +112,7 @@ def test_preview_signature_is_monotonic_across_clear_and_same_frame_replace(
 
     assert second != first
     assert second[1] > first[1]
-    assert _pixel(coordinator.render_tile(coord), 10, 10) == (0, 255, 0, 255)
+    assert _pixel(_paint_frame(coordinator, 256, 256), 10, 10) == (0, 255, 0, 255)
 
 
 def test_complete_preview_replacement_is_atomic_and_removes_old_coords(qapp) -> None:
@@ -142,8 +142,11 @@ def test_complete_preview_replacement_is_atomic_and_removes_old_coords(qapp) -> 
     assert coordinator.generation == first_generation + 1
     assert len(frames) == 2
     assert coordinator.preview_tile_count == 1
-    assert _pixel(coordinator.render_tile(TileCoord(0, 0)), 10, 10) == (0, 0, 0, 0)
-    assert _pixel(coordinator.render_tile(TileCoord(1, 0)), 10, 10) == (
+    frame = _paint_frame(coordinator, 512, 256)
+    cleared = _pixel(frame, 10, 10)
+    assert cleared[0] == cleared[1] == cleared[2]
+    assert cleared[3] == 255
+    assert _pixel(frame, 266, 10) == (
         40,
         50,
         60,

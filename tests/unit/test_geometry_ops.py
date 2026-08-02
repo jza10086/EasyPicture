@@ -13,14 +13,12 @@ from easypicture.imaging import (
     CropDocumentRequest,
     GeometryRect,
     ImageScaleRequest,
-    LayerBoundsRequest,
     LayerScaleRequest,
     TransformInterpolation,
     TrimTransparentRequest,
     calculate_canvas_resize,
     calculate_crop_document,
     calculate_image_scale,
-    calculate_layer_bounds,
     calculate_layer_scale,
     calculate_trim_transparent,
     canvas_anchor_offset,
@@ -216,37 +214,6 @@ def test_layer_scale_preserves_selection_and_rejects_locked_layer() -> None:
             CancellationToken(),
             _progress,
         )
-
-
-def test_legacy_layer_bounds_entry_normalizes_to_canvas() -> None:
-    document = _document_with_pixels()
-    document.active_layer.origin = PixelPoint(-1, 1)
-    snapshot = DocumentSnapshot.capture(document)
-
-    fitted = calculate_layer_bounds(
-        LayerBoundsRequest(snapshot, document.active_layer_id, crop_to_content=False),
-        CancellationToken(),
-        _progress,
-    )
-    fitted_layer = fitted.layers[0]
-    assert fitted_layer.size == document.size
-    assert fitted_layer.origin == PixelPoint()
-    assert tuple(fitted_layer.tiles[TileCoord(0, 0)][2, 0]) == (20, 40, 60, 255)
-
-    cropped = calculate_layer_bounds(
-        LayerBoundsRequest(snapshot, document.active_layer_id, crop_to_content=True),
-        CancellationToken(),
-        _progress,
-    )
-    cropped_layer = cropped.layers[0]
-    assert cropped_layer.size == document.size
-    assert cropped_layer.origin == PixelPoint()
-    assert tuple(cropped_layer.tiles[TileCoord(0, 0)][3, 2]) == (
-        200,
-        100,
-        50,
-        0,
-    )
 
 
 def test_trim_transparent_uses_alpha_union_and_ignores_hidden_rgb() -> None:

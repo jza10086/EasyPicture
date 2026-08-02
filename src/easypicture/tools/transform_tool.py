@@ -31,7 +31,8 @@ from easypicture.domain import (
     ActiveLayerChanged,
     DocumentEvent,
     DocumentRevisionChanged,
-    LayerListChanged,
+    GroupListChanged,
+    GroupMembersChanged,
     Point,
     ProjectiveTransform,
 )
@@ -662,7 +663,10 @@ class TransformTool:
                 for layer in document.layers
             )
         )
-        layer_changed = isinstance(event, (LayerListChanged, ActiveLayerChanged)) and (
+        layer_changed = isinstance(
+            event,
+            (GroupListChanged, GroupMembersChanged, ActiveLayerChanged),
+        ) and (
             not layer_exists
             or document is None
             or document.active_layer_id != session.snapshot.active_layer_id
@@ -989,7 +993,9 @@ class TransformTool:
     @staticmethod
     def _source_bounds(snapshot: DocumentSnapshot) -> _SourceBounds:
         layer = next(
-            layer for layer in snapshot.layers if layer.id == snapshot.active_layer_id
+            layer
+            for layer in snapshot.raster_layers
+            if layer.id == snapshot.active_layer_id
         )
         if not snapshot.selection.has_nonzero_data:
             return _SourceBounds(

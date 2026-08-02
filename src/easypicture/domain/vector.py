@@ -16,14 +16,12 @@ MAX_TEXT_LENGTH = 1 * 1024 * 1024
 MAX_FONT_FAMILY_LENGTH = 255
 MAX_TEXT_FONT_SIZE = 1024.0
 MAX_TEXT_STROKE_WIDTH = 128.0
+MAX_SVG_FRAGMENT_BYTES = 16 * 1024 * 1024
 
 
-class LayerNodeKind(StrEnum):
-    RASTER = "raster"
-    TEXT_GROUP = "text_group"
-    TEXT = "text"
-    RASTER_GROUP = "raster_group"
-    VECTOR_GROUP = "vector_group"
+class VectorObjectKind(StrEnum):
+    SVG_ELEMENT = "svg_element"
+    SVG_TEXT = "svg_text"
 
 
 class LayerGroupKind(StrEnum):
@@ -153,13 +151,84 @@ class TextObject:
 
 
 @dataclass(slots=True)
+class SvgElementObject:
+    """A sanitized, standalone static SVG leaf element."""
+
+    id: UUID
+    name: str
+    element_kind: str
+    svg: str
+    intrinsic_bounds: FloatRect
+    transform: AffineTransform = field(default_factory=AffineTransform)
+    transform_pivot: Point | None = None
+    fill_override: RGBAColor | None = None
+    stroke_override: RGBAColor | None = None
+    stroke_width_override: float | None = None
+    visible: bool = True
+    opacity: float = 1.0
+    locked: bool = False
+    _revision: int = field(default=0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.name = self.name.strip()
+        if not self.name or len(self.name) > 1024:
+            raise ValueError("SVG object name is invalid")
+        self.element_kind = self.element_kind.strip().lower()
+        if not self.element_kind or len(self.element_kind) > 64:
+            raise ValueError("SVG element kind is invalid")
+        if not isinstance(self.svg, str) or not self.svg.strip():
+            raise ValueError("SVG element document must not be empty")
+        if len(self.svg.encode("utf-8")) > MAX_SVG_FRAGMENT_BYTES:
+            raise ValueError("SVG element document is too large")
+        if self.intrinsic_bounds.width <= 0.0 or self.intrinsic_bounds.height <= 0.0:
+            raise ValueError("SVG element bounds must be positive")
+        if self.transform.determinant == 0.0:
+            raise ValueError("SVG element transform must be invertible")
+        if not 0.0 <= self.opacity <= 1.0:
+            raise ValueError("SVG element opacity must be between 0 and 1")
+        if self.fill_override is not None:
+            _validate_color(self.fill_override)
+        if self.stroke_override is not None:
+            _validate_color(self.stroke_override)
+        if self.stroke_width_override is not None and (
+            not math.isfinite(self.stroke_width_override)
+            or not 0.0 <= self.stroke_width_override <= 8192.0
+        ):
+            raise ValueError("SVG stroke width override is out of range")
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def record_change(self) -> None:
+        self._revision += 1
+
+    def duplicate(self, name: str | None = None) -> SvgElementObject:
+        return SvgElementObject(
+            id=uuid4(),
+            name=name if name is not None else f"{self.name} 副本",
+            element_kind=self.element_kind,
+            svg=self.svg,
+            intrinsic_bounds=self.intrinsic_bounds,
+            transform=self.transform,
+            transform_pivot=self.transform_pivot,
+            fill_override=self.fill_override,
+            stroke_override=self.stroke_override,
+            stroke_width_override=self.stroke_width_override,
+            visible=self.visible,
+            opacity=self.opacity,
+            locked=self.locked,
+        )
+
+
+@dataclass(slots=True)
 class RasterGroupLayer:
     """A top-level container for raster children.
 
-    Groups are deliberately shallow in P9C: a raster group can only contain
+    Groups are deliberately shallow: a raster group can only contain
     :class:`RasterLayer` instances and is never itself a child of another
-    group.  Keeping this type separate from ``RasterLayer`` lets legacy
-    callers continue to work with the flattened ``Document.layers`` view.
+    group. Keeping this type separate from ``RasterLayer`` defines the
+    two-level tree while ``Document.layers`` remains the canonical flat view.
     """
 
     id: UUID
@@ -170,7 +239,6 @@ class RasterGroupLayer:
     locked: bool = False
     _revision: int = field(default=0, init=False, repr=False)
 
-    kind: LayerNodeKind = field(default=LayerNodeKind.RASTER_GROUP, init=False)
     group_kind: LayerGroupKind = field(default=LayerGroupKind.RASTER, init=False)
 
     def __post_init__(self) -> None:
@@ -215,13 +283,12 @@ class RasterGroupLayer:
 class VectorGroupLayer:
     id: UUID
     name: str
-    children: list[TextObject] = field(default_factory=list)
+    children: list[TextObject | SvgElementObject] = field(default_factory=list)
     visible: bool = True
     opacity: float = 1.0
     locked: bool = False
     _revision: int = field(default=0, init=False, repr=False)
 
-    kind: LayerNodeKind = field(default=LayerNodeKind.VECTOR_GROUP, init=False)
     group_kind: LayerGroupKind = field(default=LayerGroupKind.VECTOR, init=False)
 
     def __post_init__(self) -> None:
@@ -247,7 +314,7 @@ class VectorGroupLayer:
     def record_change(self) -> None:
         self._revision += 1
 
-    def child_by_id(self, object_id: UUID) -> TextObject:
+    def child_by_id(self, object_id: UUID) -> TextObject | SvgElementObject:
         for child in self.children:
             if child.id == object_id:
                 return child
@@ -264,28 +331,25 @@ class VectorGroupLayer:
         )
 
 
-VectorObject = TextObject
+VectorObject = TextObject | SvgElementObject
 LayerGroup = RasterGroupLayer | VectorGroupLayer
-# ``LayerNode`` remains the public name used by the P9A UI and persistence
-# code; it now describes top-level groups while compatibility methods expose
-# flattened raster leaves through ``Document.layers``.
-LayerNode = LayerGroup
 
 
 __all__ = [
-    "LayerNodeKind",
     "LayerGroupKind",
     "LayerGroup",
-    "LayerNode",
     "MAX_FONT_FAMILY_LENGTH",
     "MAX_TEXT_FONT_SIZE",
     "MAX_TEXT_LENGTH",
+    "MAX_SVG_FRAGMENT_BYTES",
     "RGBAColor",
     "TextHorizontalAlignment",
     "TextObject",
+    "SvgElementObject",
     "TextVerticalAlignment",
     "TextWrapMode",
     "VectorObject",
+    "VectorObjectKind",
     "RasterGroupLayer",
     "VectorGroupLayer",
 ]

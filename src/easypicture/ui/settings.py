@@ -72,17 +72,11 @@ class AppSettings:
     def set_background_color(self, color: QColor) -> None:
         self._settings.setValue("colors/background", color.name(QColor.NameFormat.HexArgb))
 
-    def text_group_expanded(self, group_id: UUID) -> bool:
-        return self.group_expanded(group_id)
-
     def group_expanded(self, group_id: UUID) -> bool:
         value = self._settings.value(f"layers/groups/{group_id}/expanded", True)
         if isinstance(value, bool):
             return value
         return str(value).lower() not in {"0", "false", "no"}
-
-    def set_text_group_expanded(self, group_id: UUID, expanded: bool) -> None:
-        self.set_group_expanded(group_id, expanded)
 
     def set_group_expanded(self, group_id: UUID, expanded: bool) -> None:
         self._settings.setValue(

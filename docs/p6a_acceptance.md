@@ -69,7 +69,7 @@ Nuitka 4.1.3 在 Python 3.14 下的实验性支持警告保持不变；构建产
 ## 复现命令
 
 ```powershell
-uv run pytest -q tests/unit/test_transform.py tests/unit/test_tile_renderer.py `
+uv run pytest -q tests/unit/test_transform.py tests/unit/test_canvas_render_coordinator.py `
   tests/ui/test_p6_transform_ui.py tests/ui/test_p4_tool_ui.py `
   tests/ui/test_p5_selection_ui.py
 uv run python -m easypicture --smoke-test

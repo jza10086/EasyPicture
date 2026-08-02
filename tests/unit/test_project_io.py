@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from easypicture.domain import Document, PixelPoint, RasterLayer, Size
+from easypicture.commands import DocumentCommandService
+from easypicture.domain import Document, FloatRect, PixelPoint, RasterLayer
 from easypicture.jobs import CancellationToken, JobCancelled
 from easypicture.persistence import DocumentSnapshot
 from easypicture.persistence.project_io import (
@@ -22,6 +23,25 @@ def _progress(_completed: int, _total: int, _message: str) -> None:
     return
 
 
+def _rewrite_manifest(
+    source_path: Path,
+    target_path: Path,
+    mutate,
+) -> None:
+    with zipfile.ZipFile(source_path) as source, zipfile.ZipFile(
+        target_path,
+        "w",
+        compression=zipfile.ZIP_STORED,
+    ) as target:
+        for info in source.infolist():
+            data = source.read(info)
+            if info.filename == MANIFEST_PATH:
+                manifest = json.loads(data)
+                mutate(manifest)
+                data = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+            target.writestr(info.filename, data)
+
+
 def _sample_document() -> Document:
     document = Document.create(300, 260)
     tile = np.zeros((256, 256, 4), dtype=np.uint8)
@@ -34,11 +54,7 @@ def _sample_document() -> Document:
     mask = np.zeros((256, 256), dtype=np.uint8)
     mask[3, 4] = 127
     document.selection.mask.replace_tile(0, 0, mask)
-    top = RasterLayer.create_blank(
-        "隐藏层",
-        Size(20, 30),
-        origin=PixelPoint(-2, 3),
-    )
+    top = RasterLayer.create_blank("隐藏层", document.size)
     top.visible = False
     top.opacity = 0.5
     top.locked = True
@@ -97,7 +113,11 @@ def test_failed_atomic_replace_preserves_existing_project(
     assert not list(tmp_path.glob(".existing.limg.*.tmp"))
 
 
-def test_future_schema_is_rejected(tmp_path: Path) -> None:
+@pytest.mark.parametrize("schema_version", [2, 3, 4, 999])
+def test_non_current_schema_is_rejected(
+    tmp_path: Path,
+    schema_version: int,
+) -> None:
     original = tmp_path / "original.limg"
     altered = tmp_path / "future.limg"
     save_project(
@@ -118,11 +138,11 @@ def test_future_schema_is_rejected(tmp_path: Path) -> None:
             data = source.read(info)
             if info.filename == MANIFEST_PATH:
                 manifest = json.loads(data)
-                manifest["schema_version"] = 999
+                manifest["schema_version"] = schema_version
                 data = json.dumps(manifest).encode()
             target.writestr(info.filename, data)
 
-    with pytest.raises(ProjectFormatError, match="future"):
+    with pytest.raises(ProjectFormatError, match="version is unsupported"):
         load_project(altered, CancellationToken(), _progress)
 
 
@@ -170,7 +190,10 @@ def test_checksum_mismatch_is_rejected(tmp_path: Path) -> None:
             data = source.read(info)
             if info.filename == MANIFEST_PATH:
                 manifest = json.loads(data)
-                manifest["layers"][0]["tiles"][0]["sha256"] = "0" * 64
+                raster_group = next(
+                    node for node in manifest["nodes"] if node["type"] == "raster_group"
+                )
+                raster_group["children"][0]["tiles"][0]["sha256"] = "0" * 64
                 data = json.dumps(manifest).encode()
             target.writestr(info.filename, data)
 
@@ -222,5 +245,102 @@ def test_allocated_all_zero_tiles_are_not_serialized(tmp_path: Path) -> None:
 
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read(MANIFEST_PATH))
-    assert manifest["layers"][0]["tiles"] == []
+    assert "layers" not in manifest
+    raster_group = next(
+        node for node in manifest["nodes"] if node["type"] == "raster_group"
+    )
+    assert raster_group["children"][0]["tiles"] == []
     assert manifest["selection"]["tiles"] == []
+
+
+def test_missing_nodes_is_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "source.limg"
+    invalid = tmp_path / "missing-nodes.limg"
+    save_project(
+        DocumentSnapshot.capture(_sample_document()),
+        source,
+        CancellationToken(),
+        _progress,
+    )
+    _rewrite_manifest(source, invalid, lambda manifest: manifest.pop("nodes"))
+
+    with pytest.raises(ProjectFormatError, match="node count"):
+        load_project(invalid, CancellationToken(), _progress)
+
+
+@pytest.mark.parametrize("missing_field", ["stroke", "wrap_mode"])
+def test_current_text_fields_are_required(
+    tmp_path: Path,
+    missing_field: str,
+    qapp,
+) -> None:
+    _ = qapp
+    document = Document.create(64, 64)
+    commands = DocumentCommandService()
+    commands.attach_document(document)
+    assert commands.create_vector_group("文字")
+    group = document.vector_groups[0]
+    assert commands.create_text_object(group.id, FloatRect(0, 0, 32, 16))
+    source = tmp_path / "source-text.limg"
+    invalid = tmp_path / f"missing-{missing_field}.limg"
+    save_project(DocumentSnapshot.capture(document), source, CancellationToken(), _progress)
+
+    def remove_field(manifest) -> None:
+        vector_group = next(
+            node for node in manifest["nodes"] if node["type"] == "vector_group"
+        )
+        vector_group["children"][0].pop(missing_field)
+
+    _rewrite_manifest(source, invalid, remove_field)
+    with pytest.raises(ProjectFormatError, match="stroke|wrap"):
+        load_project(invalid, CancellationToken(), _progress)
+
+
+def test_old_text_type_is_rejected(tmp_path: Path, qapp) -> None:
+    _ = qapp
+    document = Document.create(64, 64)
+    commands = DocumentCommandService()
+    commands.attach_document(document)
+    assert commands.create_vector_group("文字")
+    group = document.vector_groups[0]
+    assert commands.create_text_object(group.id, FloatRect(0, 0, 32, 16))
+    source = tmp_path / "source-text.limg"
+    invalid = tmp_path / "old-text-type.limg"
+    save_project(DocumentSnapshot.capture(document), source, CancellationToken(), _progress)
+
+    def use_old_type(manifest) -> None:
+        vector_group = next(
+            node for node in manifest["nodes"] if node["type"] == "vector_group"
+        )
+        vector_group["children"][0]["type"] = "text"
+
+    _rewrite_manifest(source, invalid, use_old_type)
+    with pytest.raises(ProjectFormatError, match="invalid child"):
+        load_project(invalid, CancellationToken(), _progress)
+
+
+@pytest.mark.parametrize(
+    ("size_value", "origin_value"),
+    [({"width": 32, "height": 64}, [0, 0]), ({"width": 64, "height": 64}, [1, 0])],
+)
+def test_non_canvas_raster_geometry_is_rejected(
+    tmp_path: Path,
+    size_value: dict[str, int],
+    origin_value: list[int],
+) -> None:
+    source = tmp_path / "source.limg"
+    invalid = tmp_path / "invalid-geometry.limg"
+    document = Document.create(64, 64)
+    save_project(DocumentSnapshot.capture(document), source, CancellationToken(), _progress)
+
+    def change_geometry(manifest) -> None:
+        raster_group = next(
+            node for node in manifest["nodes"] if node["type"] == "raster_group"
+        )
+        layer = raster_group["children"][0]
+        layer["size"] = size_value
+        layer["origin"] = origin_value
+
+    _rewrite_manifest(source, invalid, change_geometry)
+    with pytest.raises(ProjectFormatError, match="geometry must match"):
+        load_project(invalid, CancellationToken(), _progress)

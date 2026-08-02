@@ -304,9 +304,6 @@ class ColorPickerDialog(QDialog):
 
         self.color_wheel = _ColorWheel(self)
         self.value_bar = _ValueBar(self)
-        # Compatibility aliases for code written against the first custom dialog.
-        self.color_plane = self.color_wheel
-        self.hue_bar = self.value_bar
         self.preview = _ColorPreview(self)
 
         self.hue_spin = self._spin(0, 359, "°")

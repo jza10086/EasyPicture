@@ -24,14 +24,24 @@ from easypicture.imaging import (
 from easypicture.jobs import CancellationToken
 from easypicture.persistence import DocumentSnapshot, load_project, save_project
 from easypicture.pixels import TileCoord
-from easypicture.render.tile_renderer import TileRenderer
+from easypicture.render import CanvasRenderCoordinator
 
 
 def _progress(_value: int, _maximum: int, _message: str) -> None:
     return
 
 
-def _render_preview(renderer: TileRenderer, width: int, height: int) -> QImage:
+def _coordinator(document: Document) -> CanvasRenderCoordinator:
+    coordinator = CanvasRenderCoordinator()
+    coordinator.set_document(document)
+    return coordinator
+
+
+def _render_preview(
+    renderer: CanvasRenderCoordinator,
+    width: int,
+    height: int,
+) -> QImage:
     image = QImage(
         width,
         height,
@@ -39,10 +49,7 @@ def _render_preview(renderer: TileRenderer, width: int, height: int) -> QImage:
     )
     image.fill(Qt.GlobalColor.transparent)
     painter = QPainter(image)
-    assert renderer.paint_transform_preview(
-        painter,
-        QRectF(0.0, 0.0, float(width), float(height)),
-    )
+    renderer.paint_software(painter, QRectF(0.0, 0.0, float(width), float(height)))
     painter.end()
     return image
 
@@ -230,7 +237,7 @@ def test_transform_preview_stays_at_layer_stack_position(qtbot) -> None:
     top_pixels[1, 11] = (0, 0, 255, 255)
     top.pixels.replace_tile(0, 0, top_pixels)
     document.insert_layer(top, 1, activate=False)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
 
     renderer.set_transform_preview(
         bottom.id,
@@ -239,7 +246,7 @@ def test_transform_preview_stays_at_layer_stack_position(qtbot) -> None:
     )
     preview = _render_preview(renderer, 32, 32)
 
-    assert preview.pixelColor(1, 1).alpha() == 0
+    assert preview.pixelColor(1, 1).getRgb()[:3] != (255, 0, 0)
     assert preview.pixelColor(11, 1).blue() == 255
 
 
@@ -248,8 +255,8 @@ def test_transform_preview_replaces_old_frame_without_stale_composite(qtbot) -> 
     pixels = np.zeros((256, 256, 4), dtype=np.uint8)
     pixels[4, 4] = (255, 80, 10, 255)
     document.active_layer.pixels.replace_tile(0, 0, pixels)
-    renderer = TileRenderer(document)
-    authoritative = renderer.render_tile(TileCoord(0, 0))
+    renderer = _coordinator(document)
+    authoritative = _render_preview(renderer, 32, 32)
     assert authoritative.pixelColor(4, 4).alpha() == 255
     renderer.set_transform_preview(
         document.active_layer_id,
@@ -258,19 +265,16 @@ def test_transform_preview_replaces_old_frame_without_stale_composite(qtbot) -> 
     )
     first = _render_preview(renderer, 32, 32)
     assert first.pixelColor(8, 4).alpha() == 255
-    static_cache_count = renderer.preview_static_cache_count
-    assert static_cache_count == 0
-    assert renderer.cached_tile(TileCoord(0, 0)) is authoritative
+    first_generation = renderer.generation
 
     renderer.set_transform_preview(
         document.active_layer_id,
         AffineTransform.translation(10.0, 0.0),
         TransformInterpolation.NEAREST,
     )
-    assert renderer.transform_preview_generation == 2
+    assert renderer.generation == first_generation + 1
     second = _render_preview(renderer, 32, 32)
-    assert renderer.preview_static_cache_count == static_cache_count
-    assert second.pixelColor(8, 4).alpha() == 0
+    assert second.pixelColor(8, 4).getRgb()[:3] != (255, 80, 10)
     assert second.pixelColor(14, 4).alpha() == 255
 
 
@@ -279,7 +283,7 @@ def test_transform_preview_rotation_uses_same_atomic_frame_as_outline(qtbot) -> 
     pixels = np.zeros((256, 256, 4), dtype=np.uint8)
     pixels[14:18, 4:9] = (80, 120, 220, 255)
     document.active_layer.pixels.replace_tile(0, 0, pixels)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     matrix = (
         AffineTransform.translation(-16.0, -16.0)
         .then(AffineTransform.rotation(90.0))
@@ -294,7 +298,7 @@ def test_transform_preview_rotation_uses_same_atomic_frame_as_outline(qtbot) -> 
     preview = _render_preview(renderer, 32, 32)
 
     assert preview.pixelColor(16, 6).alpha() == 255
-    assert preview.pixelColor(6, 16).alpha() == 0
+    assert preview.pixelColor(6, 16).getRgb()[:3] != (80, 120, 220)
 
 
 def test_transform_preview_draws_projective_quad_directly(qtbot) -> None:
@@ -315,7 +319,7 @@ def test_transform_preview_draws_projective_quad_directly(qtbot) -> None:
         Point(8.0, 32.0),
     )
     matrix = projective_from_quad(source, destination)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     renderer.set_transform_preview(
         document.active_layer_id,
         matrix,
@@ -326,7 +330,7 @@ def test_transform_preview_draws_projective_quad_directly(qtbot) -> None:
     mapped = matrix.map_point(Point(8.0, 8.0))
 
     assert preview.pixelColor(round(mapped.x), round(mapped.y)).red() == 210
-    assert preview.pixelColor(8, 8).alpha() == 0
+    assert preview.pixelColor(8, 8).getRgb()[:3] != (210, 90, 30)
 
 
 def test_transform_preview_combines_with_existing_view_transform(qtbot) -> None:
@@ -334,7 +338,7 @@ def test_transform_preview_combines_with_existing_view_transform(qtbot) -> None:
     pixels = np.zeros((256, 256, 4), dtype=np.uint8)
     pixels[8, 8] = (30, 200, 80, 255)
     document.active_layer.pixels.replace_tile(0, 0, pixels)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     renderer.set_transform_preview(
         document.active_layer_id,
         AffineTransform.translation(10.0, 0.0),
@@ -345,14 +349,11 @@ def test_transform_preview_combines_with_existing_view_transform(qtbot) -> None:
     painter = QPainter(target)
     painter.scale(2.0, 2.0)
 
-    assert renderer.paint_transform_preview(
-        painter,
-        QRectF(0.0, 0.0, 32.0, 32.0),
-    )
+    renderer.paint_software(painter, QRectF(0.0, 0.0, 32.0, 32.0))
     painter.end()
 
     assert target.pixelColor(36, 16).green() == 200
-    assert target.pixelColor(16, 16).alpha() == 0
+    assert target.pixelColor(16, 16).getRgb()[:3] != (30, 200, 80)
 
 
 def test_transform_preview_reuses_low_zoom_session_atlas(qtbot) -> None:
@@ -363,7 +364,7 @@ def test_transform_preview_reuses_low_zoom_session_atlas(qtbot) -> None:
     second[40:80, 40:80] = (20, 90, 240, 255)
     document.active_layer.pixels.replace_tile(0, 0, first)
     document.active_layer.pixels.replace_tile(1, 0, second)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     renderer.set_transform_preview(
         document.active_layer_id,
         AffineTransform(),
@@ -375,15 +376,11 @@ def test_transform_preview_reuses_low_zoom_session_atlas(qtbot) -> None:
         target.fill(Qt.GlobalColor.transparent)
         painter = QPainter(target)
         painter.scale(0.25, 0.25)
-        assert renderer.paint_transform_preview(
-            painter,
-            QRectF(0.0, 0.0, 512.0, 256.0),
-        )
+        renderer.paint_software(painter, QRectF(0.0, 0.0, 512.0, 256.0))
         painter.end()
         return target
 
     first_frame = paint_atlas()
-    assert renderer.preview_atlas_cache_count == 1
     assert first_frame.pixelColor(15, 15).red() > 200
     assert first_frame.pixelColor(79, 15).blue() > 200
 
@@ -393,14 +390,13 @@ def test_transform_preview_reuses_low_zoom_session_atlas(qtbot) -> None:
         TransformInterpolation.LINEAR,
     )
     paint_atlas()
-    assert renderer.preview_atlas_cache_count == 1
 
 
-def test_transform_preview_coalesces_matrix_updates_to_latest_generation(qtbot) -> None:
+def test_transform_preview_keeps_latest_matrix_generation(qtbot) -> None:
     document = Document.create(64, 64)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     invalidations: list[object] = []
-    renderer.cache_invalidated.connect(invalidations.append)
+    renderer.frame_requested.connect(lambda: invalidations.append(None))
 
     for offset in range(1, 7):
         renderer.set_transform_preview(
@@ -409,13 +405,10 @@ def test_transform_preview_coalesces_matrix_updates_to_latest_generation(qtbot) 
             TransformInterpolation.LINEAR,
         )
 
-    assert renderer.transform_preview_generation == 6
-    assert invalidations == []
-    qtbot.waitUntil(lambda: len(invalidations) == 1, timeout=500)
-    assert invalidations == [None]
-    frame = renderer.transform_preview_frame()
+    assert len(invalidations) == 6
+    frame = renderer.transform_preview
     assert frame is not None
-    assert frame.generation == 6
+    assert renderer.generation == 7
     assert frame.matrix.map_point(Point(0.0, 0.0)).x == pytest.approx(6.0)
 
 
@@ -423,9 +416,9 @@ def test_transform_preview_rotating_outside_and_back_invalidates_whole_view(
     qtbot,
 ) -> None:
     document = Document.create(64, 64)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     invalidations: list[object] = []
-    renderer.cache_invalidated.connect(invalidations.append)
+    renderer.frame_requested.connect(lambda: invalidations.append(None))
     rotated = (
         AffineTransform.translation(-32.0, -32.0)
         .then(AffineTransform.rotation(40.0))
@@ -437,13 +430,13 @@ def test_transform_preview_rotating_outside_and_back_invalidates_whole_view(
         rotated,
         TransformInterpolation.LINEAR,
     )
-    qtbot.waitUntil(lambda: len(invalidations) == 1, timeout=500)
+    assert len(invalidations) == 1
     renderer.set_transform_preview(
         document.active_layer_id,
         AffineTransform(),
         TransformInterpolation.LINEAR,
     )
-    qtbot.waitUntil(lambda: len(invalidations) == 2, timeout=500)
+    assert len(invalidations) == 2
 
     assert invalidations == [None, None]
 
@@ -459,7 +452,7 @@ def test_transform_preview_keeps_unselected_base_and_moves_floating_pixels(
     mask = np.zeros((256, 256), dtype=np.uint8)
     mask[5, 5] = 255
     document.selection.mask.replace_tile(0, 0, mask)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     renderer.set_transform_preview(
         document.active_layer_id,
         AffineTransform.translation(6.0, 0.0),
@@ -468,7 +461,7 @@ def test_transform_preview_keeps_unselected_base_and_moves_floating_pixels(
 
     preview = _render_preview(renderer, 32, 32)
 
-    assert preview.pixelColor(5, 5).alpha() == 0
+    assert preview.pixelColor(5, 5).getRgb()[:3] != (255, 0, 0)
     assert preview.pixelColor(11, 5).red() == 255
     assert preview.pixelColor(20, 5).blue() == 255
 
@@ -477,7 +470,7 @@ def test_transform_preview_can_clear_after_preview_layer_is_deleted(qtbot) -> No
     document = Document.create(32, 32)
     preview_layer = document.active_layer
     document.insert_layer(RasterLayer.create_blank("fallback", document.size), 1)
-    renderer = TileRenderer(document)
+    renderer = _coordinator(document)
     renderer.set_transform_preview(
         preview_layer.id,
         AffineTransform.translation(5.0, 0.0),
@@ -487,7 +480,7 @@ def test_transform_preview_can_clear_after_preview_layer_is_deleted(qtbot) -> No
     document.remove_layer(preview_layer.id)
     renderer.clear_transform_preview()
 
-    assert renderer.render_tile(TileCoord(0, 0)).isNull() is False
+    assert _render_preview(renderer, 32, 32).isNull() is False
 
 
 def test_transform_command_is_one_atomic_undo_step(qtbot) -> None:

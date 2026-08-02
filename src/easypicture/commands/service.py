@@ -14,16 +14,19 @@ from easypicture.commands.patch_store import PatchHandle, UndoPatchStore
 from easypicture.domain import (
     Document,
     FloatRect,
+    LayerGroup,
     PixelPoint,
     RasterGroupLayer,
     RasterLayer,
     Size,
     TextObject,
     VectorGroupLayer,
+    VectorObject,
 )
 from easypicture.domain.document import MAX_DOCUMENT_LAYERS
 from easypicture.imaging.geometry_ops import DocumentGeometryResult
 from easypicture.imaging.transform import RasterTransformResult
+from easypicture.imaging.vector_rasterize import rasterize_vector_objects
 from easypicture.pixels import MaskArray, RGBAArray, TileCoord
 
 DEFAULT_UNDO_BUDGET_BYTES = 1024 * 1024 * 1024
@@ -176,25 +179,6 @@ class _LayerPropertyCommand(_DocumentCommand):
         self._apply(self.before)
 
 
-class _InsertTextGroupCommand(_DocumentCommand):
-    def __init__(
-        self,
-        document: Document,
-        group: VectorGroupLayer,
-        index: int,
-        text: str,
-    ) -> None:
-        super().__init__(document, text)
-        self.group = group
-        self.index = index
-
-    def redo(self) -> None:
-        self.document.insert_text_group(self.group, self.index)
-
-    def undo(self) -> None:
-        self.document.remove_text_group(self.group.id)
-
-
 class _InsertGroupCommand(_DocumentCommand):
     def __init__(
         self,
@@ -281,7 +265,7 @@ class _MoveRasterChildCommand(_DocumentCommand):
         )
 
 
-class _MoveVectorChildCommand(_DocumentCommand):
+class _MoveVectorObjectToGroupCommand(_DocumentCommand):
     def __init__(
         self,
         document: Document,
@@ -350,25 +334,37 @@ class _UngroupCommand(_DocumentCommand):
         self.document.restore_group_structure(self.before_nodes, self.before_active_id)
 
 
-class _DeleteTextGroupCommand(_DocumentCommand):
-    def __init__(self, document: Document, group: VectorGroupLayer, index: int) -> None:
-        super().__init__(document, "删除文字组")
-        self.group = group
-        self.index = index
+class _ReplaceGroupStructureCommand(_DocumentCommand):
+    def __init__(
+        self,
+        document: Document,
+        before_nodes: tuple[LayerGroup, ...],
+        after_nodes: tuple[LayerGroup, ...],
+        before_active_id: UUID,
+        after_active_id: UUID,
+        text: str,
+        *,
+        storage_bytes: int,
+    ) -> None:
+        super().__init__(document, text, storage_bytes=storage_bytes)
+        self.before_nodes = before_nodes
+        self.after_nodes = after_nodes
+        self.before_active_id = before_active_id
+        self.after_active_id = after_active_id
 
     def redo(self) -> None:
-        self.document.remove_text_group(self.group.id)
+        self.document.restore_group_structure(self.after_nodes, self.after_active_id)
 
     def undo(self) -> None:
-        self.document.insert_text_group(self.group, self.index)
+        self.document.restore_group_structure(self.before_nodes, self.before_active_id)
 
 
-class _InsertTextObjectCommand(_DocumentCommand):
+class _InsertVectorObjectCommand(_DocumentCommand):
     def __init__(
         self,
         document: Document,
         group_id: UUID,
-        text_object: TextObject,
+        text_object: VectorObject,
         index: int,
         text: str,
     ) -> None:
@@ -378,18 +374,18 @@ class _InsertTextObjectCommand(_DocumentCommand):
         self.index = index
 
     def redo(self) -> None:
-        self.document.insert_text_object(self.group_id, self.text_object, self.index)
+        self.document.insert_vector_object(self.group_id, self.text_object, self.index)
 
     def undo(self) -> None:
-        self.document.remove_text_object(self.group_id, self.text_object.id)
+        self.document.remove_vector_object(self.group_id, self.text_object.id)
 
 
-class _DeleteTextObjectCommand(_DocumentCommand):
+class _DeleteVectorObjectCommand(_DocumentCommand):
     def __init__(
         self,
         document: Document,
         group_id: UUID,
-        text_object: TextObject,
+        text_object: VectorObject,
         index: int,
     ) -> None:
         super().__init__(document, "删除文字对象")
@@ -398,33 +394,13 @@ class _DeleteTextObjectCommand(_DocumentCommand):
         self.index = index
 
     def redo(self) -> None:
-        self.document.remove_text_object(self.group_id, self.text_object.id)
+        self.document.remove_vector_object(self.group_id, self.text_object.id)
 
     def undo(self) -> None:
-        self.document.insert_text_object(self.group_id, self.text_object, self.index)
+        self.document.insert_vector_object(self.group_id, self.text_object, self.index)
 
 
-class _MoveNodeCommand(_DocumentCommand):
-    def __init__(
-        self,
-        document: Document,
-        node_id: UUID,
-        source_index: int,
-        target_index: int,
-    ) -> None:
-        super().__init__(document, "移动图层节点")
-        self.node_id = node_id
-        self.source_index = source_index
-        self.target_index = target_index
-
-    def redo(self) -> None:
-        self.document.move_node(self.node_id, self.target_index)
-
-    def undo(self) -> None:
-        self.document.move_node(self.node_id, self.source_index)
-
-
-class _MoveTextObjectCommand(_DocumentCommand):
+class _MoveVectorObjectCommand(_DocumentCommand):
     def __init__(
         self,
         document: Document,
@@ -440,13 +416,13 @@ class _MoveTextObjectCommand(_DocumentCommand):
         self.target_index = target_index
 
     def redo(self) -> None:
-        self.document.move_text_object(self.group_id, self.object_id, self.target_index)
+        self.document.move_vector_object(self.group_id, self.object_id, self.target_index)
 
     def undo(self) -> None:
-        self.document.move_text_object(self.group_id, self.object_id, self.source_index)
+        self.document.move_vector_object(self.group_id, self.object_id, self.source_index)
 
 
-class _VectorGroupPropertyCommand(_DocumentCommand):
+class _GroupPropertyCommand(_DocumentCommand):
     def __init__(
         self,
         document: Document,
@@ -472,7 +448,7 @@ class _VectorGroupPropertyCommand(_DocumentCommand):
         self._apply(self.before)
 
 
-class _TextObjectPropertyCommand(_DocumentCommand):
+class _VectorObjectPropertyCommand(_DocumentCommand):
     def __init__(
         self,
         document: Document,
@@ -487,7 +463,7 @@ class _TextObjectPropertyCommand(_DocumentCommand):
         self.after = dict(after)
 
     def _apply(self, values: Mapping[str, object]) -> None:
-        self.document.set_text_object_properties(self.object_id, **values)
+        self.document.set_vector_object_properties(self.object_id, **values)
 
     def redo(self) -> None:
         self._apply(self.after)
@@ -967,13 +943,13 @@ class DocumentCommandService:
     ) -> bool:
         document = self._require_document()
         try:
-            source_group, text_object = document.text_object_by_id(object_id)
-            target_group = document.group_by_id(target_group_id)
+            source_group, vector_object = document.vector_object_by_id(object_id)
+            target_group = document.vector_group_by_id(target_group_id)
         except ValueError:
             return False
-        source_index = source_group.children.index(text_object)
+        source_index = source_group.children.index(vector_object)
         return self._push(
-            _MoveVectorChildCommand(
+            _MoveVectorObjectToGroupCommand(
                 document,
                 object_id,
                 source_group.id,
@@ -1038,87 +1014,6 @@ class DocumentCommandService:
             return False
         return self._push(_MoveLayerCommand(document, layer_id, source_index, target_index))
 
-    def create_text_group(self, name: str = "文字组") -> bool:
-        document = self._require_document()
-        if len(document.nodes) >= MAX_DOCUMENT_LAYERS:
-            return False
-        normalized = name.strip()
-        if not normalized:
-            return False
-        normalized = _unique_name(normalized, _document_names(document))
-        group = VectorGroupLayer.create(normalized)
-        return self._push(
-            _InsertTextGroupCommand(document, group, len(document.nodes), "新建文字组")
-        )
-
-    def delete_text_group(self, group_id: UUID) -> bool:
-        document = self._require_document()
-        try:
-            group = document.group_by_id(group_id)
-        except ValueError:
-            return False
-        return self._push(
-            _DeleteTextGroupCommand(document, group, document.nodes.index(group))
-        )
-
-    def duplicate_text_group(self, group_id: UUID) -> bool:
-        document = self._require_document()
-        if len(document.nodes) >= MAX_DOCUMENT_LAYERS:
-            return False
-        try:
-            group = document.group_by_id(group_id)
-        except ValueError:
-            return False
-        duplicate = group.duplicate()
-        duplicate.name = _unique_name(
-            duplicate.name,
-            _document_names(document),
-        )
-        index = document.nodes.index(group) + 1
-        return self._push(
-            _InsertTextGroupCommand(document, duplicate, index, "复制文字组")
-        )
-
-    def rename_text_group(self, group_id: UUID, name: str) -> bool:
-        document = self._require_document()
-        try:
-            group = document.group_by_id(group_id)
-        except ValueError:
-            return False
-        normalized = name.strip()
-        if not normalized:
-            return False
-        normalized = _unique_name(
-            normalized,
-            _document_names(document, exclude={group_id}),
-        )
-        if normalized == group.name:
-            return False
-        return self._push(
-            _VectorGroupPropertyCommand(
-                document,
-                group_id,
-                "name",
-                group.name,
-                normalized,
-                "重命名文字组",
-            )
-        )
-
-    def move_node(self, node_id: UUID, target_index: int) -> bool:
-        document = self._require_document()
-        try:
-            source_index = next(
-                index for index, node in enumerate(document.nodes) if node.id == node_id
-            )
-        except StopIteration:
-            return False
-        if source_index == target_index or not 0 <= target_index < len(document.nodes):
-            return False
-        return self._push(
-            _MoveNodeCommand(document, node_id, source_index, target_index)
-        )
-
     def create_text_object(
         self,
         group_id: UUID,
@@ -1130,7 +1025,7 @@ class DocumentCommandService:
     ) -> bool:
         document = self._require_document()
         try:
-            group = document.group_by_id(group_id)
+            group = document.vector_group_by_id(group_id)
         except ValueError:
             return False
         if group.locked:
@@ -1146,7 +1041,7 @@ class DocumentCommandService:
         except ValueError:
             return False
         return self._push(
-            _InsertTextObjectCommand(
+            _InsertVectorObjectCommand(
                 document,
                 group_id,
                 text_object,
@@ -1158,13 +1053,13 @@ class DocumentCommandService:
     def delete_text_object(self, object_id: UUID) -> bool:
         document = self._require_document()
         try:
-            group, text_object = document.text_object_by_id(object_id)
+            group, text_object = document.vector_object_by_id(object_id)
         except ValueError:
             return False
         if group.locked:
             return False
         return self._push(
-            _DeleteTextObjectCommand(
+            _DeleteVectorObjectCommand(
                 document,
                 group.id,
                 text_object,
@@ -1175,7 +1070,7 @@ class DocumentCommandService:
     def duplicate_text_object(self, object_id: UUID) -> bool:
         document = self._require_document()
         try:
-            group, text_object = document.text_object_by_id(object_id)
+            group, text_object = document.vector_object_by_id(object_id)
         except ValueError:
             return False
         if group.locked:
@@ -1186,7 +1081,7 @@ class DocumentCommandService:
             _document_names(document),
         )
         return self._push(
-            _InsertTextObjectCommand(
+            _InsertVectorObjectCommand(
                 document,
                 group.id,
                 duplicate,
@@ -1198,7 +1093,7 @@ class DocumentCommandService:
     def move_text_object(self, object_id: UUID, target_index: int) -> bool:
         document = self._require_document()
         try:
-            group, text_object = document.text_object_by_id(object_id)
+            group, text_object = document.vector_object_by_id(object_id)
         except ValueError:
             return False
         source_index = group.children.index(text_object)
@@ -1207,7 +1102,7 @@ class DocumentCommandService:
         if group.locked:
             return False
         return self._push(
-            _MoveTextObjectCommand(
+            _MoveVectorObjectCommand(
                 document,
                 group.id,
                 object_id,
@@ -1246,7 +1141,7 @@ class DocumentCommandService:
         if all(before[key] == after[key] for key in before):
             return False
         return self._push(
-            _TextObjectPropertyCommand(
+            _VectorObjectPropertyCommand(
                 document,
                 object_id,
                 before,
@@ -1256,26 +1151,175 @@ class DocumentCommandService:
         )
 
     def set_text_object_visible(self, object_id: UUID, visible: bool) -> bool:
-        return self.update_text_object(object_id, visible=visible)
+        return self.update_vector_object(object_id, visible=visible)
 
     def set_text_object_opacity(self, object_id: UUID, opacity: float) -> bool:
         if not 0.0 <= opacity <= 1.0:
             return False
-        return self.update_text_object(object_id, opacity=opacity)
+        return self.update_vector_object(object_id, opacity=opacity)
 
     def set_text_object_locked(self, object_id: UUID, locked: bool) -> bool:
-        return self.update_text_object(object_id, locked=locked)
+        return self.update_vector_object(object_id, locked=locked)
 
-    def set_vector_group_visible(self, group_id: UUID, visible: bool) -> bool:
-        return self._set_group_property(group_id, "visible", visible, "切换文字组可见性")
-
-    def set_vector_group_opacity(self, group_id: UUID, opacity: float) -> bool:
-        if not 0.0 <= opacity <= 1.0:
+    def update_vector_object(self, object_id: UUID, **changes: object) -> bool:
+        document = self._require_document()
+        try:
+            group, vector_object = document.vector_object_by_id(object_id)
+        except ValueError:
             return False
-        return self._set_group_property(group_id, "opacity", opacity, "更改文字组不透明度")
+        if not changes:
+            return False
+        if (group.locked or vector_object.locked) and set(changes) != {"locked"}:
+            return False
+        candidate_changes: dict[str, Any] = dict(changes)
+        if "name" in candidate_changes:
+            normalized = str(candidate_changes["name"]).strip()
+            if not normalized:
+                return False
+            candidate_changes["name"] = _unique_name(
+                normalized,
+                _document_names(document, exclude={object_id}),
+            )
+        try:
+            replace(vector_object, **candidate_changes)
+        except (PermissionError, TypeError, ValueError):
+            return False
+        before = {key: getattr(vector_object, key) for key in candidate_changes}
+        if all(before[key] == candidate_changes[key] for key in before):
+            return False
+        return self._push(
+            _VectorObjectPropertyCommand(
+                document,
+                object_id,
+                before,
+                candidate_changes,
+                "编辑矢量对象属性",
+            )
+        )
 
-    def set_vector_group_locked(self, group_id: UUID, locked: bool) -> bool:
-        return self._set_group_property(group_id, "locked", locked, "切换文字组锁定")
+    def rasterize_vector_group(self, group_id: UUID) -> bool:
+        document = self._require_document()
+        try:
+            live_group = document.vector_group_by_id(group_id)
+        except ValueError:
+            return False
+        if live_group.locked:
+            return False
+        before_nodes = tuple(_clone_group(node) for node in document.nodes)
+        after_nodes = [_clone_group(node) for node in document.nodes]
+        index = next(
+            position for position, node in enumerate(after_nodes) if node.id == group_id
+        )
+        group = after_nodes[index]
+        if not isinstance(group, VectorGroupLayer):
+            return False
+        store = rasterize_vector_objects(
+            tuple(group.children),
+            document.size,
+            opacity=group.opacity,
+        )
+        existing_names = _document_names(document)
+        layer_name = _unique_name(f"{group.name} 栅格", existing_names)
+        layer = RasterLayer(
+            id=uuid4(),
+            name=layer_name,
+            size=document.size,
+            origin=PixelPoint(),
+            pixels=store,
+        )
+        after_nodes[index] = RasterGroupLayer(
+            id=group.id,
+            name=group.name,
+            children=[layer],
+            visible=group.visible,
+            opacity=1.0,
+            locked=group.locked,
+        )
+        return self._push(
+            _ReplaceGroupStructureCommand(
+                document,
+                before_nodes,
+                tuple(after_nodes),
+                document.active_layer_id,
+                layer.id,
+                "栅格化矢量组",
+                storage_bytes=store.allocated_bytes,
+            )
+        )
+
+    def rasterize_vector_object(self, object_id: UUID) -> bool:
+        document = self._require_document()
+        try:
+            live_group, live_object = document.vector_object_by_id(object_id)
+        except ValueError:
+            return False
+        if live_group.locked or live_object.locked:
+            return False
+        before_nodes = tuple(_clone_group(node) for node in document.nodes)
+        after_nodes = [_clone_group(node) for node in document.nodes]
+        root_index = next(
+            position for position, node in enumerate(after_nodes) if node.id == live_group.id
+        )
+        group = after_nodes[root_index]
+        if not isinstance(group, VectorGroupLayer):
+            return False
+        vector_object = group.child_by_id(object_id)
+        child_index = group.children.index(vector_object)
+        lower_children = list(group.children[:child_index])
+        upper_children = list(group.children[child_index + 1 :])
+        store = rasterize_vector_objects(
+            (vector_object,),
+            document.size,
+            include_hidden=True,
+        )
+        names = _document_names(document)
+        raster_group_name = _unique_name(f"{vector_object.name} 栅格组", names)
+        names.add(raster_group_name)
+        raster_layer = RasterLayer(
+            id=uuid4(),
+            name=_unique_name(f"{vector_object.name} 栅格", names),
+            size=document.size,
+            origin=PixelPoint(),
+            pixels=store,
+            visible=vector_object.visible,
+            locked=vector_object.locked,
+        )
+        raster_group = RasterGroupLayer(
+            id=uuid4(),
+            name=raster_group_name,
+            children=[raster_layer],
+            visible=group.visible,
+            opacity=group.opacity,
+            locked=group.locked,
+        )
+        replacement: list[LayerGroup] = []
+        original_id_used = False
+        if lower_children:
+            replacement.append(replace(group, children=lower_children))
+            original_id_used = True
+        replacement.append(raster_group)
+        if upper_children:
+            upper_name = _unique_name(f"{group.name}.1", names | {raster_group_name})
+            replacement.append(
+                replace(
+                    group,
+                    id=uuid4() if original_id_used else group.id,
+                    name=upper_name if original_id_used else group.name,
+                    children=upper_children,
+                )
+            )
+        after_nodes[root_index : root_index + 1] = replacement
+        return self._push(
+            _ReplaceGroupStructureCommand(
+                document,
+                before_nodes,
+                tuple(after_nodes),
+                document.active_layer_id,
+                raster_layer.id,
+                "栅格化矢量子图层",
+                storage_bytes=store.allocated_bytes,
+            )
+        )
 
     def _push_group_property(
         self,
@@ -1285,7 +1329,7 @@ class DocumentCommandService:
         label: str,
     ) -> bool:
         return self._push(
-            _VectorGroupPropertyCommand(
+            _GroupPropertyCommand(
                 self._require_document(),
                 group.id,
                 property_name,
@@ -1310,32 +1354,6 @@ class DocumentCommandService:
         if getattr(group, property_name) == value:
             return False
         return self._push_group_property(group, property_name, value, label)
-
-    def _set_group_property(
-        self,
-        group_id: UUID,
-        property_name: str,
-        value: object,
-        label: str,
-    ) -> bool:
-        document = self._require_document()
-        try:
-            group = document.group_by_id(group_id)
-        except ValueError:
-            return False
-        before = getattr(group, property_name)
-        if before == value:
-            return False
-        return self._push(
-            _VectorGroupPropertyCommand(
-                document,
-                group_id,
-                property_name,
-                before,
-                value,
-                label,
-            )
-        )
 
     def set_layer_visible(self, layer_id: UUID, visible: bool) -> bool:
         layer = self._require_document().layer_by_id(layer_id)

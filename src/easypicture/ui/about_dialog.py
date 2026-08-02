@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from easypicture.persistence.schema import PROJECT_SCHEMA_VERSION
 from easypicture.render import CanvasRenderDiagnostics, RenderBackendKind
 from easypicture.runtime import RuntimePaths, package_versions
 
@@ -38,7 +39,7 @@ def build_diagnostics_report(
             "NumPy / Pillow / OpenCV: "
             f"{versions['NumPy']} / {versions['Pillow']} / {versions['OpenCV']}"
         ),
-        "项目格式: .limg schema v1",
+        f"项目格式: .limg schema v{PROJECT_SCHEMA_VERSION}",
     ]
     if render is None:
         rows.append("渲染后端: 尚未初始化")

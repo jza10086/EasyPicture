@@ -14,6 +14,7 @@ from easypicture.domain import (
     DocumentModifiedChanged,
     DocumentRevisionChanged,
     PixelPoint,
+    RasterGroupLayer,
     RasterLayer,
     Selection,
     Size,
@@ -73,7 +74,7 @@ def test_document_create_builds_clean_transparent_default_layer() -> None:
     assert document.selection.revision == 0
 
 
-def test_document_normalizes_legacy_layer_geometry_to_canvas() -> None:
+def test_document_rejects_raster_geometry_that_does_not_match_canvas() -> None:
     size = Size(8, 6)
     layer = RasterLayer.create_blank(
         "旧图层",
@@ -84,23 +85,17 @@ def test_document_normalizes_legacy_layer_geometry_to_canvas() -> None:
     pixels[1, 1] = (10, 20, 30, 255)
     layer.pixels.replace_tile(0, 0, pixels)
 
-    document = Document(
-        document_id=uuid4(),
-        size=size,
-        layers=[layer],
-        active_layer_id=layer.id,
-        selection=Selection.create_empty(size),
-    )
+    group = RasterGroupLayer.create("栅格组")
+    group.children.append(layer)
 
-    assert document.active_layer.size == size
-    assert document.active_layer.origin == PixelPoint()
-    assert tuple(document.active_layer.pixels.read_tile(0, 0)[2, 3]) == (
-        10,
-        20,
-        30,
-        255,
-    )
-    assert document.active_layer.pixels.has_tile(0, 0)
+    with pytest.raises(ValueError, match="geometry must match"):
+        Document(
+            document_id=uuid4(),
+            size=size,
+            nodes=[group],
+            active_layer_id=layer.id,
+            selection=Selection.create_empty(size),
+        )
 
 
 def test_new_documents_and_layers_have_unique_ids() -> None:
@@ -137,10 +132,12 @@ def test_active_layer_change_validates_membership_and_emits_events() -> None:
     size = Size(20, 20)
     first = RasterLayer.create_blank("第一层", size)
     second = RasterLayer.create_blank("第二层", size)
+    group = RasterGroupLayer.create("栅格组")
+    group.children.extend((first, second))
     document = Document(
         document_id=uuid4(),
         size=size,
-        layers=[first, second],
+        nodes=[group],
         active_layer_id=first.id,
         selection=Selection.create_empty(size),
     )

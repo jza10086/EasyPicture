@@ -11,9 +11,9 @@ from easypicture.render.canvas_frame import (
 from easypicture.render.opengl_canvas import OpenGLCanvasBackend
 from easypicture.render.qimage_bridge import qimage_to_rgba, rgba_tile_to_qimage
 from easypicture.render.text_renderer import (
-    paint_text_groups,
     paint_text_object,
-    paint_text_objects,
+    paint_vector_groups,
+    paint_vector_objects,
 )
 
 __all__ = [
@@ -26,8 +26,8 @@ __all__ = [
     "TransformPreviewState",
     "rgba_tile_to_qimage",
     "qimage_to_rgba",
-    "paint_text_groups",
+    "paint_vector_groups",
     "paint_text_object",
-    "paint_text_objects",
+    "paint_vector_objects",
     "iter_effective_leaves",
 ]
