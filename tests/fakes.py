@@ -25,7 +25,9 @@ class FakeDialogService:
         self.undo_reset_result = True
         self.undo_reset_calls: list[tuple[int, int]] = []
         self.undo_too_large_calls: list[tuple[int, int]] = []
-        self.open_path: Path | None = None
+        self.project_open_path: Path | None = None
+        self.image_import_path: Path | None = None
+        self.append_path: Path | None = None
         self.project_save_path: Path | None = None
         self.png_export_path: Path | None = None
         self.image_export_spec: ImageExportSpec | None = None
@@ -59,9 +61,17 @@ class FakeDialogService:
             return self.unsaved_decision
         return UnsavedDecision.DISCARD if self.discard_result else UnsavedDecision.CANCEL
 
-    def choose_open_file(self, parent: QWidget) -> Path | None:
+    def choose_project_open_file(self, parent: QWidget) -> Path | None:
         _ = parent
-        return self.open_path
+        return self.project_open_path
+
+    def choose_image_import_file(self, parent: QWidget) -> Path | None:
+        _ = parent
+        return self.image_import_path
+
+    def choose_append_file(self, parent: QWidget) -> Path | None:
+        _ = parent
+        return self.append_path
 
     def choose_project_save_file(
         self,

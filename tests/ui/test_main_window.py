@@ -28,6 +28,9 @@ def test_main_window_starts_without_document(qtbot, tmp_path) -> None:
     assert window.central_stack.currentWidget() is window.empty_state
     assert not window.close_action.isEnabled()
     assert not window.save_action.isEnabled()
+    assert window.open_action.isEnabled()
+    assert window.import_action.isEnabled()
+    assert not window.append_action.isEnabled()
     assert window.windowTitle().startswith("EasyPicture")
 
 
@@ -97,6 +100,7 @@ def test_new_document_updates_canvas_status_and_title(qtbot, tmp_path) -> None:
     assert window.document_size_label.text() == "800 × 600 px"
     assert window.windowTitle() == "Untitled — EasyPicture"
     assert window.close_action.isEnabled()
+    assert window.append_action.isEnabled()
 
     controller.document.record_change()
     assert window.windowTitle() == "Untitled* — EasyPicture"
@@ -163,3 +167,6 @@ def test_recent_files_and_help_actions_are_available(qtbot, tmp_path) -> None:
     assert any("first.limg" in text for text in recent_texts)
     assert window.about_action.text() == "关于 EasyPicture…"
     assert window.open_log_folder_action.text() == "打开日志目录"
+    assert window.open_action.text() == "打开(&O)"
+    assert window.import_action.text() == "导入…"
+    assert window.append_action.text() == "追加…"

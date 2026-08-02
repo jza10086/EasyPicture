@@ -180,7 +180,7 @@ class EmptyStateWidget(QFrame):
         super().__init__(parent)
         self.setObjectName("EmptyState")
         self.new_button = QPushButton("新建文档", self)
-        self.open_button = QPushButton("打开图片或项目", self)
+        self.open_button = QPushButton("打开项目", self)
         title = QLabel("EasyPicture", self)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet("font-size: 24px; font-weight: 600;")
@@ -287,6 +287,9 @@ class MainWindow(QMainWindow):
         self.new_action.setShortcut(QKeySequence.StandardKey.New)
         self.open_action = QAction("打开(&O)", self)
         self.open_action.setShortcut(QKeySequence.StandardKey.Open)
+        self.import_action = QAction("导入…", self)
+        self.append_action = QAction("追加…", self)
+        self.append_action.setEnabled(False)
         self.close_action = QAction("关闭文档(&C)", self)
         self.close_action.setShortcut(QKeySequence.StandardKey.Close)
         self.exit_action = QAction("退出(&X)", self)
@@ -373,6 +376,8 @@ class MainWindow(QMainWindow):
         file_menu = self.menuBar().addMenu("文件(&F)")
         file_menu.addAction(self.new_action)
         file_menu.addAction(self.open_action)
+        file_menu.addAction(self.import_action)
+        file_menu.addAction(self.append_action)
         self.recent_files_menu = file_menu.addMenu("最近文件")
         self.recent_files_menu.aboutToShow.connect(self._rebuild_recent_files_menu)
         file_menu.addAction(self.close_action)
@@ -675,6 +680,8 @@ class MainWindow(QMainWindow):
         self.empty_state.open_button.clicked.connect(self._request_open_document)
         self.new_action.triggered.connect(self._request_new_document)
         self.open_action.triggered.connect(self._request_open_document)
+        self.import_action.triggered.connect(self._request_import_document)
+        self.append_action.triggered.connect(self._request_append_document)
         self.close_action.triggered.connect(self._request_close_document)
         self.save_action.triggered.connect(self._request_save_document)
         self.save_as_action.triggered.connect(self._request_save_as_document)
@@ -788,6 +795,14 @@ class MainWindow(QMainWindow):
     def _request_open_document(self) -> None:
         self._cancel_color_adjustment_for_lifecycle()
         self.controller.request_open_document(self)
+
+    def _request_import_document(self) -> None:
+        self._cancel_color_adjustment_for_lifecycle()
+        self.controller.request_import_document(self)
+
+    def _request_append_document(self) -> None:
+        self._cancel_color_adjustment_for_lifecycle()
+        self.controller.request_append_document(self)
 
     def _open_recent_path(self, path: Path) -> None:
         self._cancel_color_adjustment_for_lifecycle()
@@ -1089,6 +1104,7 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(has_document)
         self.save_as_action.setEnabled(has_document)
         self.export_action.setEnabled(has_document)
+        self.append_action.setEnabled(has_document and not self._editing_busy)
         self.transform_action.setEnabled(has_document and not self._editing_busy)
         for action in (
             self.canvas_size_action,
@@ -1685,7 +1701,12 @@ class MainWindow(QMainWindow):
         self.layer_panel.setEnabled(not busy)
         for action in self.color_adjustment_actions.values():
             action.setEnabled(has_document and not busy)
-        for action in (self.save_action, self.save_as_action, self.export_action):
+        for action in (
+            self.save_action,
+            self.save_as_action,
+            self.export_action,
+            self.append_action,
+        ):
             action.setEnabled(has_document and not busy)
         self.transform_action.setEnabled(has_document and not busy)
         for action in (

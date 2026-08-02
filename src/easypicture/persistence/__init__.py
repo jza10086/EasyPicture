@@ -1,5 +1,9 @@
 """Project snapshots and durable file persistence."""
 
+from easypicture.persistence.document_append import (
+    DocumentAppendPayload,
+    prepare_document_append,
+)
 from easypicture.persistence.image_export import (
     BmpExportOptions,
     ExportCapability,
@@ -51,6 +55,7 @@ from easypicture.persistence.svg_io import SvgImportResult, SvgImportWarning, im
 __all__ = [
     "DocumentSnapshot",
     "DocumentNodeSnapshot",
+    "DocumentAppendPayload",
     "BmpExportOptions",
     "ExportCapability",
     "ExportFormat",
@@ -89,5 +94,6 @@ __all__ = [
     "import_svg",
     "load_project",
     "normalize_export_path",
+    "prepare_document_append",
     "save_project",
 ]

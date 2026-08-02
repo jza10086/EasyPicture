@@ -43,6 +43,7 @@ from easypicture.persistence import (
     import_image,
     import_svg,
     load_project,
+    prepare_document_append,
     save_project,
 )
 from easypicture.ui.dialogs import (
@@ -132,19 +133,91 @@ class ApplicationController(QObject):
         return True
 
     def request_open_document(self, parent: QWidget) -> bool:
-        path = self.dialogs.choose_open_file(parent)
+        path = self.dialogs.choose_project_open_file(parent)
         return False if path is None else self.open_path(parent, path)
 
     def open_path(self, parent: QWidget, path: Path) -> bool:
         resolved_path = Path(path)
-        candidate = self._load_candidate(parent, resolved_path)
+        if resolved_path.suffix.lower() != ".limg":
+            self.dialogs.show_error(
+                parent,
+                "打开项目失败",
+                "“打开”仅支持 EasyPicture 的 .limg 项目；普通图片请使用“导入”。",
+            )
+            return False
+        document = self._load_project_candidate(parent, resolved_path)
+        if document is None or not self._resolve_unsaved(parent):
+            return False
+        self._replace_document(document)
+        self._record_recent_file(resolved_path)
+        self._logger.info("opened %s", resolved_path)
+        return True
+
+    def request_import_document(self, parent: QWidget) -> bool:
+        path = self.dialogs.choose_image_import_file(parent)
+        return False if path is None else self.import_path(parent, path)
+
+    def import_path(self, parent: QWidget, path: Path) -> bool:
+        resolved_path = Path(path)
+        if resolved_path.suffix.lower() == ".limg":
+            self.dialogs.show_error(
+                parent,
+                "导入失败",
+                ".limg 是项目文件，请使用“打开”。",
+            )
+            return False
+        candidate = self._load_import_candidate(parent, resolved_path)
         if candidate is None or not self._resolve_unsaved(parent):
             return False
         document, notices = candidate
         self._replace_document(document)
         self._record_recent_file(resolved_path)
-        self._logger.info("opened %s", resolved_path)
+        self._logger.info("imported %s as a new project", resolved_path)
         self.dialogs.show_warnings(parent, "导入提示", notices)
+        return True
+
+    def request_append_document(self, parent: QWidget) -> bool:
+        if self._document is None:
+            return False
+        path = self.dialogs.choose_append_file(parent)
+        return False if path is None else self.append_path(parent, path)
+
+    def append_path(self, parent: QWidget, path: Path) -> bool:
+        target = self._document
+        if target is None:
+            return False
+        resolved_path = Path(path)
+        notices: tuple[str, ...]
+        if resolved_path.suffix.lower() == ".limg":
+            source = self._load_project_candidate(parent, resolved_path)
+            notices = ()
+        else:
+            candidate = self._load_import_candidate(parent, resolved_path)
+            if candidate is None:
+                return False
+            source, notices = candidate
+        if source is None or self._document is not target:
+            return False
+        try:
+            payload = prepare_document_append(
+                source,
+                target,
+                include_empty_raster_groups=resolved_path.suffix.lower() != ".svg",
+            )
+        except (TypeError, ValueError) as error:
+            self.dialogs.show_error(parent, "追加失败", str(error))
+            return False
+        if not self.commands.append_groups(payload.groups):
+            self.dialogs.show_error(
+                parent,
+                "追加失败",
+                "追加内容超过图层数量或撤销内存限制，当前工程未发生变化。",
+            )
+            return False
+        self._record_recent_file(resolved_path)
+        self.status_message.emit(f"已追加 {resolved_path.name}")
+        self._logger.info("appended %s", resolved_path)
+        self.dialogs.show_warnings(parent, "追加提示", notices + payload.warnings)
         return True
 
     def open_recent_path(self, parent: QWidget, path: Path) -> bool:
@@ -158,7 +231,9 @@ class ApplicationController(QObject):
                 details=str(candidate),
             )
             return False
-        return self.open_path(parent, candidate)
+        if candidate.suffix.lower() == ".limg":
+            return self.open_path(parent, candidate)
+        return self.import_path(parent, candidate)
 
     def clear_recent_files(self) -> None:
         self.settings.clear_recent_files()
@@ -305,36 +380,37 @@ class ApplicationController(QObject):
         self._logger.info("restored recovery draft %s", self.recovery_path)
         return True
 
-    def _load_candidate(
+    def _load_project_candidate(
+        self,
+        parent: QWidget,
+        path: Path,
+    ) -> Document | None:
+        outcome = self._run_foreground(
+            parent,
+            "打开项目",
+            lambda token, progress: load_project(path, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            LoadedProject,
+        ):
+            loaded = outcome.value
+            if loaded.is_recovery:
+                self.dialogs.show_error(
+                    parent,
+                    "打开项目失败",
+                    "自动恢复草稿只能通过启动恢复流程打开。",
+                )
+                return None
+            return loaded.snapshot.to_document(project_path=path)
+        self._report_job_failure(parent, "打开项目失败", outcome)
+        return None
+
+    def _load_import_candidate(
         self,
         parent: QWidget,
         path: Path,
     ) -> tuple[Document, tuple[str, ...]] | None:
-        if path.suffix.lower() == ".limg":
-            outcome = self._run_foreground(
-                parent,
-                "打开项目",
-                lambda token, progress: load_project(path, token, progress),
-            )
-            if outcome.status is JobStatus.SUCCESS and isinstance(
-                outcome.value,
-                LoadedProject,
-            ):
-                loaded = outcome.value
-                if loaded.is_recovery:
-                    self.dialogs.show_error(
-                        parent,
-                        "打开项目失败",
-                        "自动恢复草稿只能通过启动恢复流程打开。",
-                    )
-                    return None
-                document = loaded.snapshot.to_document(
-                    project_path=path,
-                )
-                return document, ()
-            self._report_job_failure(parent, "打开项目失败", outcome)
-            return None
-
         if path.suffix.lower() == ".svg":
             outcome = self._run_foreground(
                 parent,

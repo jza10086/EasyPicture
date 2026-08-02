@@ -358,75 +358,103 @@ class Document:
         index: int | None = None,
     ) -> None:
         """Insert a top-level group and mark the document changed."""
-        if isinstance(group, RasterGroupLayer) and any(
-            child.size != self.size or child.origin != PixelPoint()
-            for child in group.children
-        ):
-            raise ValueError("raster layer geometry must match the canvas")
-        if isinstance(group, RasterGroupLayer):
-            if any(not isinstance(child, RasterLayer) for child in group.children):
-                raise ValueError("raster group contains a non-raster child")
-        elif isinstance(group, VectorGroupLayer):
-            if any(
-                not isinstance(child, (TextObject, SvgElementObject))
-                for child in group.children
-            ):
-                raise ValueError("vector group contains an unsupported child")
-        else:
-            raise ValueError("only layer groups may be inserted at the document root")
-        if len(self._nodes) >= MAX_DOCUMENT_LAYERS:
+        self.insert_groups((group,), index)
+
+    def insert_groups(
+        self,
+        groups: tuple[LayerGroup, ...],
+        index: int | None = None,
+    ) -> None:
+        """Insert several top-level groups as one document change."""
+        if not groups:
+            raise ValueError("at least one group is required")
+        if len(self._nodes) + len(groups) > MAX_DOCUMENT_LAYERS:
             raise ValueError("document cannot contain more than 256 root groups")
-        existing_ids = {
-            node.id
-            for node in self._nodes
-        } | {
-            child.id
-            for node in self._nodes
-            for child in node.children
+
+        existing_ids = {node.id for node in self._nodes} | {
+            child.id for node in self._nodes for child in node.children
         }
-        if group.id in existing_ids:
-            raise ValueError("group id already belongs to the document")
-        child_ids = {child.id for child in group.children}
-        if len(child_ids) != len(group.children) or child_ids & existing_ids:
-            raise ValueError("group child id already belongs to the document")
-        if group.id in child_ids:
-            raise ValueError("group and child ids must be distinct")
-        existing_names = {
-            node.name for node in self._nodes
-        } | {
+        existing_names = {node.name for node in self._nodes} | {
             child.name for node in self._nodes for child in node.children
         }
-        if group.name in existing_names or any(
-            child.name in existing_names for child in group.children
-        ):
-            raise ValueError("group names must be unique")
+        incoming_ids: set[UUID] = set()
+        incoming_names: set[str] = set()
+        incoming_raster_count = 0
+        for group in groups:
+            if isinstance(group, RasterGroupLayer):
+                if any(not isinstance(child, RasterLayer) for child in group.children):
+                    raise ValueError("raster group contains a non-raster child")
+                if any(
+                    child.size != self.size or child.origin != PixelPoint()
+                    for child in group.children
+                ):
+                    raise ValueError("raster layer geometry must match the canvas")
+                incoming_raster_count += len(group.children)
+            elif isinstance(group, VectorGroupLayer):
+                if any(
+                    not isinstance(child, (TextObject, SvgElementObject))
+                    for child in group.children
+                ):
+                    raise ValueError("vector group contains an unsupported child")
+            else:
+                raise ValueError("only layer groups may be inserted at the document root")
+
+            group_ids = {group.id, *(child.id for child in group.children)}
+            if len(group_ids) != len(group.children) + 1:
+                raise ValueError("group and child ids must be distinct")
+            if group_ids & (existing_ids | incoming_ids):
+                raise ValueError("group id already belongs to the document")
+            group_names = {group.name, *(child.name for child in group.children)}
+            if len(group_names) != len(group.children) + 1:
+                raise ValueError("group names must be unique")
+            if group_names & (existing_names | incoming_names):
+                raise ValueError("group names must be unique")
+            incoming_ids.update(group_ids)
+            incoming_names.update(group_names)
+
+        if len(self._layers) + incoming_raster_count > MAX_DOCUMENT_LAYERS:
+            raise ValueError("document cannot contain more than 256 raster layers")
         target = len(self._nodes) if index is None else index
         if not 0 <= target <= len(self._nodes):
             raise IndexError("group insertion index is out of range")
-        self._nodes.insert(target, group)
+        self._nodes[target:target] = groups
+        self._refresh_raster_layers()
         revision = self._begin_content_change()
         self._emit_group_list_changed(revision)
-        if group.children:
-            self._emit_group_members_changed(revision, group)
+        for group in groups:
+            if group.children:
+                self._emit_group_members_changed(revision, group)
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
 
     def remove_group(self, group_id: UUID) -> tuple[LayerGroup, int]:
         group = self.layer_group_by_id(group_id)
-        raster_count = len(self._layers)
-        if isinstance(group, RasterGroupLayer) and raster_count == len(group.children):
-            raise ValueError("document must retain at least one raster layer")
         index = self._nodes.index(group)
-        self._nodes.pop(index)
+        self.remove_groups((group_id,))
+        return group, index
+
+    def remove_groups(self, group_ids: tuple[UUID, ...]) -> None:
+        """Remove several top-level groups as one document change."""
+        if not group_ids or len(set(group_ids)) != len(group_ids):
+            raise ValueError("group ids must be non-empty and unique")
+        groups = [self.layer_group_by_id(group_id) for group_id in group_ids]
+        removed_raster_count = sum(
+            len(group.children)
+            for group in groups
+            if isinstance(group, RasterGroupLayer)
+        )
+        if len(self._layers) - removed_raster_count < 1:
+            raise ValueError("document must retain at least one raster layer")
         old_active_id = self._active_layer_id
+        removed_ids = set(group_ids)
+        self._nodes[:] = [node for node in self._nodes if node.id not in removed_ids]
         self._refresh_raster_layers()
         if old_active_id not in {layer.id for layer in self._layers}:
-            self._active_layer_id = self._layers[max(0, min(index, len(self._layers) - 1))].id
+            self._active_layer_id = self._layers[-1].id
         revision = self._begin_content_change()
         self._emit_group_list_changed(revision)
         if self._active_layer_id != old_active_id:
             self._emit_active_layer_changed(revision)
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
-        return group, index
 
     def move_group(self, group_id: UUID, target_index: int) -> bool:
         group = self.layer_group_by_id(group_id)

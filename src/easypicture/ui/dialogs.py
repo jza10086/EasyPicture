@@ -66,7 +66,11 @@ class DialogService(Protocol):
         document: Document,
     ) -> UnsavedDecision: ...
 
-    def choose_open_file(self, parent: QWidget) -> Path | None: ...
+    def choose_project_open_file(self, parent: QWidget) -> Path | None: ...
+
+    def choose_image_import_file(self, parent: QWidget) -> Path | None: ...
+
+    def choose_append_file(self, parent: QWidget) -> Path | None: ...
 
     def choose_project_save_file(
         self,
@@ -256,15 +260,37 @@ class QtDialogService:
         _ = cancel_button
         return UnsavedDecision.CANCEL
 
-    def choose_open_file(self, parent: QWidget) -> Path | None:
+    def choose_project_open_file(self, parent: QWidget) -> Path | None:
         path, _selected_filter = QFileDialog.getOpenFileName(
             parent,
-            "打开图片或项目",
+            "打开 EasyPicture 项目",
+            "",
+            "EasyPicture 项目 (*.limg)",
+        )
+        return Path(path) if path else None
+
+    def choose_image_import_file(self, parent: QWidget) -> Path | None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            parent,
+            "导入图片",
+            "",
+            (
+                "支持的图片 (*.svg *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.tga);;"
+                "位图 (*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.tga);;"
+                "SVG 矢量图 (*.svg);;所有文件 (*)"
+            ),
+        )
+        return Path(path) if path else None
+
+    def choose_append_file(self, parent: QWidget) -> Path | None:
+        path, _selected_filter = QFileDialog.getOpenFileName(
+            parent,
+            "追加图片或项目",
             "",
             (
                 "支持的文件 (*.limg *.svg *.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff *.tga);;"
-                "EasyPicture 项目 (*.limg);;图片 (*.png *.jpg *.jpeg *.webp *.bmp *.tif "
-                "*.tiff *.tga);;SVG 矢量图 (*.svg);;所有文件 (*)"
+                "EasyPicture 项目 (*.limg);;图片 (*.svg *.png *.jpg *.jpeg *.webp "
+                "*.bmp *.tif *.tiff *.tga);;所有文件 (*)"
             ),
         )
         return Path(path) if path else None

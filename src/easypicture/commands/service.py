@@ -200,6 +200,31 @@ class _InsertGroupCommand(_DocumentCommand):
         self.document.remove_group(self.group.id)
 
 
+class _InsertGroupsCommand(_DocumentCommand):
+    def __init__(
+        self,
+        document: Document,
+        groups: tuple[RasterGroupLayer | VectorGroupLayer, ...],
+        index: int,
+        text: str,
+    ) -> None:
+        storage_bytes = sum(
+            child.pixels.allocated_bytes
+            for group in groups
+            if isinstance(group, RasterGroupLayer)
+            for child in group.children
+        )
+        super().__init__(document, text, storage_bytes=storage_bytes)
+        self.groups = groups
+        self.index = index
+
+    def redo(self) -> None:
+        self.document.insert_groups(self.groups, self.index)
+
+    def undo(self) -> None:
+        self.document.remove_groups(tuple(group.id for group in self.groups))
+
+
 class _DeleteGroupCommand(_DocumentCommand):
     def __init__(
         self,
@@ -783,6 +808,28 @@ class DocumentCommandService:
         group = VectorGroupLayer.create(group_name)
         return self._push(
             _InsertGroupCommand(document, group, len(document.nodes), "新建矢量组")
+        )
+
+    def append_groups(
+        self,
+        groups: tuple[RasterGroupLayer | VectorGroupLayer, ...],
+        label: str = "追加文件",
+    ) -> bool:
+        """Append prepared groups as one undoable document operation."""
+        document = self._require_document()
+        if not groups:
+            return False
+        if len(document.nodes) + len(groups) > MAX_DOCUMENT_LAYERS:
+            return False
+        raster_count = sum(
+            len(group.children)
+            for group in groups
+            if isinstance(group, RasterGroupLayer)
+        )
+        if len(document.layers) + raster_count > MAX_DOCUMENT_LAYERS:
+            return False
+        return self._push(
+            _InsertGroupsCommand(document, groups, len(document.nodes), label)
         )
 
     def delete_group(self, group_id: UUID) -> bool:

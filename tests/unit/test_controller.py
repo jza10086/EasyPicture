@@ -7,7 +7,13 @@ from PIL import Image
 from PySide6.QtWidgets import QWidget
 
 from easypicture.controller import ApplicationController
-from easypicture.persistence import GifExportOptions
+from easypicture.domain import Document
+from easypicture.jobs import CancellationToken
+from easypicture.persistence import (
+    DocumentSnapshot,
+    GifExportOptions,
+    save_project,
+)
 from easypicture.pixels import TileCoord
 from easypicture.ui.dialogs import (
     NewDocumentSpec,
@@ -202,7 +208,11 @@ def test_unified_export_does_not_clear_modified(qtbot, tmp_path: Path) -> None:
         assert image.n_frames == 1
 
 
-def test_open_image_creates_clean_source_named_document(qtbot, tmp_path: Path) -> None:
+def _progress(_completed: int, _total: int, _message: str) -> None:
+    return None
+
+
+def test_import_image_creates_clean_source_named_document(qtbot, tmp_path: Path) -> None:
     parent = QWidget()
     qtbot.addWidget(parent)
     source = tmp_path / "photo.png"
@@ -210,20 +220,126 @@ def test_open_image_creates_clean_source_named_document(qtbot, tmp_path: Path) -
     pixels[0, 0] = (1, 2, 3, 255)
     Image.fromarray(pixels, "RGBA").save(source)
     dialogs = FakeDialogService()
-    dialogs.open_path = source
+    dialogs.image_import_path = source
     controller = ApplicationController(
         make_settings(str(tmp_path / "settings.ini")),
         dialogs,
         recovery_dir=tmp_path / "recovery",
     )
 
-    assert controller.request_open_document(parent)
+    assert controller.request_import_document(parent)
 
     assert controller.document is not None
     assert controller.document.display_name == "photo.png"
     assert controller.document.project_path is None
     assert not controller.document.modified
     assert controller.recent_files == (source,)
+
+
+def test_open_rejects_images_without_replacing_document(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    source = tmp_path / "photo.png"
+    Image.new("RGBA", (2, 2), (1, 2, 3, 255)).save(source)
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(3, 3)
+    controller = ApplicationController(make_settings(str(tmp_path / "settings.ini")), dialogs)
+    assert controller.request_new_document(parent)
+    original = controller.document
+
+    assert not controller.open_path(parent, source)
+
+    assert controller.document is original
+    assert dialogs.errors[-1][0] == "打开项目失败"
+
+
+def test_append_image_is_one_undoable_top_level_operation(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    source = tmp_path / "large.png"
+    pixels = np.zeros((4, 5, 4), dtype=np.uint8)
+    pixels[0, 0] = (10, 20, 30, 255)
+    pixels[2, 2] = (40, 50, 60, 255)
+    pixels[3, 4] = (70, 80, 90, 255)
+    Image.fromarray(pixels, "RGBA").save(source)
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(3, 3)
+    dialogs.append_path = source
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    document = controller.document
+    document_id = document.id
+
+    assert controller.request_append_document(parent)
+
+    assert controller.document is document
+    assert document.id == document_id
+    assert document.project_path is None
+    assert len(document.nodes) == 2
+    assert len(document.layers) == 2
+    appended = document.layers[-1]
+    assert appended.size == document.size
+    assert tuple(appended.pixels.read_tile(0, 0)[0, 0]) == (10, 20, 30, 255)
+    assert tuple(appended.pixels.read_tile(0, 0)[2, 2]) == (40, 50, 60, 255)
+    assert document.nodes[-1].name == "栅格组.1"
+    assert controller.commands.undo_stack.count() == 1
+    assert dialogs.warnings[-1][0] == "追加提示"
+
+    controller.commands.undo_stack.undo()
+    assert len(document.nodes) == 1
+    assert len(document.layers) == 1
+    assert not document.modified
+
+    controller.commands.undo_stack.redo()
+    assert len(document.nodes) == 2
+    assert len(document.layers) == 2
+
+
+def test_append_limg_uses_fresh_ids_and_keeps_current_identity(qtbot, tmp_path: Path) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    source_document = Document.create(4, 4)
+    source_tile = source_document.active_layer.pixels.writable_tile(0, 0)
+    source_tile[1, 1] = (9, 8, 7, 255)
+    project = tmp_path / "source.limg"
+    save_project(
+        DocumentSnapshot.capture(source_document),
+        project,
+        CancellationToken(),
+        _progress,
+    )
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(4, 4)
+    dialogs.append_path = project
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    assert controller.document is not None
+    target = controller.document
+    existing_ids = {
+        node.id for node in target.nodes
+    } | {
+        child.id for node in target.nodes for child in node.children
+    }
+
+    assert controller.request_append_document(parent)
+
+    appended_ids = {
+        node.id for node in target.nodes[1:]
+    } | {
+        child.id for node in target.nodes[1:] for child in node.children
+    }
+    assert existing_ids.isdisjoint(appended_ids)
+    assert target.project_path is None
+    assert tuple(target.layers[-1].pixels.read_tile(0, 0)[1, 1]) == (9, 8, 7, 255)
 
 
 def test_missing_recent_file_is_removed_without_replacing_document(
@@ -257,7 +373,7 @@ def test_corrupt_open_preserves_current_document(qtbot, tmp_path: Path) -> None:
     corrupt.write_bytes(b"not a project")
     dialogs = FakeDialogService()
     dialogs.next_document = NewDocumentSpec(10, 10)
-    dialogs.open_path = corrupt
+    dialogs.project_open_path = corrupt
     controller = ApplicationController(
         make_settings(str(tmp_path / "settings.ini")),
         dialogs,
