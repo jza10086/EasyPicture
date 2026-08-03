@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QObject, QPointF, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QObject, QPoint, QPointF, Qt
+from PySide6.QtGui import QColor, QWheelEvent
+from PySide6.QtWidgets import QApplication
 
 from easypicture.controller import ApplicationController
 from easypicture.domain import Document
@@ -160,6 +161,28 @@ def test_selection_enum_options_use_blender_combo_boxes(qtbot, tmp_path) -> None
         window.tool_options_panel.magic_wand.connectivity_combo,
         BlenderComboBox,
     )
+
+
+def test_blender_combo_box_ignores_wheel_value_changes(qtbot) -> None:
+    combo = BlenderComboBox()
+    qtbot.addWidget(combo)
+    combo.addItems(("A", "B", "C"))
+    combo.setCurrentIndex(1)
+    event = QWheelEvent(
+        QPointF(8.0, 8.0),
+        QPointF(8.0, 8.0),
+        QPoint(),
+        QPoint(0, 120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+
+    QApplication.sendEvent(combo, event)
+
+    assert combo.currentIndex() == 1
+    assert not event.isAccepted()
 
 
 def test_selection_modifier_precedence() -> None:

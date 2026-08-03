@@ -5,7 +5,9 @@ from __future__ import annotations
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QGridLayout,
+    QHBoxLayout,
     QLabel,
+    QPushButton,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -16,6 +18,10 @@ from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.drag_value_spinbox import (
     DragValueDoubleSpinBox,
     NumericEditState,
+)
+from easypicture.ui.numeric_ranges import (
+    OBJECT_RADIUS_RANGE,
+    SIGNED_COORDINATE_RANGE,
 )
 
 
@@ -37,15 +43,11 @@ class ShapePropertiesPanel(QWidget):
         self._stack = QStackedWidget(self)
         self._line_page, self._line_fields = self._make_page(("X1", "Y1", "X2", "Y2"))
         self._box_page, self._box_fields = self._make_page(("X", "Y", "W", "H"))
-        self._rounded_page, self._rounded_fields = self._make_page(
-            ("X", "Y", "W", "H", "半径")
-        )
+        self._rounded_page, self._rounded_fields = self._make_page(("X", "Y", "W", "H", "半径"))
         self._polygon_page = QWidget(self)
         polygon_layout = QGridLayout(self._polygon_page)
         polygon_layout.setContentsMargins(0, 0, 0, 0)
-        self._polygon_fields = tuple(
-            self._make_field(label) for label in ("X", "Y", "W", "H")
-        )
+        self._polygon_fields = tuple(self._make_field(label) for label in ("X", "Y", "W", "H"))
         for index, (label, field) in enumerate(
             zip(("X", "Y", "W", "H"), self._polygon_fields, strict=True)
         ):
@@ -60,9 +62,31 @@ class ShapePropertiesPanel(QWidget):
         polygon_layout.addWidget(self.vertex_x, 5, 1)
         polygon_layout.addWidget(QLabel("顶点 Y", self), 6, 0)
         polygon_layout.addWidget(self.vertex_y, 6, 1)
+        self.vertex_count_label = QLabel(self)
+        polygon_layout.addWidget(QLabel("顶点总数", self), 7, 0)
+        polygon_layout.addWidget(self.vertex_count_label, 7, 1)
+        vertex_actions = QWidget(self)
+        vertex_actions_layout = QHBoxLayout(vertex_actions)
+        vertex_actions_layout.setContentsMargins(0, 0, 0, 0)
+        self.add_vertex_button = QPushButton("添加", vertex_actions)
+        self.delete_vertex_button = QPushButton("删除", vertex_actions)
+        self.move_vertex_up_button = QPushButton("上移", vertex_actions)
+        self.move_vertex_down_button = QPushButton("下移", vertex_actions)
+        for button in (
+            self.add_vertex_button,
+            self.delete_vertex_button,
+            self.move_vertex_up_button,
+            self.move_vertex_down_button,
+        ):
+            vertex_actions_layout.addWidget(button)
+        polygon_layout.addWidget(vertex_actions, 8, 0, 1, 2)
         self.vertex_combo.currentIndexChanged.connect(self._sync_selected_vertex)
         self.vertex_x.valueChanged.connect(self._emit_vertex)
         self.vertex_y.valueChanged.connect(self._emit_vertex)
+        self.add_vertex_button.clicked.connect(self._add_vertex)
+        self.delete_vertex_button.clicked.connect(self._delete_vertex)
+        self.move_vertex_up_button.clicked.connect(lambda: self._move_vertex(-1))
+        self.move_vertex_down_button.clicked.connect(lambda: self._move_vertex(1))
         for widget in (
             self._line_page,
             self._box_page,
@@ -74,6 +98,8 @@ class ShapePropertiesPanel(QWidget):
             field.valueChanged.connect(self._emit_line)
         for field in self._box_fields:
             field.valueChanged.connect(self._emit_box)
+        self._rounded_fields[2].valueChanged.connect(self._rounded_size_changed)
+        self._rounded_fields[3].valueChanged.connect(self._rounded_size_changed)
         for field in self._rounded_fields:
             field.valueChanged.connect(self._emit_rounded)
         for field in self._polygon_fields:
@@ -106,6 +132,10 @@ class ShapePropertiesPanel(QWidget):
                 self._stack.setCurrentWidget(self._rounded_page)
                 start_x, start_y = geometry.points[0]
                 end_x, end_y = geometry.points[1]
+                self._set_rounded_radius_range(
+                    end_x - start_x,
+                    end_y - start_y,
+                )
                 self._set_fields(
                     self._rounded_fields,
                     (
@@ -116,7 +146,7 @@ class ShapePropertiesPanel(QWidget):
                         geometry.effective_corner_radius,
                     ),
                 )
-            elif geometry.kind is ShapeKind.POLYGON:
+            elif geometry.kind in (ShapeKind.POLYGON, ShapeKind.POLYLINE):
                 self._stack.setCurrentWidget(self._polygon_page)
                 self._set_fields(
                     self._polygon_fields,
@@ -127,10 +157,9 @@ class ShapePropertiesPanel(QWidget):
                     self.vertex_combo.clear()
                     for index in range(len(geometry.points)):
                         self.vertex_combo.addItem(f"顶点 {index + 1}", index)
-                    self.vertex_combo.setCurrentIndex(
-                        min(current, len(geometry.points) - 1)
-                    )
+                    self.vertex_combo.setCurrentIndex(min(current, len(geometry.points) - 1))
                 self._sync_selected_vertex()
+                self.vertex_count_label.setText(str(len(geometry.points)))
             else:
                 self._stack.setCurrentWidget(self._box_page)
                 start_x, start_y = geometry.points[0]
@@ -162,20 +191,40 @@ class ShapePropertiesPanel(QWidget):
 
     def _make_field(self, label: str) -> DragValueDoubleSpinBox:
         field = DragValueDoubleSpinBox(
-            -8192.0,
-            8192.0,
+            SIGNED_COORDINATE_RANGE.soft_minimum,
+            SIGNED_COORDINATE_RANGE.soft_maximum,
             0.0,
-            manual_minimum=-32768.0,
-            manual_maximum=32768.0,
+            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
+            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
             suffix=" px",
             parent=self,
         )
-        field.interactionStarted.connect(
-            lambda label=label: self.edit_started.emit(label)
-        )
+        field.interactionStarted.connect(lambda label=label: self.edit_started.emit(label))
         field.editingFinished.connect(self.edit_finished)
         field.interactionCanceled.connect(self.edit_canceled)
         return field
+
+    def _rounded_size_changed(self, _value: float) -> None:
+        if self._syncing:
+            return
+        self._set_rounded_radius_range(
+            self._rounded_fields[2].value(),
+            self._rounded_fields[3].value(),
+        )
+
+    def _set_rounded_radius_range(self, width: float, height: float) -> None:
+        maximum = min(abs(width), abs(height)) / 2.0
+        was_syncing = self._syncing
+        self._syncing = True
+        try:
+            self._rounded_fields[4].setPropertyRange(
+                OBJECT_RADIUS_RANGE.soft_minimum,
+                min(OBJECT_RADIUS_RANGE.soft_maximum, maximum),
+                manual_minimum=OBJECT_RADIUS_RANGE.hard_minimum,
+                manual_maximum=maximum,
+            )
+        finally:
+            self._syncing = was_syncing
 
     def _set_fields(
         self,
@@ -218,9 +267,7 @@ class ShapePropertiesPanel(QWidget):
     def _emit_rounded(self, _value: float) -> None:
         if self._syncing:
             return
-        x, y, width, height, radius = (
-            field.value() for field in self._rounded_fields
-        )
+        x, y, width, height, radius = (field.value() for field in self._rounded_fields)
         if width != 0.0 and height != 0.0:
             try:
                 self._try_emit(
@@ -235,7 +282,11 @@ class ShapePropertiesPanel(QWidget):
 
     def _emit_polygon_bounds(self, _value: float) -> None:
         geometry = self._geometry
-        if self._syncing or geometry is None or geometry.kind is not ShapeKind.POLYGON:
+        if (
+            self._syncing
+            or geometry is None
+            or geometry.kind not in (ShapeKind.POLYGON, ShapeKind.POLYLINE)
+        ):
             return
         old_left, old_top, old_right, old_bottom = geometry.bounds
         x, y, width, height = (field.value() for field in self._polygon_fields)
@@ -250,11 +301,14 @@ class ShapePropertiesPanel(QWidget):
             )
             for px, py in geometry.points
         )
-        self._try_emit(ShapeGeometry(ShapeKind.POLYGON, points))
+        self._try_emit(ShapeGeometry(geometry.kind, points))
 
     def _sync_selected_vertex(self, _index: int = 0) -> None:
         geometry = self._geometry
-        if geometry is None or geometry.kind is not ShapeKind.POLYGON:
+        if geometry is None or geometry.kind not in (
+            ShapeKind.POLYGON,
+            ShapeKind.POLYLINE,
+        ):
             return
         index = max(0, self.vertex_combo.currentIndex())
         if index >= len(geometry.points):
@@ -267,7 +321,11 @@ class ShapePropertiesPanel(QWidget):
 
     def _emit_vertex(self, _value: float) -> None:
         geometry = self._geometry
-        if self._syncing or geometry is None or geometry.kind is not ShapeKind.POLYGON:
+        if (
+            self._syncing
+            or geometry is None
+            or geometry.kind not in (ShapeKind.POLYGON, ShapeKind.POLYLINE)
+        ):
             return
         index = self.vertex_combo.currentIndex()
         if index < 0 or index >= len(geometry.points):
@@ -275,9 +333,66 @@ class ShapePropertiesPanel(QWidget):
         points = list(geometry.points)
         points[index] = (self.vertex_x.value(), self.vertex_y.value())
         try:
-            self._try_emit(ShapeGeometry(ShapeKind.POLYGON, tuple(points)))
+            self._try_emit(ShapeGeometry(geometry.kind, tuple(points)))
         except ValueError:
             return
+
+    def _add_vertex(self) -> None:
+        geometry = self._point_geometry()
+        if geometry is None:
+            return
+        index = max(0, self.vertex_combo.currentIndex())
+        next_index = (index + 1) % len(geometry.points)
+        first = geometry.points[index]
+        second = geometry.points[next_index]
+        point = ((first[0] + second[0]) / 2.0, (first[1] + second[1]) / 2.0)
+        points = list(geometry.points)
+        points.insert(index + 1, point)
+        try:
+            self._try_emit(ShapeGeometry(geometry.kind, tuple(points)))
+        except ValueError:
+            return
+        self.vertex_combo.setCurrentIndex(index + 1)
+
+    def _delete_vertex(self) -> None:
+        geometry = self._point_geometry()
+        if geometry is None:
+            return
+        minimum = 2 if geometry.kind is ShapeKind.POLYLINE else 3
+        if len(geometry.points) <= minimum:
+            return
+        index = max(0, self.vertex_combo.currentIndex())
+        points = list(geometry.points)
+        del points[index]
+        try:
+            self._try_emit(ShapeGeometry(geometry.kind, tuple(points)))
+        except ValueError:
+            return
+
+    def _move_vertex(self, delta: int) -> None:
+        geometry = self._point_geometry()
+        if geometry is None:
+            return
+        index = self.vertex_combo.currentIndex()
+        target = index + delta
+        if index < 0 or not 0 <= target < len(geometry.points):
+            return
+        points = list(geometry.points)
+        points[index], points[target] = points[target], points[index]
+        try:
+            self._try_emit(ShapeGeometry(geometry.kind, tuple(points)))
+        except ValueError:
+            return
+        self.vertex_combo.setCurrentIndex(target)
+
+    def _point_geometry(self) -> ShapeGeometry | None:
+        geometry = self._geometry
+        if geometry is None or geometry.kind not in (
+            ShapeKind.POLYGON,
+            ShapeKind.POLYLINE,
+        ):
+            return None
+        return geometry
 
     def _try_emit(self, geometry: ShapeGeometry) -> None:
         self._geometry = geometry

@@ -26,6 +26,7 @@ from easypicture.runtime import RuntimePaths
 from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.export_dialog import ImageExportDialog, ImageExportSpec
+from easypicture.ui.numeric_ranges import DOCUMENT_DIMENSION_RANGE
 from easypicture.ui.settings import AppSettings
 
 
@@ -133,16 +134,20 @@ class NewDocumentDialog(QDialog):
         self.setModal(True)
 
         self.width_spin = DragValueSpinBox(
-            1,
-            MAX_DOCUMENT_DIMENSION,
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
             default_size.width,
+            manual_minimum=1,
+            manual_maximum=MAX_DOCUMENT_DIMENSION,
             suffix=" px",
             parent=self,
         )
         self.height_spin = DragValueSpinBox(
-            1,
-            MAX_DOCUMENT_DIMENSION,
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
             default_size.height,
+            manual_minimum=1,
+            manual_maximum=MAX_DOCUMENT_DIMENSION,
             suffix=" px",
             parent=self,
         )

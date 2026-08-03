@@ -74,7 +74,7 @@ class GeometryPreviewState:
 
 @dataclass(frozen=True, slots=True)
 class VectorPreviewState:
-    group_id: UUID
+    group_id: UUID | None
     objects: tuple[VectorObject, ...]
 
 
@@ -133,6 +133,16 @@ class CanvasRenderCoordinator(QObject):
     @property
     def preview_tile_count(self) -> int:
         return len(self._pixel_preview_tiles)
+
+    @property
+    def vector_preview_object_count(self) -> int:
+        preview = self._vector_preview
+        return 0 if preview is None else len(preview.objects)
+
+    @property
+    def has_transient_vector_preview(self) -> bool:
+        preview = self._vector_preview
+        return preview is not None and preview.group_id is None
 
     @property
     def cache_bytes(self) -> int:
@@ -326,6 +336,15 @@ class CanvasRenderCoordinator(QObject):
         self._vector_preview = VectorPreviewState(group_id, tuple(objects))
         self.request_frame()
 
+    def replace_transient_vector_preview(
+        self,
+        objects: tuple[VectorObject, ...],
+    ) -> None:
+        """Preview a future top-level vector group without mutating the document."""
+        self._require_document()
+        self._vector_preview = VectorPreviewState(None, tuple(objects))
+        self.request_frame()
+
     def clear_vector_preview(self) -> None:
         if self._vector_preview is None:
             return
@@ -382,6 +401,21 @@ class CanvasRenderCoordinator(QObject):
         painter.save()
         painter.setClipRect(rect)
         self._paint_vector_group(painter, group)
+        painter.restore()
+
+    def paint_transient_vector_preview(
+        self,
+        painter: QPainter,
+        document_rect: QRectF | None = None,
+    ) -> None:
+        """Paint objects that will belong to a group created only on commit."""
+        preview = self._vector_preview
+        if self.document is None or preview is None or preview.group_id is not None:
+            return
+        rect = self.document_rect() if document_rect is None else document_rect
+        painter.save()
+        painter.setClipRect(rect)
+        paint_vector_objects(painter, preview.objects, group_opacity=1.0)
         painter.restore()
 
     def document_rect(self) -> QRectF:
@@ -490,6 +524,7 @@ class CanvasRenderCoordinator(QObject):
             painter.setClipRect(document_rect)
             for group in document.nodes:
                 self._paint_group(painter, group, document_rect)
+            self.paint_transient_vector_preview(painter, document_rect)
             painter.restore()
         else:
             try:
@@ -500,6 +535,7 @@ class CanvasRenderCoordinator(QObject):
                 painter.setClipRect(document_rect)
                 for group in document.nodes:
                     self._paint_group(painter, group, document_rect)
+                self.paint_transient_vector_preview(painter, document_rect)
                 painter.restore()
             else:
                 painter.save()
@@ -510,6 +546,7 @@ class CanvasRenderCoordinator(QObject):
                         document_rect,
                         transform_preview=preview,
                     )
+                self.paint_transient_vector_preview(painter, document_rect)
                 painter.restore()
 
     def _paint_group(
@@ -762,14 +799,20 @@ class CanvasRenderCoordinator(QObject):
                 self._pixel_preview_layer_id = None
                 self._pixel_preview_tiles.clear()
                 self._pixel_preview_revisions.clear()
-            if self._vector_preview is not None:
+            if (
+                self._vector_preview is not None
+                and self._vector_preview.group_id is not None
+            ):
                 try:
                     document.vector_group_by_id(self._vector_preview.group_id)
                 except ValueError:
                     self._vector_preview = None
         else:
             self._source_cache.clear()
-        if self._vector_preview is not None:
+        if (
+            self._vector_preview is not None
+            and self._vector_preview.group_id is not None
+        ):
             try:
                 document.vector_group_by_id(self._vector_preview.group_id)
             except ValueError:

@@ -235,6 +235,13 @@ class CanvasView(QGraphicsView):
         if self._document is not None:
             self._render_coordinator.replace_vector_preview(group_id, objects)
 
+    def replace_transient_vector_preview(
+        self,
+        objects: tuple[VectorObject, ...],
+    ) -> None:
+        if self._document is not None:
+            self._render_coordinator.replace_transient_vector_preview(objects)
+
     def clear_vector_preview(self) -> None:
         self._render_coordinator.clear_vector_preview()
 

@@ -6,6 +6,13 @@ EasyPicture 是一款面向 Windows 的本地离线轻量图像编辑器，适�
 
 ## 版本记录
 
+### 0.2.0 — 2026-08-03
+
+- 完成基础 SVG 支持：矩形、圆、椭圆、直线、折线和多边形均可编辑并按标准属性序列化。
+- 图形工具可选择栅格或矢量输出；折线和多边形支持逐顶点画布拖动、精确坐标、增删及排序。
+- SVG 属性栏补充填充、描边、端点、连接、填充规则和虚线；导入支持安全的基础 CSS 继承，复杂文字不再被有损转换。
+- SVG 继续作为中立交换格式，EasyPicture 编辑结构只保存在 `.limg schema v1`。
+
 ### 0.1.3 — 2026-08-02
 
 - 重整文件工作流：“打开”仅用于 `.limg` 工程，“导入”把图片初始化为新工程，“追加”把图片或其他工程作为新图层组加入当前工程。
@@ -70,4 +77,4 @@ uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\
 uv run python -m easypicture --svg-smoke-test .cache\svg-smoke
 ```
 
-总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p9b_acceptance.md`](docs/p9b_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。
+总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p9d_acceptance.md`](docs/p9d_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。

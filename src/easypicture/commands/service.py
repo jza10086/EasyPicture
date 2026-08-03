@@ -19,6 +19,7 @@ from easypicture.domain import (
     RasterGroupLayer,
     RasterLayer,
     Size,
+    SvgElementObject,
     TextObject,
     VectorGroupLayer,
     VectorObject,
@@ -65,10 +66,7 @@ def _clone_group(
     """Clone a group for a structural undo snapshot without duplicating IDs."""
     clone: RasterGroupLayer | VectorGroupLayer
     if isinstance(group, RasterGroupLayer):
-        children = [
-            replace(child, pixels=child.pixels.clone_shared())
-            for child in group.children
-        ]
+        children = [replace(child, pixels=child.pixels.clone_shared()) for child in group.children]
         clone = replace(group, children=children)
         clone._revision = group.revision
         for original_text, copied_text in zip(group.children, clone.children, strict=True):
@@ -665,10 +663,7 @@ class _DocumentGeometryCommand(_DocumentCommand):
             patch.before.stored_bytes + patch.after.stored_bytes
             for layer in layers
             for patch in layer.pixel_patches
-        ) + sum(
-            patch.before.stored_bytes + patch.after.stored_bytes
-            for patch in selection_patches
-        )
+        ) + sum(patch.before.stored_bytes + patch.after.stored_bytes for patch in selection_patches)
         super().__init__(document, text, storage_bytes=storage_bytes)
         self.before_document_size = before_document_size
         self.after_document_size = after_document_size
@@ -686,26 +681,18 @@ class _DocumentGeometryCommand(_DocumentCommand):
         }
         layer_updates = {
             layer.layer_id: {
-                patch.coord: self.patch_store.restore(
-                    patch.after if use_after else patch.before
-                )
+                patch.coord: self.patch_store.restore(patch.after if use_after else patch.before)
                 for patch in layer.pixel_patches
             }
             for layer in self.layers
             if layer.pixel_patches
         }
         selection_updates = {
-            patch.coord: self.patch_store.restore(
-                patch.after if use_after else patch.before
-            )
+            patch.coord: self.patch_store.restore(patch.after if use_after else patch.before)
             for patch in self.selection_patches
         }
         self.document.apply_geometry_transaction(
-            document_size=(
-                self.after_document_size
-                if use_after
-                else self.before_document_size
-            ),
+            document_size=(self.after_document_size if use_after else self.before_document_size),
             layer_geometry=layer_geometry,
             layer_updates=layer_updates,
             selection_updates=selection_updates,
@@ -796,9 +783,7 @@ class DocumentCommandService:
             return False
         group_name = _unique_name(name, _document_names(document))
         group = RasterGroupLayer.create(group_name)
-        return self._push(
-            _InsertGroupCommand(document, group, len(document.nodes), "新建栅格组")
-        )
+        return self._push(_InsertGroupCommand(document, group, len(document.nodes), "新建栅格组"))
 
     def create_vector_group(self, name: str = "矢量组") -> bool:
         document = self._require_document()
@@ -806,9 +791,7 @@ class DocumentCommandService:
             return False
         group_name = _unique_name(name, _document_names(document))
         group = VectorGroupLayer.create(group_name)
-        return self._push(
-            _InsertGroupCommand(document, group, len(document.nodes), "新建矢量组")
-        )
+        return self._push(_InsertGroupCommand(document, group, len(document.nodes), "新建矢量组"))
 
     def append_groups(
         self,
@@ -822,15 +805,11 @@ class DocumentCommandService:
         if len(document.nodes) + len(groups) > MAX_DOCUMENT_LAYERS:
             return False
         raster_count = sum(
-            len(group.children)
-            for group in groups
-            if isinstance(group, RasterGroupLayer)
+            len(group.children) for group in groups if isinstance(group, RasterGroupLayer)
         )
         if len(document.layers) + raster_count > MAX_DOCUMENT_LAYERS:
             return False
-        return self._push(
-            _InsertGroupsCommand(document, groups, len(document.nodes), label)
-        )
+        return self._push(_InsertGroupsCommand(document, groups, len(document.nodes), label))
 
     def delete_group(self, group_id: UUID) -> bool:
         document = self._require_document()
@@ -1097,6 +1076,65 @@ class DocumentCommandService:
             )
         )
 
+    def create_svg_object(
+        self,
+        group_id: UUID,
+        svg_object: SvgElementObject,
+        *,
+        index: int | None = None,
+        label: str = "创建矢量图形",
+    ) -> bool:
+        document = self._require_document()
+        try:
+            group = document.vector_group_by_id(group_id)
+        except ValueError:
+            return False
+        if group.locked:
+            return False
+        target_index = len(group.children) if index is None else index
+        if not 0 <= target_index <= len(group.children):
+            return False
+        candidate = replace(
+            svg_object,
+            name=_unique_name(svg_object.name, _document_names(document)),
+        )
+        return self._push(
+            _InsertVectorObjectCommand(
+                document,
+                group_id,
+                candidate,
+                target_index,
+                label,
+            )
+        )
+
+    def create_svg_object_in_new_group(
+        self,
+        svg_object: SvgElementObject,
+        *,
+        group_name: str = "矢量组",
+        label: str = "创建矢量图形",
+    ) -> bool:
+        """Insert a new vector group and its first object as one undo step."""
+        document = self._require_document()
+        if len(document.nodes) >= MAX_DOCUMENT_LAYERS:
+            return False
+        names = _document_names(document)
+        group = VectorGroupLayer.create(_unique_name(group_name, names))
+        candidate = replace(
+            svg_object,
+            name=_unique_name(svg_object.name, names | {group.name}),
+        )
+        group.children.append(candidate)
+        return self._push(
+            _InsertGroupCommand(
+                document,
+                group,
+                len(document.nodes),
+                label,
+            )
+        )
+
     def delete_text_object(self, object_id: UUID) -> bool:
         document = self._require_document()
         try:
@@ -1181,7 +1219,7 @@ class DocumentCommandService:
             # ``replace`` executes the same domain validation as the real
             # command without mutating the live object.
             replace(text_object, **candidate_changes)
-        except (PermissionError, TypeError, ValueError):
+        except PermissionError, TypeError, ValueError:
             return False
         before = {key: getattr(text_object, key) for key in candidate_changes}
         after: dict[str, Any] = candidate_changes
@@ -1229,7 +1267,7 @@ class DocumentCommandService:
             )
         try:
             replace(vector_object, **candidate_changes)
-        except (PermissionError, TypeError, ValueError):
+        except PermissionError, TypeError, ValueError:
             return False
         before = {key: getattr(vector_object, key) for key in candidate_changes}
         if all(before[key] == candidate_changes[key] for key in before):
@@ -1254,9 +1292,7 @@ class DocumentCommandService:
             return False
         before_nodes = tuple(_clone_group(node) for node in document.nodes)
         after_nodes = [_clone_group(node) for node in document.nodes]
-        index = next(
-            position for position, node in enumerate(after_nodes) if node.id == group_id
-        )
+        index = next(position for position, node in enumerate(after_nodes) if node.id == group_id)
         group = after_nodes[index]
         if not isinstance(group, VectorGroupLayer):
             return False
@@ -1515,9 +1551,7 @@ class DocumentCommandService:
             before = layer.pixels.read_tile(coord.x, coord.y)
             after = before.copy()
             remaining = 1.0 - mask.astype(np.float32) / 255.0
-            after[..., 3] = np.rint(
-                before[..., 3].astype(np.float32) * remaining
-            ).astype(np.uint8)
+            after[..., 3] = np.rint(before[..., 3].astype(np.float32) * remaining).astype(np.uint8)
             if not np.array_equal(before, after):
                 updates[coord] = after
         return self.apply_pixel_tiles(layer_id, updates, "清除选区像素")
@@ -1564,10 +1598,7 @@ class DocumentCommandService:
         label: str = "自由变换",
     ) -> bool:
         document = self._require_document()
-        if (
-            result.document_id != document.id
-            or result.source_revision != document.revision
-        ):
+        if result.document_id != document.id or result.source_revision != document.revision:
             return False
         try:
             layer = document.layer_by_id(result.layer_id)
@@ -1575,18 +1606,13 @@ class DocumentCommandService:
             return False
         if layer.locked or layer.alpha_locked:
             return False
-        if (
-            result.layer_size != document.size
-            or result.layer_origin != PixelPoint()
-        ):
+        if result.layer_size != document.size or result.layer_origin != PixelPoint():
             return False
 
         layer_patches: list[_TilePatch] = []
         selection_patches: list[_TilePatch] = []
         try:
-            before_layer_coords = {
-                coord for coord, _pixels in layer.pixels.iter_allocated_tiles()
-            }
+            before_layer_coords = {coord for coord, _pixels in layer.pixels.iter_allocated_tiles()}
             for coord in sorted(
                 before_layer_coords | set(result.layer_tiles),
                 key=lambda item: (item.y, item.x),
@@ -1611,8 +1637,7 @@ class DocumentCommandService:
 
             if document.selection.is_active or result.selection_tiles:
                 before_selection_coords = {
-                    coord
-                    for coord, _pixels in document.selection.mask.iter_allocated_tiles()
+                    coord for coord, _pixels in document.selection.mask.iter_allocated_tiles()
                 }
                 for coord in sorted(
                     before_selection_coords | set(result.selection_tiles),
@@ -1639,7 +1664,7 @@ class DocumentCommandService:
                             self.patch_store.capture_mask(after_mask),
                         )
                     )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             for patch in layer_patches + selection_patches:
                 self.patch_store.release(patch.before)
                 self.patch_store.release(patch.after)
@@ -1692,10 +1717,7 @@ class DocumentCommandService:
         try:
             for layer in document.layers:
                 resolved = layer_results[layer.id]
-                if (
-                    resolved.size != result.document_size
-                    or resolved.origin != PixelPoint()
-                ):
+                if resolved.size != result.document_size or resolved.origin != PixelPoint():
                     raise ValueError("layers must match the document canvas")
                 pixel_patches: list[_TilePatch] = []
                 if resolved.tiles is not None:
@@ -1766,7 +1788,7 @@ class DocumentCommandService:
                 )
                 selection_patches.append(patch)
                 captured_patches.append(patch)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             for patch in captured_patches:
                 self.patch_store.release(patch.before)
                 self.patch_store.release(patch.after)

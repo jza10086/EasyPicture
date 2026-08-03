@@ -11,7 +11,16 @@ from PySide6.QtGui import QImage
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QApplication
 
-from easypicture.domain import AffineTransform, Document, RasterLayer, Size
+from easypicture.domain import (
+    AffineTransform,
+    Document,
+    RasterLayer,
+    Size,
+    SvgPrimitiveKind,
+    SvgPrimitiveStyle,
+    SvgRectGeometry,
+    create_svg_primitive,
+)
 from easypicture.imaging import TransformInterpolation
 from easypicture.pixels import DEFAULT_TILE_SIZE, TileCoord
 from easypicture.render import RenderBackendKind
@@ -97,13 +106,42 @@ def run_render_smoke_test(
                 bottom_right.y(),
             ),
         )
+        transient_vector = create_svg_primitive(
+            SvgPrimitiveKind.RECT,
+            SvgRectGeometry(120.0, 96.0, 260.0, 180.0),
+            SvgPrimitiveStyle(fill=(225, 28, 108, 235), stroke=None),
+            document.size,
+        )
+        for canvas in (view, reference):
+            canvas.clear_pixel_preview()
+            canvas.replace_transient_vector_preview((transient_vector,))
+        transient_frame = _capture_frame(view, app).convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        transient_reference = _capture_frame(reference, app).convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        transient_frame.save(str(directory / "transient-vector-preview.png"))
+        transient_reference.save(
+            str(directory / "transient-vector-preview-reference.png")
+        )
+        transient_vector_error, _transient_full_error = _channel_errors(
+            transient_frame,
+            transient_reference,
+            (
+                top_left.x(),
+                top_left.y(),
+                bottom_right.x(),
+                bottom_right.y(),
+            ),
+        )
         rotation = (
             AffineTransform.translation(-256.0, -192.0)
             .then(AffineTransform.rotation(43.0))
             .then(AffineTransform.translation(256.0, 192.0))
         )
         for canvas in (view, reference):
-            canvas.clear_pixel_preview()
+            canvas.clear_vector_preview()
         view.set_transform_preview(
             document.active_layer_id,
             rotation,
@@ -149,6 +187,7 @@ def run_render_smoke_test(
             "maximum_channel_error": error,
             "maximum_preview_channel_error": preview_error,
             "maximum_replaced_preview_channel_error": replaced_preview_error,
+            "maximum_transient_vector_preview_channel_error": transient_vector_error,
             "maximum_channel_error_including_border": full_error,
             "border_comparison": "2 px document border excluded",
         }
@@ -164,6 +203,7 @@ def run_render_smoke_test(
             if error <= 1
             and preview_error <= 1
             and replaced_preview_error <= 1
+            and transient_vector_error <= 1
             else 3
         )
     except Exception as error:

@@ -322,6 +322,26 @@ class DragValueSpinBox(QWidget):
         )
         self.setValue(self._value)
 
+    def setPropertyRange(
+        self,
+        drag_minimum: int,
+        drag_maximum: int,
+        *,
+        manual_minimum: int | None = None,
+        manual_maximum: int | None = None,
+    ) -> None:
+        """Atomically replace soft and hard limits for a dynamic property."""
+        hard_minimum = drag_minimum if manual_minimum is None else manual_minimum
+        hard_maximum = drag_maximum if manual_maximum is None else manual_maximum
+        self._spec = replace(
+            self._spec,
+            soft_minimum=drag_minimum,
+            soft_maximum=drag_maximum,
+            hard_minimum=hard_minimum,
+            hard_maximum=hard_maximum,
+        )
+        self.setValue(self._value)
+
     def suffix(self) -> str:
         return self._spec.suffix
 
@@ -1059,6 +1079,14 @@ class DragValueDoubleSpinBox(QWidget):
     def interaction_state(self) -> NumericEditState:
         return self._field.interaction_state
 
+    @property
+    def drag_minimum(self) -> float:
+        return float(self._field.drag_minimum) / self._factor
+
+    @property
+    def drag_maximum(self) -> float:
+        return float(self._field.drag_maximum) / self._factor
+
     def value(self) -> float:
         return float(self._field.value()) / self._factor
 
@@ -1075,6 +1103,25 @@ class DragValueDoubleSpinBox(QWidget):
         self._field.setRange(
             round(minimum * self._factor),
             round(maximum * self._factor),
+        )
+
+    def setPropertyRange(
+        self,
+        drag_minimum: float,
+        drag_maximum: float,
+        *,
+        manual_minimum: float | None = None,
+        manual_maximum: float | None = None,
+    ) -> None:
+        self._field.setPropertyRange(
+            round(drag_minimum * self._factor),
+            round(drag_maximum * self._factor),
+            manual_minimum=(
+                None if manual_minimum is None else round(manual_minimum * self._factor)
+            ),
+            manual_maximum=(
+                None if manual_maximum is None else round(manual_maximum * self._factor)
+            ),
         )
 
     def suffix(self) -> str:

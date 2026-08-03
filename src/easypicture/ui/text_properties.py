@@ -24,6 +24,12 @@ from easypicture.domain import AffineTransform, FloatRect, Point, TextObject
 from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.drag_value_spinbox import DragValueDoubleSpinBox
+from easypicture.ui.numeric_ranges import (
+    DOCUMENT_DIMENSION_RANGE,
+    FONT_SIZE_RANGE,
+    ROTATION_DEGREES_RANGE,
+    SIGNED_COORDINATE_RANGE,
+)
 
 
 class TextPropertiesPanel(QWidget):
@@ -55,30 +61,76 @@ class TextPropertiesPanel(QWidget):
             suffix=" px",
             parent=self,
         )
-        self.size_spin = DragValueDoubleSpinBox(1.0, 1024.0, 32.0, suffix=" px", parent=self)
-        self.x_spin = DragValueDoubleSpinBox(-8192.0, 8192.0, 0.0, decimals=2, parent=self)
-        self.y_spin = DragValueDoubleSpinBox(-8192.0, 8192.0, 0.0, decimals=2, parent=self)
-        self.width_spin = DragValueDoubleSpinBox(1.0, 8192.0, 256.0, decimals=2, parent=self)
-        self.height_spin = DragValueDoubleSpinBox(1.0, 8192.0, 64.0, decimals=2, parent=self)
-        self.rotation_spin = DragValueDoubleSpinBox(
-            -36000.0,
-            36000.0,
+        self.size_spin = DragValueDoubleSpinBox(
+            FONT_SIZE_RANGE.soft_minimum,
+            FONT_SIZE_RANGE.soft_maximum,
+            32.0,
+            manual_minimum=FONT_SIZE_RANGE.hard_minimum,
+            manual_maximum=FONT_SIZE_RANGE.hard_maximum,
+            suffix=" px",
+            parent=self,
+        )
+        self.x_spin = DragValueDoubleSpinBox(
+            SIGNED_COORDINATE_RANGE.soft_minimum,
+            SIGNED_COORDINATE_RANGE.soft_maximum,
             0.0,
+            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
+            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
+            decimals=2,
+            parent=self,
+        )
+        self.y_spin = DragValueDoubleSpinBox(
+            SIGNED_COORDINATE_RANGE.soft_minimum,
+            SIGNED_COORDINATE_RANGE.soft_maximum,
+            0.0,
+            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
+            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
+            decimals=2,
+            parent=self,
+        )
+        self.width_spin = DragValueDoubleSpinBox(
+            DOCUMENT_DIMENSION_RANGE.soft_minimum,
+            DOCUMENT_DIMENSION_RANGE.soft_maximum,
+            256.0,
+            manual_minimum=DOCUMENT_DIMENSION_RANGE.hard_minimum,
+            manual_maximum=DOCUMENT_DIMENSION_RANGE.hard_maximum,
+            decimals=2,
+            parent=self,
+        )
+        self.height_spin = DragValueDoubleSpinBox(
+            DOCUMENT_DIMENSION_RANGE.soft_minimum,
+            DOCUMENT_DIMENSION_RANGE.soft_maximum,
+            64.0,
+            manual_minimum=DOCUMENT_DIMENSION_RANGE.hard_minimum,
+            manual_maximum=DOCUMENT_DIMENSION_RANGE.hard_maximum,
+            decimals=2,
+            parent=self,
+        )
+        self.rotation_spin = DragValueDoubleSpinBox(
+            ROTATION_DEGREES_RANGE.soft_minimum,
+            ROTATION_DEGREES_RANGE.soft_maximum,
+            0.0,
+            manual_minimum=ROTATION_DEGREES_RANGE.hard_minimum,
+            manual_maximum=ROTATION_DEGREES_RANGE.hard_maximum,
             decimals=2,
             suffix="°",
             parent=self,
         )
         self.pivot_x_spin = DragValueDoubleSpinBox(
-            -8192.0,
-            8192.0,
+            SIGNED_COORDINATE_RANGE.soft_minimum,
+            SIGNED_COORDINATE_RANGE.soft_maximum,
             0.0,
+            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
+            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
             decimals=2,
             parent=self,
         )
         self.pivot_y_spin = DragValueDoubleSpinBox(
-            -8192.0,
-            8192.0,
+            SIGNED_COORDINATE_RANGE.soft_minimum,
+            SIGNED_COORDINATE_RANGE.soft_maximum,
             0.0,
+            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
+            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
             decimals=2,
             parent=self,
         )

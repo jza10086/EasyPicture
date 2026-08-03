@@ -47,11 +47,33 @@ SUPPORTED_LEAVES = frozenset(
 )
 UNSUPPORTED_ELEMENTS = frozenset(
     {
-        "animate", "animateMotion", "animateTransform", "set", "script", "foreignObject",
-        "audio", "video", "filter", "mask", "feBlend", "feColorMatrix",
-        "feComponentTransfer", "feComposite", "feConvolveMatrix", "feDiffuseLighting",
-        "feDisplacementMap", "feDropShadow", "feFlood", "feGaussianBlur", "feImage",
-        "feMerge", "feMorphology", "feOffset", "feSpecularLighting", "feTile", "feTurbulence",
+        "animate",
+        "animateMotion",
+        "animateTransform",
+        "set",
+        "script",
+        "foreignObject",
+        "audio",
+        "video",
+        "filter",
+        "mask",
+        "feBlend",
+        "feColorMatrix",
+        "feComponentTransfer",
+        "feComposite",
+        "feConvolveMatrix",
+        "feDiffuseLighting",
+        "feDisplacementMap",
+        "feDropShadow",
+        "feFlood",
+        "feGaussianBlur",
+        "feImage",
+        "feMerge",
+        "feMorphology",
+        "feOffset",
+        "feSpecularLighting",
+        "feTile",
+        "feTurbulence",
     }
 )
 MAX_SVG_SOURCE_BYTES = 32 * 1024 * 1024
@@ -61,6 +83,10 @@ _URL_PATTERN = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
 _LENGTH_PATTERN = re.compile(
     r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))(px|pt|pc|mm|cm|in)?\s*$",
     re.IGNORECASE,
+)
+_CSS_RULE_PATTERN = re.compile(r"([^{}]+)\{([^{}]*)\}")
+_SIMPLE_SELECTOR_PATTERN = re.compile(
+    r"(?:[A-Za-z_][\w-]*)?(?:#[A-Za-z_][\w-]*)?(?:\.[A-Za-z_][\w-]*)?"
 )
 
 
@@ -110,6 +136,7 @@ def import_svg(
     warnings: list[SvgImportWarning] = []
     _flatten_nested_svg(root, width, height, warnings)
     _sanitize_tree(root, warnings)
+    _sanitize_stylesheets(root, warnings)
     leaves = _drawable_leaves(root)
     if len(leaves) > MAX_VECTOR_CHILDREN:
         warnings.append(
@@ -129,9 +156,17 @@ def import_svg(
         kind = _local_name(leaf.tag)
         try:
             standalone, bounds = _standalone_leaf(root, leaf, width, height, element_id)
-            if kind == "text":
+            if kind == "text" and _is_simple_text_element(leaf):
                 objects.append(_text_object_from_element(leaf, bounds, element_id))
             else:
+                if kind == "text":
+                    warnings.append(
+                        SvgImportWarning(
+                            "复杂文字",
+                            element_id,
+                            "复杂文字已作为 SVG 图元保留",
+                        )
+                    )
                 objects.append(
                     SvgElementObject(
                         id=uuid4(),
@@ -149,14 +184,8 @@ def import_svg(
         raise ValueError("SVG 中没有可导入的受支持静态元素")
 
     document = Document.create(width, height)
-    raster_group = next(
-        node for node in document.nodes if isinstance(node, RasterGroupLayer)
-    )
-    used_names = {
-        item.name
-        for node in document.nodes
-        for item in (node, *node.children)
-    }
+    raster_group = next(node for node in document.nodes if isinstance(node, RasterGroupLayer))
+    used_names = {item.name for node in document.nodes for item in (node, *node.children)}
     group_name = _unique_name(source_path.stem.strip() or "SVG", used_names)
     used_names.add(group_name)
     for vector_object in objects:
@@ -231,7 +260,7 @@ def _sanitize_tree(root: ET.Element, warnings: list[SvgImportWarning]) -> None:
             parent = parent_map.get(element)
             if parent is not None:
                 parent.remove(element)
-            warnings.append(SvgImportWarning("不支持元素", element_id, f"跳过 <{kind}>") )
+            warnings.append(SvgImportWarning("不支持元素", element_id, f"跳过 <{kind}>"))
             continue
         skip_reason: str | None = None
         for attribute in tuple(element.attrib):
@@ -268,15 +297,57 @@ def _sanitize_tree(root: ET.Element, warnings: list[SvgImportWarning]) -> None:
         if kind == "style" and element.text:
             css = element.text.lower()
             urls = [match.group(2).strip() for match in _URL_PATTERN.finditer(css)]
-            if "@import" in css or "@keyframes" in css or any(
-                not item.startswith("#") for item in urls
+            if (
+                "@import" in css
+                or "@keyframes" in css
+                or any(not item.startswith("#") for item in urls)
             ):
                 parent = parent_map.get(element)
                 if parent is not None:
                     parent.remove(element)
-                warnings.append(
-                    SvgImportWarning("不支持 CSS", element_id, "移除外部或动画样式表")
+                warnings.append(SvgImportWarning("不支持 CSS", element_id, "移除外部或动画样式表"))
+
+
+def _sanitize_stylesheets(
+    root: ET.Element,
+    warnings: list[SvgImportWarning],
+) -> None:
+    """Retain only the small selector subset that P9D can reproduce safely."""
+    for element in root.iter():
+        if _local_name(element.tag) != "style" or not element.text:
+            continue
+        css = re.sub(r"/\*.*?\*/", "", element.text, flags=re.DOTALL)
+        retained: list[str] = []
+        skipped: list[str] = []
+        matched_spans: list[tuple[int, int]] = []
+        for match in _CSS_RULE_PATTERN.finditer(css):
+            matched_spans.append(match.span())
+            selectors = [item.strip() for item in match.group(1).split(",")]
+            supported = [
+                selector
+                for selector in selectors
+                if selector and _SIMPLE_SELECTOR_PATTERN.fullmatch(selector)
+            ]
+            skipped.extend(selector for selector in selectors if selector not in supported)
+            if supported:
+                retained.append(f"{','.join(supported)}{{{match.group(2)}}}")
+        unmatched = css
+        for start, end in reversed(matched_spans):
+            unmatched = unmatched[:start] + unmatched[end:]
+        if unmatched.strip():
+            skipped.append(unmatched.strip())
+        element.text = "\n".join(retained)
+        if skipped:
+            preview = "、".join(skipped[:3])
+            if len(skipped) > 3:
+                preview += f" 等 {len(skipped)} 项"
+            warnings.append(
+                SvgImportWarning(
+                    "不支持 CSS",
+                    element.get("id"),
+                    f"已跳过复杂选择器或规则：{preview}",
                 )
+            )
 
 
 def _is_safe_embedded_png(value: str) -> bool:
@@ -289,7 +360,7 @@ def _is_safe_embedded_png(value: str) -> bool:
         return False
     try:
         payload = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return False
     if not payload or len(payload) > MAX_EMBEDDED_PNG_BYTES:
         return False
@@ -304,7 +375,7 @@ def _is_safe_embedded_png(value: str) -> bool:
             ):
                 return False
             image.verify()
-    except (OSError, UnidentifiedImageError):
+    except OSError, UnidentifiedImageError:
         return False
     return True
 
@@ -317,7 +388,7 @@ def _embedded_png_has_visible_alpha(value: str) -> bool:
             alpha = image.convert("RGBA").getchannel("A")
             maximum = alpha.getextrema()[1]
             return isinstance(maximum, (int, float)) and maximum > 0
-    except (OSError, UnidentifiedImageError, binascii.Error, ValueError):
+    except OSError, UnidentifiedImageError, binascii.Error, ValueError:
         return False
 
 
@@ -360,9 +431,7 @@ def _flatten_nested_svg(
                 replacement.set(name, value)
         viewport_transform = _nested_viewport_transform(nested, width, height)
         existing_transform = replacement.get("transform", "").strip()
-        combined = " ".join(
-            item for item in (existing_transform, viewport_transform) if item
-        )
+        combined = " ".join(item for item in (existing_transform, viewport_transform) if item)
         if combined:
             replacement.set("transform", combined)
         replacement.text = nested.text
@@ -421,31 +490,16 @@ def _nested_viewport_transform(
     remaining_x = viewport_width - view_width * scale
     remaining_y = viewport_height - view_height * scale
     offset_x = (
-        0.0
-        if "xMin" in alignment
-        else remaining_x
-        if "xMax" in alignment
-        else remaining_x / 2.0
+        0.0 if "xMin" in alignment else remaining_x if "xMax" in alignment else remaining_x / 2.0
     )
     offset_y = (
-        0.0
-        if "YMin" in alignment
-        else remaining_y
-        if "YMax" in alignment
-        else remaining_y / 2.0
+        0.0 if "YMin" in alignment else remaining_y if "YMax" in alignment else remaining_y / 2.0
     )
     translate_x = x + offset_x - minimum_x * scale
     translate_y = y + offset_y - minimum_y * scale
-    if (
-        abs(scale - 1.0) < 1e-12
-        and abs(translate_x) < 1e-12
-        and abs(translate_y) < 1e-12
-    ):
+    if abs(scale - 1.0) < 1e-12 and abs(translate_x) < 1e-12 and abs(translate_y) < 1e-12:
         return ""
-    return (
-        f"matrix({scale:.12g} 0 0 {scale:.12g} "
-        f"{translate_x:.12g} {translate_y:.12g})"
-    )
+    return f"matrix({scale:.12g} 0 0 {scale:.12g} {translate_x:.12g} {translate_y:.12g})"
 
 
 def _coordinate(value: str | None, fallback: float) -> float:
@@ -529,6 +583,33 @@ def _text_object_from_element(
         font_size=min(1024.0, max(1.0, size)),
         color=fill,
     )
+
+
+def _is_simple_text_element(element: ET.Element) -> bool:
+    """Return whether SVG text can be represented by one editable TextObject.
+
+    P9D intentionally prefers a lossless opaque SVG child over a lossy text
+    conversion whenever per-span positioning or text-path layout is present.
+    """
+    if any(
+        _local_name(child.tag) in {"tspan", "textPath", "tref"}
+        for child in element.iter()
+        if child is not element
+    ):
+        return False
+    unsupported = {
+        "dx",
+        "dy",
+        "rotate",
+        "textLength",
+        "lengthAdjust",
+        "writing-mode",
+        "glyph-orientation-horizontal",
+        "glyph-orientation-vertical",
+    }
+    if any(_local_name(name) in unsupported for name in element.attrib):
+        return False
+    return element.text is not None and not list(element)
 
 
 def _style_map(element: ET.Element) -> dict[str, str]:

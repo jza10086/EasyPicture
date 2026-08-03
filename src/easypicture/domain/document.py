@@ -834,6 +834,9 @@ class Document:
             raise PermissionError("vector object is locked")
         allowed = {
             "name",
+            "element_kind",
+            "svg",
+            "intrinsic_bounds",
             "transform",
             "transform_pivot",
             "fill_override",

@@ -77,6 +77,7 @@ from easypicture.imaging.selection import (
 from easypicture.imaging.shapes import (
     ShapeGeometry,
     ShapeKind,
+    ShapeOutputTarget,
     ShapePaintStyle,
     ShapeRasterRequest,
     ShapeRasterResult,
@@ -140,6 +141,7 @@ __all__ = [
     "SelectionOperationResult",
     "ShapeGeometry",
     "ShapeKind",
+    "ShapeOutputTarget",
     "ShapePaintStyle",
     "ShapeRasterRequest",
     "ShapeRasterResult",

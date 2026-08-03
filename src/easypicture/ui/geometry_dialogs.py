@@ -17,6 +17,7 @@ from easypicture.domain import Size
 from easypicture.imaging import CanvasAnchor, TransformInterpolation
 from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
+from easypicture.ui.numeric_ranges import DOCUMENT_DIMENSION_RANGE
 
 
 class CanvasSizeDialog(QDialog):
@@ -31,16 +32,20 @@ class CanvasSizeDialog(QDialog):
         self.setObjectName("CanvasSizeDialog")
         self.setWindowTitle("调整画布大小")
         self.width_spin = DragValueSpinBox(
-            1,
-            8192,
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
             size.width,
+            manual_minimum=int(DOCUMENT_DIMENSION_RANGE.hard_minimum),
+            manual_maximum=int(DOCUMENT_DIMENSION_RANGE.hard_maximum),
             suffix=" px",
             parent=self,
         )
         self.height_spin = DragValueSpinBox(
-            1,
-            8192,
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
             size.height,
+            manual_minimum=int(DOCUMENT_DIMENSION_RANGE.hard_minimum),
+            manual_maximum=int(DOCUMENT_DIMENSION_RANGE.hard_maximum),
             suffix=" px",
             parent=self,
         )
@@ -106,16 +111,20 @@ class ScaleGeometryDialog(QDialog):
         self._source_size = size
         self._syncing = False
         self.width_spin = DragValueSpinBox(
-            1,
-            8192,
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
             size.width,
+            manual_minimum=int(DOCUMENT_DIMENSION_RANGE.hard_minimum),
+            manual_maximum=int(DOCUMENT_DIMENSION_RANGE.hard_maximum),
             suffix=" px",
             parent=self,
         )
         self.height_spin = DragValueSpinBox(
-            1,
-            8192,
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
             size.height,
+            manual_minimum=int(DOCUMENT_DIMENSION_RANGE.hard_minimum),
+            manual_maximum=int(DOCUMENT_DIMENSION_RANGE.hard_maximum),
             suffix=" px",
             parent=self,
         )

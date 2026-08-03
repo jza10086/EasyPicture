@@ -79,12 +79,44 @@ def test_static_svg_import_creates_one_vector_child_per_leaf(
     assert result.warnings
     assert result.document.source_name == "sample.svg"
     assert not result.document.modified
-    group = next(
-        node for node in result.document.nodes if isinstance(node, VectorGroupLayer)
-    )
+    group = next(node for node in result.document.nodes if isinstance(node, VectorGroupLayer))
     assert len(group.children) == 2
     assert isinstance(group.children[0], SvgElementObject)
     assert isinstance(group.children[1], TextObject)
+
+
+def test_complex_svg_text_is_preserved_as_svg_object(tmp_path: Path, qapp) -> None:
+    _ = qapp
+    source = tmp_path / "complex-text.svg"
+    source.write_text(
+        """<svg xmlns="http://www.w3.org/2000/svg" width="96" height="64">
+        <text id="complex" x="4" y="20"><tspan dx="2">A</tspan><tspan>B</tspan></text>
+        </svg>""",
+        encoding="utf-8",
+    )
+    result = import_svg(source, CancellationToken(), _progress)
+    group = next(node for node in result.document.nodes if isinstance(node, VectorGroupLayer))
+    assert isinstance(group.children[0], SvgElementObject)
+    assert group.children[0].element_kind == "text"
+    assert any(warning.category == "复杂文字" for warning in result.warnings)
+
+
+def test_import_warns_and_removes_unsupported_css_selectors(tmp_path: Path, qapp) -> None:
+    _ = qapp
+    source = tmp_path / "css.svg"
+    source.write_text(
+        """<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32">
+        <style>rect { fill:#ff0000 } g > rect { stroke:#00ff00 }</style>
+        <rect id="box" x="2" y="2" width="20" height="20"/>
+        </svg>""",
+        encoding="utf-8",
+    )
+    result = import_svg(source, CancellationToken(), _progress)
+    assert result.imported_count == 1
+    assert any(item.category == "不支持 CSS" for item in result.warnings)
+    vector = result.document.vector_groups[0].children[0]
+    assert isinstance(vector, SvgElementObject)
+    assert "g &gt; rect" not in vector.svg
 
 
 def test_svg_objects_round_trip_in_current_schema(tmp_path: Path, qapp) -> None:
@@ -104,9 +136,7 @@ def test_svg_objects_round_trip_in_current_schema(tmp_path: Path, qapp) -> None:
         assert manifest["schema_version"] == 1
         assert any(name.startswith("vectors/") for name in archive.namelist())
     loaded = load_project(project, CancellationToken(), _progress)
-    vector = next(
-        node for node in loaded.snapshot.nodes if isinstance(node, VectorGroupSnapshot)
-    )
+    vector = next(node for node in loaded.snapshot.nodes if isinstance(node, VectorGroupSnapshot))
     assert len(vector.children) == 2
 
 
@@ -138,9 +168,7 @@ def test_svg_import_skips_external_resource_but_keeps_safe_leaf(
     )
 
     result = import_svg(source, CancellationToken(), _progress)
-    group = next(
-        node for node in result.document.nodes if isinstance(node, VectorGroupLayer)
-    )
+    group = next(node for node in result.document.nodes if isinstance(node, VectorGroupLayer))
     assert len(group.children) == 1
     assert isinstance(group.children[0], SvgElementObject)
     assert any("外部" in warning.message for warning in result.warnings)
@@ -175,10 +203,13 @@ def test_svg_export_preserves_or_rasterizes_vectors(tmp_path: Path, qapp) -> Non
     assert "group-" not in preserve_text
     assert "object-" not in preserve_text
     assert "ep-" not in preserve_text
-    assert re.search(
-        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-        preserve_text,
-    ) is None
+    assert (
+        re.search(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            preserve_text,
+        )
+        is None
+    )
     assert "<text" in preserve_text
     assert raster_text.count("<image") == 1
     assert raster_text.count("data:image/png;base64") == 1

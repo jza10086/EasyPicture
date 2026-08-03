@@ -5,7 +5,15 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QImage, QPainter
 
 from easypicture.commands import DocumentCommandService
-from easypicture.domain import AffineTransform, Document, Size
+from easypicture.domain import (
+    AffineTransform,
+    Document,
+    Size,
+    SvgPrimitiveKind,
+    SvgPrimitiveStyle,
+    SvgRectGeometry,
+    create_svg_primitive,
+)
 from easypicture.imaging import TransformInterpolation
 from easypicture.pixels import TileCoord
 from easypicture.render import CanvasRenderCoordinator, RenderBackendKind
@@ -227,3 +235,38 @@ def test_geometry_preview_repaints_scaled_latest_frame_and_clears(qapp) -> None:
     assert coordinator.document_rect() == QRectF(0.0, 0.0, 32.0, 24.0)
     assert _pixel(restored, 3, 2) == (230, 70, 20, 255)
     assert _pixel(restored, 7, 5) != (230, 70, 20, 255)
+
+
+def test_transient_vector_preview_paints_without_document_group(qapp) -> None:
+    _ = qapp
+    document = Document.create(64, 48)
+    coordinator = CanvasRenderCoordinator()
+    coordinator.set_document(document)
+    vector = create_svg_primitive(
+        SvgPrimitiveKind.RECT,
+        SvgRectGeometry(8.0, 6.0, 24.0, 18.0),
+        SvgPrimitiveStyle(fill=(240, 30, 80, 255), stroke=None),
+        document.size,
+    )
+
+    coordinator.replace_transient_vector_preview((vector,))
+
+    assert not document.vector_groups
+    assert coordinator.has_transient_vector_preview
+    assert coordinator.vector_preview_object_count == 1
+    assert _pixel(_paint_frame(coordinator, 64, 48), 12, 10) == (
+        240,
+        30,
+        80,
+        255,
+    )
+
+    coordinator.clear_vector_preview()
+    assert not coordinator.has_transient_vector_preview
+    assert coordinator.vector_preview_object_count == 0
+    assert _pixel(_paint_frame(coordinator, 64, 48), 12, 10) != (
+        240,
+        30,
+        80,
+        255,
+    )

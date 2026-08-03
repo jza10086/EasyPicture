@@ -33,7 +33,13 @@ class ShapeKind(StrEnum):
     RECTANGLE = "rectangle"
     ROUNDED_RECTANGLE = "rounded_rectangle"
     ELLIPSE = "ellipse"
+    POLYLINE = "polyline"
     POLYGON = "polygon"
+
+
+class ShapeOutputTarget(StrEnum):
+    RASTER = "raster"
+    VECTOR = "vector"
 
 
 class ShapePaintStyle(StrEnum):
@@ -66,6 +72,8 @@ class ShapeGeometry:
             left, top, right, bottom = self.bounds
             if right - left <= _GEOMETRY_EPSILON or bottom - top <= _GEOMETRY_EPSILON:
                 raise ValueError("box geometry must have positive dimensions")
+        elif self.kind is ShapeKind.POLYLINE:
+            _validate_polyline(self.points)
         elif self.kind is ShapeKind.POLYGON:
             _validate_polygon(self.points)
 
@@ -153,8 +161,9 @@ def calculate_shape_raster(
         before = layer.pixels.read_tile(coord.x, coord.y)
         after = before.copy(order="C")
         if (
-            request.geometry.kind is not ShapeKind.LINE
-            and request.settings.style in (
+            request.geometry.kind not in (ShapeKind.LINE, ShapeKind.POLYLINE)
+            and request.settings.style
+            in (
                 ShapePaintStyle.FILL,
                 ShapePaintStyle.STROKE_AND_FILL,
             )
@@ -167,8 +176,9 @@ def calculate_shape_raster(
                 request.settings.blend_mode,
             )
         if (
-            request.geometry.kind is ShapeKind.LINE
-            or request.settings.style in (
+            request.geometry.kind in (ShapeKind.LINE, ShapeKind.POLYLINE)
+            or request.settings.style
+            in (
                 ShapePaintStyle.STROKE,
                 ShapePaintStyle.STROKE_AND_FILL,
             )
@@ -285,7 +295,7 @@ def _tile_coverages(
     width = max(1, round(settings.stroke_width * scale))
     fill_draw = ImageDraw.Draw(fill_image)
     stroke_draw = ImageDraw.Draw(stroke_image)
-    if geometry.kind is ShapeKind.LINE:
+    if geometry.kind in (ShapeKind.LINE, ShapeKind.POLYLINE):
         _draw_round_line(stroke_draw, points, width)
     elif geometry.kind is ShapeKind.RECTANGLE:
         box = _normalized_box(points)
@@ -466,6 +476,15 @@ def _validate_polygon(points: tuple[ShapePoint, ...]) -> None:
         raise ValueError("polygon area must be non-zero")
 
 
+def _validate_polyline(points: tuple[ShapePoint, ...]) -> None:
+    if len(points) < 2:
+        raise ValueError("polyline requires at least two points")
+    if all(_points_equal(points[0], point) for point in points[1:]):
+        raise ValueError("polyline requires at least two distinct points")
+    if any(_points_equal(start, end) for start, end in zip(points, points[1:], strict=False)):
+        raise ValueError("polyline contains duplicate adjacent points")
+
+
 def _polygon_signed_area(points: tuple[ShapePoint, ...]) -> float:
     return 0.5 * sum(
         point[0] * points[(index + 1) % len(points)][1]
@@ -489,10 +508,7 @@ def _segments_intersect(
         orientation(b1, b2, a1),
         orientation(b1, b2, a2),
     )
-    if (
-        values[0] * values[1] < -_GEOMETRY_EPSILON
-        and values[2] * values[3] < -_GEOMETRY_EPSILON
-    ):
+    if values[0] * values[1] < -_GEOMETRY_EPSILON and values[2] * values[3] < -_GEOMETRY_EPSILON:
         return True
 
     def on_segment(start: ShapePoint, end: ShapePoint, point: ShapePoint) -> bool:
@@ -506,10 +522,14 @@ def _segments_intersect(
         )
 
     return (
-        abs(values[0]) <= _GEOMETRY_EPSILON and on_segment(a1, a2, b1)
-        or abs(values[1]) <= _GEOMETRY_EPSILON and on_segment(a1, a2, b2)
-        or abs(values[2]) <= _GEOMETRY_EPSILON and on_segment(b1, b2, a1)
-        or abs(values[3]) <= _GEOMETRY_EPSILON and on_segment(b1, b2, a2)
+        abs(values[0]) <= _GEOMETRY_EPSILON
+        and on_segment(a1, a2, b1)
+        or abs(values[1]) <= _GEOMETRY_EPSILON
+        and on_segment(a1, a2, b2)
+        or abs(values[2]) <= _GEOMETRY_EPSILON
+        and on_segment(b1, b2, a1)
+        or abs(values[3]) <= _GEOMETRY_EPSILON
+        and on_segment(b1, b2, a2)
     )
 
 
@@ -525,6 +545,7 @@ __all__ = [
     "ShapeGeometry",
     "ShapeKind",
     "ShapePaintStyle",
+    "ShapeOutputTarget",
     "ShapeRasterRequest",
     "ShapeRasterResult",
     "ShapeSettings",

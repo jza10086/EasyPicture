@@ -355,6 +355,18 @@ class OpenGLCanvasBackend:
                         painter.beginNativePainting()
                         native_active = True
                         bind_frame_state()
+                if coordinator.has_transient_vector_preview:
+                    program.release()
+                    vao.release()
+                    painter.endNativePainting()
+                    native_active = False
+                    coordinator.paint_transient_vector_preview(
+                        painter,
+                        coordinator.document_rect(),
+                    )
+                    painter.beginNativePainting()
+                    native_active = True
+                    bind_frame_state()
                 self._draw_checker_and_border(
                     document.width,
                     document.height,

@@ -18,6 +18,7 @@ from easypicture.imaging import (
     PaintBlendMode,
     SelectionCombineMode,
     ShapeKind,
+    ShapeOutputTarget,
     ShapePaintStyle,
     ShapeSettings,
     TransformInterpolation,
@@ -322,9 +323,7 @@ class AppSettings:
         self.set_selection_combine_mode(settings.mode)
 
     def shape_kind(self) -> ShapeKind:
-        value = str(
-            self._settings.value("tools/shape/kind", ShapeKind.RECTANGLE.value)
-        )
+        value = str(self._settings.value("tools/shape/kind", ShapeKind.RECTANGLE.value))
         try:
             return ShapeKind(value)
         except ValueError:
@@ -337,6 +336,7 @@ class AppSettings:
                 ShapePaintStyle.STROKE.value,
             )
         )
+
         try:
             style = ShapePaintStyle(style_value)
         except ValueError:
@@ -373,10 +373,23 @@ class AppSettings:
             blend_mode=self._paint_blend_mode("tools/shape/blend_mode"),
         )
 
+    def shape_output_target(self) -> ShapeOutputTarget:
+        value = str(
+            self._settings.value(
+                "tools/shape/output_target",
+                ShapeOutputTarget.RASTER.value,
+            )
+        )
+        try:
+            return ShapeOutputTarget(value)
+        except ValueError:
+            return ShapeOutputTarget.RASTER
+
     def set_shape_options(
         self,
         kind: ShapeKind,
         settings: ShapeSettings,
+        output_target: ShapeOutputTarget | None = None,
     ) -> None:
         self._settings.setValue("tools/shape/kind", kind.value)
         self._settings.setValue("tools/shape/style", settings.style.value)
@@ -392,6 +405,8 @@ class AppSettings:
         self._settings.setValue("tools/shape/opacity", settings.opacity)
         self._settings.setValue("tools/shape/antialias", settings.antialias)
         self._settings.setValue("tools/shape/blend_mode", settings.blend_mode.value)
+        if output_target is not None:
+            self._settings.setValue("tools/shape/output_target", output_target.value)
 
     def transform_interpolation(self) -> TransformInterpolation:
         value = str(

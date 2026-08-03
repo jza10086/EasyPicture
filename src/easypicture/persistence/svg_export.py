@@ -40,7 +40,6 @@ from easypicture.render.svg_renderer import create_static_svg_renderer, svg_with
 from easypicture.render.text_renderer import paint_vector_objects
 
 SVG_NAMESPACE = "http://www.w3.org/2000/svg"
-XLINK_NAMESPACE = "http://www.w3.org/1999/xlink"
 _URL_REFERENCE = re.compile(r"url\(\s*#([^\s)]+)\s*\)")
 
 
@@ -61,7 +60,7 @@ def export_svg(
     parts = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         (
-            f'<svg xmlns="{SVG_NAMESPACE}" xmlns:xlink="{XLINK_NAMESPACE}" '
+            f'<svg xmlns="{SVG_NAMESPACE}" '
             f'version="1.1" width="{width}" height="{height}" '
             f'viewBox="0 0 {width} {height}">'
         ),
@@ -163,7 +162,7 @@ def _embedded_png(data: bytes, width: int, height: int) -> str:
     encoded = base64.b64encode(data).decode("ascii")
     return (
         f'<image x="0" y="0" width="{width}" height="{height}" '
-        f'xlink:href="data:image/png;base64,{encoded}"/>'
+        f'href="data:image/png;base64,{encoded}"/>'
     )
 
 
@@ -237,6 +236,22 @@ def _strip_namespaces(node: ET.Element) -> None:
         attributes["href" if local == "href" else local] = value
     node.attrib.clear()
     node.attrib.update(attributes)
+    defaults = {
+        "stroke-linecap": "butt",
+        "stroke-linejoin": "miter",
+        "stroke-miterlimit": "4",
+        "fill-rule": "nonzero",
+        "stroke-dashoffset": "0",
+        "opacity": "1",
+    }
+    for name, default in defaults.items():
+        if node.get(name) == default:
+            node.attrib.pop(name, None)
+    if node.get("transform", "").replace(" ", "") in {
+        "matrix(1,0,0,1,0,0)",
+        "matrix(100100)",
+    }:
+        node.attrib.pop("transform", None)
     for child in node:
         _strip_namespaces(child)
 

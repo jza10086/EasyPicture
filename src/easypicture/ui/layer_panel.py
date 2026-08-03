@@ -1328,7 +1328,7 @@ class LayerPanel(QWidget):
             group = node
             insertion_index = None
         elif isinstance(node, (TextObject, SvgElementObject)):
-            group, selected_object = document.text_object_by_id(node.id)
+            group, selected_object = document.vector_object_by_id(node.id)
             insertion_index = group.children.index(selected_object)
         else:
             if not self.commands.create_vector_group():
@@ -1446,7 +1446,7 @@ class LayerPanel(QWidget):
             if index > 0:
                 self.commands.move_group(node.id, index - 1)
         else:
-            group, _ = document.text_object_by_id(node.id)
+            group, _ = document.vector_object_by_id(node.id)
             index = group.children.index(node)
             if index > 0:
                 self.commands.move_text_object(node.id, index - 1)
@@ -1508,7 +1508,7 @@ class LayerPanel(QWidget):
             self.up_button.setEnabled(index < len(document.nodes) - 1)
             self.down_button.setEnabled(index > 0)
         else:
-            group, _ = document.text_object_by_id(node.id)
+            group, _ = document.vector_object_by_id(node.id)
             index = group.children.index(node)
             self.up_button.setEnabled(index < len(group.children) - 1)
             self.down_button.setEnabled(index > 0)

@@ -9,6 +9,7 @@ from easypicture.ui.drag_value_spinbox import (
     DragValueDoubleSpinBox,
     NumericEditState,
 )
+from easypicture.ui.numeric_ranges import SIGNED_COORDINATE_RANGE
 
 type CornerValues = tuple[float, float, float, float, float, float, float, float]
 type PivotValues = tuple[float, float]
@@ -121,11 +122,11 @@ class TransformPropertiesPanel(QWidget):
 
     def _make_coordinate_field(self) -> DragValueDoubleSpinBox:
         return DragValueDoubleSpinBox(
-            -8192.0,
-            8192.0,
+            SIGNED_COORDINATE_RANGE.soft_minimum,
+            SIGNED_COORDINATE_RANGE.soft_maximum,
             0.0,
-            manual_minimum=-32768.0,
-            manual_maximum=32768.0,
+            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
+            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
             suffix=" px",
             parent=self,
         )

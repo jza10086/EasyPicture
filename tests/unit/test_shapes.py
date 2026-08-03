@@ -57,6 +57,13 @@ def test_shape_geometry_validates_boxes_and_polygons() -> None:
         ((0.0, 0.0), (20.0, 0.0), (10.0, 8.0), (20.0, 20.0), (0.0, 20.0)),
     )
     assert concave.bounds == (0.0, 0.0, 20.0, 20.0)
+    polyline = ShapeGeometry(
+        ShapeKind.POLYLINE,
+        ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0)),
+    )
+    assert polyline.bounds == (0.0, 0.0, 10.0, 10.0)
+    with pytest.raises(ValueError, match="two points"):
+        ShapeGeometry(ShapeKind.POLYLINE, ((0.0, 0.0),))
 
 
 def test_rounded_rectangle_clamps_corner_radius() -> None:

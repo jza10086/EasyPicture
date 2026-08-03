@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QWheelEvent
 from PySide6.QtWidgets import QComboBox, QWidget
 
 
@@ -27,6 +27,10 @@ class BlenderComboBox(QComboBox):
         arrow.lineTo(center_x, center_y + 2.0)
         arrow.closeSubpath()
         painter.drawPath(arrow)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Leave wheel scrolling to the containing panel instead of changing values."""
+        event.ignore()
 
 
 __all__ = ["BlenderComboBox"]

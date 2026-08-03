@@ -47,6 +47,7 @@ from easypicture.domain import (
     Size,
     SvgElementObject,
     TextObject,
+    parse_editable_svg,
 )
 from easypicture.imaging import (
     BACKGROUND_SELECTION_PIXEL_THRESHOLD,
@@ -73,6 +74,7 @@ from easypicture.imaging import (
     SelectionOperationResult,
     ShapeGeometry,
     ShapeKind,
+    ShapeOutputTarget,
     ShapeSettings,
     ThresholdAdjustment,
     TrimTransparentRequest,
@@ -209,9 +211,7 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.controller = controller
         self.settings = settings
-        self.runtime_paths = (
-            runtime_paths if runtime_paths is not None else RuntimePaths.from_qt()
-        )
+        self.runtime_paths = runtime_paths if runtime_paths is not None else RuntimePaths.from_qt()
         configure_numeric_drag_sensitivity(
             settings.numeric_drag_sensitivity(),
             settings.numeric_fine_drag_sensitivity(),
@@ -258,12 +258,12 @@ class MainWindow(QMainWindow):
             jobs=self.controller.jobs,
             set_busy=self._set_editing_busy,
             status=self.controller.status_message.emit,
-            selected_node_provider=lambda: self.layer_panel.current_node()
-            if hasattr(self, "layer_panel")
-            else None,
-            select_node=lambda node: self.layer_panel.select_node(node)
-            if hasattr(self, "layer_panel")
-            else None,
+            selected_node_provider=lambda: (
+                self.layer_panel.current_node() if hasattr(self, "layer_panel") else None
+            ),
+            select_node=lambda node: (
+                self.layer_panel.select_node(node) if hasattr(self, "layer_panel") else None
+            ),
         )
         self.tool_controller = ToolController(self.tool_context, NullTool())
         self.canvas_view.set_tool_controller(self.tool_controller)
@@ -274,9 +274,7 @@ class MainWindow(QMainWindow):
         self._create_docks()
         self._color_apply_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         self._color_apply_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-        self._color_apply_shortcut.activated.connect(
-            self._apply_color_adjustment_if_active
-        )
+        self._color_apply_shortcut.activated.connect(self._apply_color_adjustment_if_active)
         self._create_status_bar()
         self._connect_signals()
         self._on_document_changed(self.controller.document)
@@ -478,17 +476,19 @@ class MainWindow(QMainWindow):
             "shape": ShapeTool(
                 self.tool_options_panel.shape.kind,
                 self.tool_options_panel.shape.settings,
+                self.tool_options_panel.shape.output_target,
                 self._set_shape_geometry,
                 self._update_undo_actions,
+                lambda vector_object: (
+                    self.svg_properties.set_preview_object(vector_object)
+                    if hasattr(self, "svg_properties")
+                    else None
+                ),
             ),
             "text": TextTool(),
             "text_transform": TextTransformTool(
-                lambda: self.layer_panel.current_node()
-                if hasattr(self, "layer_panel")
-                else None,
-                lambda text_object: self.text_properties.set_preview_object(
-                    text_object
-                ),
+                lambda: self.layer_panel.current_node() if hasattr(self, "layer_panel") else None,
+                lambda text_object: self.text_properties.set_preview_object(text_object),
             ),
         }
         self.tool_actions: dict[str, QAction] = {}
@@ -518,17 +518,11 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tools_toolbar)
         self.tool_options_panel.brush_settings_changed.connect(self._save_brush_settings)
         self.tool_options_panel.bucket_settings_changed.connect(self._save_bucket_settings)
-        self.tool_options_panel.eyedropper_settings_changed.connect(
-            self._save_eyedropper_settings
-        )
+        self.tool_options_panel.eyedropper_settings_changed.connect(self._save_eyedropper_settings)
         self.tool_options_panel.selection_mode_changed.connect(self._save_selection_mode)
-        self.tool_options_panel.magic_wand_settings_changed.connect(
-            self._save_magic_wand_settings
-        )
+        self.tool_options_panel.magic_wand_settings_changed.connect(self._save_magic_wand_settings)
         self.tool_options_panel.deselect_requested.connect(self._deselect)
-        self.tool_options_panel.transform_options_changed.connect(
-            self._transform_options_changed
-        )
+        self.tool_options_panel.transform_options_changed.connect(self._transform_options_changed)
         self.tool_options_panel.transform_parameters_changed.connect(
             self._transform_parameters_changed
         )
@@ -541,21 +535,16 @@ class MainWindow(QMainWindow):
         self.tool_options_panel.transform_parameter_edit_canceled.connect(
             self._transform_edit_canceled
         )
-        self.tool_options_panel.transform_commit_requested.connect(
-            self._transform_commit
-        )
-        self.tool_options_panel.transform_cancel_requested.connect(
-            self._transform_cancel
-        )
+        self.tool_options_panel.transform_commit_requested.connect(self._transform_commit)
+        self.tool_options_panel.transform_cancel_requested.connect(self._transform_cancel)
         self.tool_options_panel.crop_rect_changed.connect(self._crop_rect_changed)
-        self.tool_options_panel.crop_options_changed.connect(
-            self._crop_options_changed
-        )
+        self.tool_options_panel.crop_options_changed.connect(self._crop_options_changed)
         self.tool_options_panel.crop_commit_requested.connect(self._crop_commit)
         self.tool_options_panel.crop_cancel_requested.connect(self._crop_cancel)
         self.tool_options_panel.shape_kind_changed.connect(self._shape_kind_changed)
-        self.tool_options_panel.shape_settings_changed.connect(
-            self._shape_settings_changed
+        self.tool_options_panel.shape_settings_changed.connect(self._shape_settings_changed)
+        self.tool_options_panel.shape_output_target_changed.connect(
+            self._shape_output_target_changed
         )
         self.tool_options_panel.shape_commit_requested.connect(self._shape_commit)
         self.tool_options_panel.shape_cancel_requested.connect(self._shape_cancel)
@@ -611,12 +600,8 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage,
             self,
         )
-        self.transform_properties.corners_changed.connect(
-            self._transform_corners_changed
-        )
-        self.transform_properties.pivot_changed.connect(
-            self._transform_pivot_changed
-        )
+        self.transform_properties.corners_changed.connect(self._transform_corners_changed)
+        self.transform_properties.pivot_changed.connect(self._transform_pivot_changed)
         self.transform_properties.edit_started.connect(self._transform_edit_started)
         self.transform_properties.edit_finished.connect(self._transform_edit_finished)
         self.transform_properties.edit_canceled.connect(self._transform_edit_canceled)
@@ -624,12 +609,12 @@ class MainWindow(QMainWindow):
         self.shape_properties.edit_started.connect(self._shape_edit_started)
         self.shape_properties.edit_finished.connect(self._shape_edit_finished)
         self.shape_properties.edit_canceled.connect(self._shape_edit_canceled)
+        self.svg_properties.preview_changed.connect(self._svg_preview_changed)
+        self.svg_properties.preview_cleared.connect(self.canvas_view.clear_vector_preview)
         self.color_adjustment_panel.parameters_changed.connect(
             self._color_adjustment_parameters_changed
         )
-        self.color_adjustment_panel.apply_requested.connect(
-            self._apply_color_adjustment
-        )
+        self.color_adjustment_panel.apply_requested.connect(self._apply_color_adjustment)
         self.color_adjustment_panel.cancel_requested.connect(
             self.color_adjustment_controller.cancel
         )
@@ -637,13 +622,9 @@ class MainWindow(QMainWindow):
             self.color_adjustment_controller.set_preview_enabled
         )
         self.color_adjustment_panel.sample_requested.connect(
-            lambda merged: self.color_adjustment_controller.begin_sampling(
-                merged=merged
-            )
+            lambda merged: self.color_adjustment_controller.begin_sampling(merged=merged)
         )
-        self.color_adjustment_controller.active_changed.connect(
-            self._on_color_adjustment_active
-        )
+        self.color_adjustment_controller.active_changed.connect(self._on_color_adjustment_active)
         self.color_adjustment_controller.progress_changed.connect(
             self.color_adjustment_panel.set_progress
         )
@@ -727,9 +708,7 @@ class MainWindow(QMainWindow):
                 "平滑选区",
             )
         )
-        self.clear_selected_pixels_action.triggered.connect(
-            self._clear_selected_pixels
-        )
+        self.clear_selected_pixels_action.triggered.connect(self._clear_selected_pixels)
         undo_stack = self.controller.commands.undo_stack
         self.undo_action.triggered.connect(self._undo_requested)
         self.redo_action.triggered.connect(self._redo_requested)
@@ -743,9 +722,7 @@ class MainWindow(QMainWindow):
         self.controller.recent_files_changed.connect(self._rebuild_recent_files_menu)
         self.controller.notifications.notice.connect(self._show_user_notice)
         self.canvas_view.render_backend_fallback.connect(self._on_render_backend_fallback)
-        self.canvas_view.render_coordinator.diagnostics_changed.connect(
-            self._on_render_diagnostics
-        )
+        self.canvas_view.render_coordinator.diagnostics_changed.connect(self._on_render_diagnostics)
         self.canvas_view.zoom_changed.connect(self._on_zoom_changed)
         self.canvas_view.cursor_document_position_changed.connect(self._on_cursor_position)
 
@@ -1043,9 +1020,7 @@ class MainWindow(QMainWindow):
         )
         self._geometry_progress = dialog
         self._set_editing_busy(True)
-        handle.finished.connect(
-            lambda outcome: self._on_geometry_finished(outcome, label)
-        )
+        handle.finished.connect(lambda outcome: self._on_geometry_finished(outcome, label))
 
     def _on_geometry_finished(self, outcome: JobOutcome, label: str) -> None:
         self._close_geometry_progress()
@@ -1074,10 +1049,7 @@ class MainWindow(QMainWindow):
 
     def _on_document_changed(self, document: Document | None) -> None:
         self._selected_vector_object = False
-        if (
-            hasattr(self, "color_adjustment_controller")
-            and self.color_adjustment_controller.active
-        ):
+        if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             self.color_adjustment_controller.cancel()
         if self._selection_job is not None:
             self._selection_job.cancel()
@@ -1133,10 +1105,7 @@ class MainWindow(QMainWindow):
         self._update_window_title()
 
     def _activate_tool(self, tool_name: str) -> None:
-        if (
-            hasattr(self, "color_adjustment_controller")
-            and self.color_adjustment_controller.active
-        ):
+        if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             self.color_adjustment_controller.cancel()
         if tool_name == "crop":
             document = self.controller.document
@@ -1160,9 +1129,7 @@ class MainWindow(QMainWindow):
         self.tool_options_panel.show_tool(tool_name)
         if tool_name == "transform" and hasattr(self, "properties_stack"):
             self.properties_stack.setCurrentWidget(
-                self.text_properties
-                if self._selected_vector_object
-                else self.transform_properties
+                self.text_properties if self._selected_vector_object else self.transform_properties
             )
             self.properties_dock.show()
             self.properties_dock.raise_()
@@ -1225,6 +1192,7 @@ class MainWindow(QMainWindow):
             self.settings.set_shape_options(
                 kind,
                 self.tool_options_panel.shape.settings(),
+                self.tool_options_panel.shape.output_target(),
             )
             self.settings.sync()
 
@@ -1234,11 +1202,25 @@ class MainWindow(QMainWindow):
         self.settings.set_shape_options(
             self.tool_options_panel.shape.kind(),
             settings,
+            self.tool_options_panel.shape.output_target(),
         )
         self.settings.sync()
         tool = self._tools.get("shape")
         if isinstance(tool, ShapeTool):
             tool.settings_changed()
+
+    def _shape_output_target_changed(self, target: object) -> None:
+        if not isinstance(target, ShapeOutputTarget):
+            return
+        self.settings.set_shape_options(
+            self.tool_options_panel.shape.kind(),
+            self.tool_options_panel.shape.settings(),
+            target,
+        )
+        self.settings.sync()
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.cancel()
 
     def _set_shape_geometry(self, geometry: ShapeGeometry | None) -> None:
         if hasattr(self, "shape_properties"):
@@ -1274,6 +1256,22 @@ class MainWindow(QMainWindow):
         if isinstance(tool, ShapeTool):
             tool.cancel()
 
+    def _svg_preview_changed(self, preview: object) -> None:
+        document = self.controller.document
+        if document is None or not isinstance(preview, SvgElementObject):
+            return
+        try:
+            group, current = document.vector_object_by_id(preview.id)
+        except ValueError:
+            self.canvas_view.clear_vector_preview()
+            return
+        objects = list(group.children)
+        objects[group.children.index(current)] = preview
+        self.canvas_view.replace_vector_preview(group.id, tuple(objects))
+        tool = self._tools.get("shape")
+        if isinstance(tool, ShapeTool):
+            tool.set_svg_preview_object(preview)
+
     def _start_color_adjustment(self, kind: ColorAdjustmentKind) -> None:
         document = self.controller.document
         if document is None or self._editing_busy:
@@ -1305,9 +1303,7 @@ class MainWindow(QMainWindow):
         if self.color_adjustment_controller.update_parameters(parameters):
             self.color_adjustment_panel.set_running(True)
         elif self.color_adjustment_controller.parameters is not None:
-            self.color_adjustment_panel.set_parameters(
-                self.color_adjustment_controller.parameters
-            )
+            self.color_adjustment_panel.set_parameters(self.color_adjustment_controller.parameters)
 
     def _apply_color_adjustment(self) -> None:
         self.color_adjustment_panel.set_running(True)
@@ -1343,9 +1339,7 @@ class MainWindow(QMainWindow):
     def _show_properties_for_tool(self, tool_name: str) -> None:
         if tool_name == "transform":
             self.properties_stack.setCurrentWidget(
-                self.text_properties
-                if self._selected_vector_object
-                else self.transform_properties
+                self.text_properties if self._selected_vector_object else self.transform_properties
             )
         elif tool_name == "shape":
             self.properties_stack.setCurrentWidget(self.shape_properties)
@@ -1369,6 +1363,17 @@ class MainWindow(QMainWindow):
         elif isinstance(node, SvgElementObject):
             self.text_properties.set_object(None)
             self.svg_properties.set_object(node)
+            if parse_editable_svg(node.svg) is not None and not self._editing_busy:
+                self.tool_options_panel.shape.output_combo.setCurrentIndex(
+                    self.tool_options_panel.shape.output_combo.findData(
+                        ShapeOutputTarget.VECTOR.value
+                    )
+                )
+                self.tool_actions["shape"].setChecked(True)
+                self._activate_tool("shape")
+                tool = self._tools.get("shape")
+                if isinstance(tool, ShapeTool):
+                    tool.edit_svg_object(node)
             self.properties_stack.setCurrentWidget(self.svg_properties)
             self.properties_dock.show()
             self.properties_dock.raise_()
@@ -1502,10 +1507,7 @@ class MainWindow(QMainWindow):
             action.setEnabled(enabled)
 
     def _cancel_color_adjustment_for_lifecycle(self) -> None:
-        if (
-            hasattr(self, "color_adjustment_controller")
-            and self.color_adjustment_controller.active
-        ):
+        if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             self.color_adjustment_controller.cancel()
 
     def _transform_options_changed(self) -> None:
@@ -1623,9 +1625,7 @@ class MainWindow(QMainWindow):
             self.canvas_view.render_coordinator.diagnostics,
             self,
             numeric_drag_sensitivity=self.settings.numeric_drag_sensitivity(),
-            numeric_fine_drag_sensitivity=(
-                self.settings.numeric_fine_drag_sensitivity()
-            ),
+            numeric_fine_drag_sensitivity=(self.settings.numeric_fine_drag_sensitivity()),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1658,9 +1658,7 @@ class MainWindow(QMainWindow):
 
     def _open_log_folder(self) -> None:
         self.runtime_paths.logs.mkdir(parents=True, exist_ok=True)
-        if not QDesktopServices.openUrl(
-            QUrl.fromLocalFile(str(self.runtime_paths.logs))
-        ):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.runtime_paths.logs))):
             self.controller.notifications.warning(
                 "open-log-folder-failed",
                 "无法打开日志目录",
@@ -1819,10 +1817,15 @@ class MainWindow(QMainWindow):
             or self._selection_job is not None
         ):
             return
-        maximum = 1024 if operation in {
-            SelectionAdjustment.GROW,
-            SelectionAdjustment.SHRINK,
-        } else 256
+        maximum = (
+            1024
+            if operation
+            in {
+                SelectionAdjustment.GROW,
+                SelectionAdjustment.SHRINK,
+            }
+            else 256
+        )
         radius = self.controller.dialogs.request_selection_radius(
             self,
             label,
@@ -1918,12 +1921,8 @@ class MainWindow(QMainWindow):
         has_document = document is not None
         active = has_document and document.selection.is_active if document is not None else False
         self.select_all_action.setEnabled(has_document and not self._editing_busy)
-        self.crop_to_selection_action.setEnabled(
-            active and not self._editing_busy
-        )
-        self.clear_selected_pixels_action.setEnabled(
-            active and not self._editing_busy
-        )
+        self.crop_to_selection_action.setEnabled(active and not self._editing_busy)
+        self.clear_selected_pixels_action.setEnabled(active and not self._editing_busy)
         self.tool_options_panel.set_selection_active(active and not self._editing_busy)
         for action in (
             self.deselect_action,
@@ -1936,10 +1935,7 @@ class MainWindow(QMainWindow):
             action.setEnabled(active and not self._editing_busy)
 
     def _update_undo_actions(self, *_args: object) -> None:
-        if (
-            hasattr(self, "color_adjustment_controller")
-            and self.color_adjustment_controller.active
-        ):
+        if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             self.undo_action.setEnabled(False)
             self.redo_action.setEnabled(False)
             self.undo_action.setText("撤销")
@@ -1951,12 +1947,8 @@ class MainWindow(QMainWindow):
             redo_text = tool.preview_redo_text
             self.undo_action.setEnabled(tool.can_undo_preview)
             self.redo_action.setEnabled(tool.can_redo_preview)
-            self.undo_action.setText(
-                f"撤销 {undo_text}" if undo_text else "撤销"
-            )
-            self.redo_action.setText(
-                f"重做 {redo_text}" if redo_text else "重做"
-            )
+            self.undo_action.setText(f"撤销 {undo_text}" if undo_text else "撤销")
+            self.redo_action.setText(f"重做 {redo_text}" if redo_text else "重做")
             return
         shape_tool = self._tools.get("shape") if hasattr(self, "_tools") else None
         if isinstance(shape_tool, ShapeTool) and shape_tool.has_active_session:
@@ -2023,10 +2015,7 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if (
-            hasattr(self, "color_adjustment_controller")
-            and self.color_adjustment_controller.active
-        ):
+        if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             if event.key() == Qt.Key.Key_Escape:
                 if self.color_adjustment_controller.sampling:
                     self.color_adjustment_controller.cancel_sampling()
@@ -2034,9 +2023,7 @@ class MainWindow(QMainWindow):
                     self.color_adjustment_controller.cancel()
                 event.accept()
                 return
-            if (
-                event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
-            ):
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 self._apply_color_adjustment()
                 event.accept()
                 return

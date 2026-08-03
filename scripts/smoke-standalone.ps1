@@ -31,8 +31,20 @@ try {
     if ($ioProcess.ExitCode -ne 0) {
         throw "Standalone I/O smoke test failed with exit code $($ioProcess.ExitCode)"
     }
+    $svgSmokeDir = Join-Path $repoRoot ".cache\standalone-svg-smoke"
+    New-Item -ItemType Directory -Path $svgSmokeDir -Force | Out-Null
+    $svgProcess = Start-Process `
+        -FilePath $executable.FullName `
+        -ArgumentList @("--svg-smoke-test", $svgSmokeDir) `
+        -WindowStyle Hidden `
+        -Wait `
+        -PassThru
+    if ($svgProcess.ExitCode -ne 0) {
+        throw "Standalone SVG smoke test failed with exit code $($svgProcess.ExitCode)"
+    }
     Write-Output "Standalone smoke test passed: $($executable.FullName)"
     Write-Output "Standalone I/O smoke test passed: $ioSmokeDir"
+    Write-Output "Standalone SVG smoke test passed: $svgSmokeDir"
 }
 finally {
     $env:PATH = $originalPath

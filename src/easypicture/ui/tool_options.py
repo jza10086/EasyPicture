@@ -22,6 +22,7 @@ from easypicture.imaging import (
     PaintBlendMode,
     SelectionCombineMode,
     ShapeKind,
+    ShapeOutputTarget,
     ShapePaintStyle,
     ShapeSettings,
     TransformInterpolation,
@@ -33,6 +34,13 @@ from easypicture.ui.drag_value_spinbox import (
     DragValueDoubleSpinBox,
     DragValueSpinBox,
     NumericEditState,
+)
+from easypicture.ui.numeric_ranges import (
+    DOCUMENT_DIMENSION_RANGE,
+    ROTATION_DEGREES_RANGE,
+    SIGNED_COORDINATE_RANGE,
+    STROKE_WIDTH_RANGE,
+    TRANSFORM_DIMENSION_RANGE,
 )
 from easypicture.ui.settings import AppSettings
 
@@ -342,23 +350,35 @@ class TransformOptionsWidget(QWidget):
         self.interpolation_combo.setCurrentIndex(
             max(
                 0,
-                self.interpolation_combo.findData(
-                    settings.transform_interpolation().value
-                ),
+                self.interpolation_combo.findData(settings.transform_interpolation().value),
             )
         )
         self.irregular_check = QCheckBox("不规则编辑", self)
         self.irregular_check.setChecked(settings.transform_irregular_edit())
         self._pivot = (0.0, 0.0)
-        self.width_spin = self._double(1.0, 8192.0, 1.0, " px")
-        self.height_spin = self._double(1.0, 8192.0, 1.0, " px")
+        self.width_spin = self._double(
+            TRANSFORM_DIMENSION_RANGE.soft_minimum,
+            TRANSFORM_DIMENSION_RANGE.soft_maximum,
+            1.0,
+            " px",
+            TRANSFORM_DIMENSION_RANGE.hard_minimum,
+            TRANSFORM_DIMENSION_RANGE.hard_maximum,
+        )
+        self.height_spin = self._double(
+            TRANSFORM_DIMENSION_RANGE.soft_minimum,
+            TRANSFORM_DIMENSION_RANGE.soft_maximum,
+            1.0,
+            " px",
+            TRANSFORM_DIMENSION_RANGE.hard_minimum,
+            TRANSFORM_DIMENSION_RANGE.hard_maximum,
+        )
         self.rotation_spin = self._double(
-            -180.0,
-            180.0,
+            ROTATION_DEGREES_RANGE.soft_minimum,
+            ROTATION_DEGREES_RANGE.soft_maximum,
             0.0,
             "°",
-            -36000.0,
-            36000.0,
+            ROTATION_DEGREES_RANGE.hard_minimum,
+            ROTATION_DEGREES_RANGE.hard_maximum,
         )
         self.apply_button = QPushButton("应用", self)
         self.cancel_button = QPushButton("取消", self)
@@ -485,25 +505,41 @@ class CropOptionsWidget(QWidget):
         self.grid_check = QCheckBox("三分网格", self)
         self.grid_check.setChecked(True)
         self.x_spin = DragValueSpinBox(
-            -8192,
-            8192,
+            int(SIGNED_COORDINATE_RANGE.soft_minimum),
+            int(SIGNED_COORDINATE_RANGE.soft_maximum),
             0,
-            manual_minimum=-32768,
-            manual_maximum=32768,
+            manual_minimum=int(SIGNED_COORDINATE_RANGE.hard_minimum),
+            manual_maximum=int(SIGNED_COORDINATE_RANGE.hard_maximum),
             suffix=" px",
             parent=self,
         )
         self.y_spin = DragValueSpinBox(
-            -8192,
-            8192,
+            int(SIGNED_COORDINATE_RANGE.soft_minimum),
+            int(SIGNED_COORDINATE_RANGE.soft_maximum),
             0,
-            manual_minimum=-32768,
-            manual_maximum=32768,
+            manual_minimum=int(SIGNED_COORDINATE_RANGE.hard_minimum),
+            manual_maximum=int(SIGNED_COORDINATE_RANGE.hard_maximum),
             suffix=" px",
             parent=self,
         )
-        self.width_spin = DragValueSpinBox(1, 8192, 1, suffix=" px", parent=self)
-        self.height_spin = DragValueSpinBox(1, 8192, 1, suffix=" px", parent=self)
+        self.width_spin = DragValueSpinBox(
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
+            1,
+            manual_minimum=int(DOCUMENT_DIMENSION_RANGE.hard_minimum),
+            manual_maximum=int(DOCUMENT_DIMENSION_RANGE.hard_maximum),
+            suffix=" px",
+            parent=self,
+        )
+        self.height_spin = DragValueSpinBox(
+            int(DOCUMENT_DIMENSION_RANGE.soft_minimum),
+            int(DOCUMENT_DIMENSION_RANGE.soft_maximum),
+            1,
+            manual_minimum=int(DOCUMENT_DIMENSION_RANGE.hard_minimum),
+            manual_maximum=int(DOCUMENT_DIMENSION_RANGE.hard_maximum),
+            suffix=" px",
+            parent=self,
+        )
         self.apply_button = QPushButton("应用", self)
         self.cancel_button = QPushButton("取消", self)
         layout = QHBoxLayout(self)
@@ -595,6 +631,7 @@ class CropOptionsWidget(QWidget):
 class ShapeOptionsWidget(QWidget):
     kind_changed = Signal(object)
     settings_changed = Signal(object)
+    output_target_changed = Signal(object)
     commit_requested = Signal()
     cancel_requested = Signal()
 
@@ -606,6 +643,7 @@ class ShapeOptionsWidget(QWidget):
             ("矩形", ShapeKind.RECTANGLE),
             ("圆角矩形", ShapeKind.ROUNDED_RECTANGLE),
             ("椭圆", ShapeKind.ELLIPSE),
+            ("折线", ShapeKind.POLYLINE),
             ("多边形", ShapeKind.POLYGON),
         ):
             self.kind_combo.addItem(label, kind.value)
@@ -613,6 +651,15 @@ class ShapeOptionsWidget(QWidget):
             max(0, self.kind_combo.findData(settings.shape_kind().value))
         )
         current = settings.shape_settings()
+        self.output_combo = BlenderComboBox(self)
+        self.output_combo.addItem("栅格", ShapeOutputTarget.RASTER.value)
+        self.output_combo.addItem("矢量", ShapeOutputTarget.VECTOR.value)
+        self.output_combo.setCurrentIndex(
+            max(
+                0,
+                self.output_combo.findData(settings.shape_output_target().value),
+            )
+        )
         self.style_combo = BlenderComboBox(self)
         for label, style in (
             ("仅描边", ShapePaintStyle.STROKE),
@@ -620,14 +667,13 @@ class ShapeOptionsWidget(QWidget):
             ("描边与填充", ShapePaintStyle.STROKE_AND_FILL),
         ):
             self.style_combo.addItem(label, style.value)
-        self.style_combo.setCurrentIndex(
-            max(0, self.style_combo.findData(current.style.value))
-        )
+        self.style_combo.setCurrentIndex(max(0, self.style_combo.findData(current.style.value)))
         self.stroke_width_spin = DragValueDoubleSpinBox(
-            1.0,
-            256.0,
+            max(1.0, STROKE_WIDTH_RANGE.soft_minimum),
+            STROKE_WIDTH_RANGE.soft_maximum,
             current.stroke_width,
-            manual_maximum=8192.0,
+            manual_minimum=max(1.0, STROKE_WIDTH_RANGE.hard_minimum),
+            manual_maximum=STROKE_WIDTH_RANGE.hard_maximum,
             suffix=" px",
             parent=self,
         )
@@ -651,6 +697,7 @@ class ShapeOptionsWidget(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         for label, widget in (
+            ("输出", self.output_combo),
             ("类型", self.kind_combo),
             ("样式", self.style_combo),
             ("描边", self.stroke_width_spin),
@@ -667,6 +714,7 @@ class ShapeOptionsWidget(QWidget):
         layout.addStretch(1)
 
         self.kind_combo.currentIndexChanged.connect(self._emit_kind)
+        self.output_combo.currentIndexChanged.connect(self._emit_output_target)
         self.style_combo.currentIndexChanged.connect(self._emit_settings)
         self.stroke_width_spin.valueChanged.connect(self._emit_settings)
         self.opacity_spin.valueChanged.connect(self._emit_settings)
@@ -677,9 +725,13 @@ class ShapeOptionsWidget(QWidget):
         self.apply_button.clicked.connect(self.commit_requested)
         self.cancel_button.clicked.connect(self.cancel_requested)
         self._refresh_color_buttons()
+        self._update_output_controls()
 
     def kind(self) -> ShapeKind:
         return ShapeKind(str(self.kind_combo.currentData()))
+
+    def output_target(self) -> ShapeOutputTarget:
+        return ShapeOutputTarget(str(self.output_combo.currentData()))
 
     def settings(self) -> ShapeSettings:
         return ShapeSettings(
@@ -705,6 +757,16 @@ class ShapeOptionsWidget(QWidget):
     def _emit_kind(self, _value: object = None) -> None:
         self.kind_changed.emit(self.kind())
         self._emit_settings()
+
+    def _emit_output_target(self, _value: object = None) -> None:
+        self._update_output_controls()
+        self.output_target_changed.emit(self.output_target())
+        self._emit_settings()
+
+    def _update_output_controls(self) -> None:
+        raster = self.output_target() is ShapeOutputTarget.RASTER
+        self.antialias_check.setEnabled(raster)
+        self.blend_combo.setEnabled(raster)
 
     def _emit_settings(self, _value: object = None) -> None:
         self.settings_changed.emit(self.settings())
@@ -763,6 +825,7 @@ class ToolOptionsPanel(QStackedWidget):
     crop_cancel_requested = Signal()
     shape_kind_changed = Signal(object)
     shape_settings_changed = Signal(object)
+    shape_output_target_changed = Signal(object)
     shape_commit_requested = Signal()
     shape_cancel_requested = Signal()
 
@@ -805,15 +868,9 @@ class ToolOptionsPanel(QStackedWidget):
         self.magic_wand.settings_changed.connect(self._magic_wand_settings_changed)
         self.transform.options_changed.connect(self.transform_options_changed)
         self.transform.parameters_changed.connect(self.transform_parameters_changed)
-        self.transform.parameter_edit_started.connect(
-            self.transform_parameter_edit_started
-        )
-        self.transform.parameter_edit_finished.connect(
-            self.transform_parameter_edit_finished
-        )
-        self.transform.parameter_edit_canceled.connect(
-            self.transform_parameter_edit_canceled
-        )
+        self.transform.parameter_edit_started.connect(self.transform_parameter_edit_started)
+        self.transform.parameter_edit_finished.connect(self.transform_parameter_edit_finished)
+        self.transform.parameter_edit_canceled.connect(self.transform_parameter_edit_canceled)
         self.transform.commit_requested.connect(self.transform_commit_requested)
         self.transform.cancel_requested.connect(self.transform_cancel_requested)
         self.crop.rect_changed.connect(self.crop_rect_changed)
@@ -822,6 +879,7 @@ class ToolOptionsPanel(QStackedWidget):
         self.crop.cancel_requested.connect(self.crop_cancel_requested)
         self.shape.kind_changed.connect(self.shape_kind_changed)
         self.shape.settings_changed.connect(self.shape_settings_changed)
+        self.shape.output_target_changed.connect(self.shape_output_target_changed)
         self.shape.commit_requested.connect(self.shape_commit_requested)
         self.shape.cancel_requested.connect(self.shape_cancel_requested)
         self.rectangle_selection.deselect_requested.connect(self.deselect_requested)
