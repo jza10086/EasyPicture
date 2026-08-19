@@ -5,6 +5,8 @@ import os
 import subprocess
 import sys
 
+from easypicture.persistence import PROJECT_SCHEMA_VERSION
+
 
 def test_module_smoke_test_exits_successfully() -> None:
     environment = os.environ.copy()
@@ -71,6 +73,7 @@ def test_export_smoke_test_writes_all_static_formats(tmp_path) -> None:
         "gif",
     }
     assert diagnostics["formats"]["gif"]["frames"] == 1
+    assert diagnostics["sprite_frame"]["size"] == [4, 4]
 
 
 def test_svg_smoke_test_round_trips_and_exports_both_modes(tmp_path) -> None:
@@ -92,7 +95,7 @@ def test_svg_smoke_test_round_trips_and_exports_both_modes(tmp_path) -> None:
     diagnostics = json.loads(
         (tmp_path / "svg-diagnostics.json").read_text(encoding="utf-8")
     )
-    assert diagnostics["schema"] == 4
+    assert diagnostics["schema"] == PROJECT_SCHEMA_VERSION
     assert diagnostics["imported"] >= 2
     assert (tmp_path / "svg-smoke.limg").exists()
     assert (tmp_path / "svg-smoke-preserved.svg").exists()

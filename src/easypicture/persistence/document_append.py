@@ -80,14 +80,16 @@ def prepare_document_append(
                 )
             )
 
-    warnings: tuple[str, ...] = ()
+    warning_list: list[str] = []
     if source.size != target.size:
-        warnings = (
+        warning_list.append(
             "追加内容的画布尺寸为 "
             f"{source.width} × {source.height}，已按左上角对齐到当前 "
-            f"{target.width} × {target.height} 画布；超出部分已裁切。",
+            f"{target.width} × {target.height} 画布；超出部分已裁切。"
         )
-    return DocumentAppendPayload(tuple(groups), warnings)
+    if source.sprite_workspace.frames:
+        warning_list.append("来源工程的精灵帧定义未追加。")
+    return DocumentAppendPayload(tuple(groups), tuple(warning_list))
 
 
 def _clone_raster_layer_for_canvas(

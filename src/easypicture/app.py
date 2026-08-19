@@ -17,9 +17,10 @@ from PySide6.QtWidgets import QApplication
 
 from easypicture import __version__
 from easypicture.controller import ApplicationController
-from easypicture.domain import Document
+from easypicture.domain import Document, SpriteFrameDefinition
 from easypicture.jobs import CancellationToken
 from easypicture.persistence import (
+    PROJECT_SCHEMA_VERSION,
     BmpExportOptions,
     DocumentSnapshot,
     GifExportOptions,
@@ -27,6 +28,7 @@ from easypicture.persistence import (
     ImageExportRequest,
     JpegExportOptions,
     PngExportOptions,
+    SpriteFrameExportRequest,
     SvgExportOptions,
     SvgVectorExportMode,
     TgaExportOptions,
@@ -34,11 +36,13 @@ from easypicture.persistence import (
     WebpExportOptions,
     export_image,
     export_png,
+    export_sprite_frame_png,
     import_image,
     import_svg,
     load_project,
     save_project,
 )
+from easypicture.pixels import Rect
 from easypicture.render import RenderBackendKind
 from easypicture.render_smoke import run_render_smoke_test
 from easypicture.runtime import (
@@ -52,6 +56,7 @@ from easypicture.ui.dialogs import DialogService, QtDialogService
 from easypicture.ui.main_window import MainWindow
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.theme import apply_dark_theme
+from easypicture.workspace import WorkspaceController
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -109,10 +114,16 @@ def create_window(
         if dialogs is not None
         else QtDialogService(resolved_settings, runtime_paths)
     )
-    controller = ApplicationController(
+    initial_controller = ApplicationController(
         resolved_settings,
         resolved_dialogs,
         recovery_enabled=recovery_enabled,
+    )
+    controller = WorkspaceController(
+        resolved_settings,
+        resolved_dialogs,
+        recovery_enabled=recovery_enabled,
+        initial_controller=initial_controller,
     )
     return MainWindow(
         controller,
@@ -183,7 +194,7 @@ def run(argv: Sequence[str] | None = None) -> int:
         render_backend=requested_backend,
         runtime_paths=runtime_paths,
     )
-    window.show()
+    _present_main_window(window)
     if cleanup_report.failures:
         startup_warnings.append("部分过期临时文件无法清理；软件仍可正常使用")
     if startup_warnings:
@@ -200,9 +211,26 @@ def run(argv: Sequence[str] | None = None) -> int:
         QTimer.singleShot(0, window.close)
         QTimer.singleShot(0, app.quit)
     else:
-        QTimer.singleShot(0, lambda: window.controller.offer_recovery(window))
+        QTimer.singleShot(0, lambda: _present_main_window(window))
+        QTimer.singleShot(150, lambda: window.controller.offer_recovery(window))
 
     return int(app.exec())
+
+
+def _present_main_window(window: MainWindow) -> None:
+    window.show()
+    window.raise_()
+    window.activateWindow()
+    geometry = window.frameGeometry()
+    logging.getLogger("easypicture").info(
+        "main window presented: visible=%s active=%s geometry=%s,%s %sx%s",
+        window.isVisible(),
+        window.isActiveWindow(),
+        geometry.x(),
+        geometry.y(),
+        geometry.width(),
+        geometry.height(),
+    )
 
 
 def _shutdown_runtime(temp_manager: TemporaryFileManager) -> None:
@@ -281,6 +309,8 @@ def _run_export_smoke_test(directory: Path) -> int:
         tile[2:4, :2] = (12, 34, 56, 0)
         tile[2:4, 2:4] = (0, 0, 255, 255)
         document.active_layer.pixels.replace_tile(0, 0, tile)
+        sprite_frame = SpriteFrameDefinition.create("smoke_frame", Rect(0, 0, 4, 4))
+        document.sprite_workspace.frames.append(sprite_frame)
         snapshot = DocumentSnapshot.capture(document)
         token = CancellationToken()
 
@@ -316,6 +346,20 @@ def _run_export_smoke_test(directory: Path) -> int:
                     "frames": int(getattr(image, "n_frames", 1)),
                     "bytes": receipt.file_size,
                 }
+        sprite_receipt = export_sprite_frame_png(
+            SpriteFrameExportRequest(
+                snapshot,
+                sprite_frame.id,
+                directory / "export-smoke-frame.png",
+            ),
+            token,
+            progress,
+        )
+        diagnostics["sprite_frame"] = {
+            "path": sprite_receipt.path.name,
+            "size": [sprite_receipt.width, sprite_receipt.height],
+            "bytes": sprite_receipt.file_size,
+        }
         diagnostics_path = directory / "diagnostics.json"
         diagnostics_path.write_text(
             json.dumps(diagnostics, ensure_ascii=False, indent=2),
@@ -377,7 +421,7 @@ def _run_svg_smoke_test(directory: Path) -> int:
             "project": project.name,
             "preserved": preserved.path.name,
             "rasterized": rasterized.path.name,
-            "schema": 4,
+            "schema": PROJECT_SCHEMA_VERSION,
         }
         (directory / "svg-diagnostics.json").write_text(
             json.dumps(diagnostics, ensure_ascii=False, indent=2),

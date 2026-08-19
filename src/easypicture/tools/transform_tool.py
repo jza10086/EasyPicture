@@ -145,6 +145,7 @@ class TransformTool:
         corner_sink: Callable[[CornerValues | None], None],
         pivot_sink: Callable[[PivotValues | None], None],
         history_sink: Callable[[], None] | None = None,
+        pixel_exact_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._interpolation_provider = interpolation_provider
         self._irregular_provider = irregular_provider
@@ -152,6 +153,7 @@ class TransformTool:
         self._corner_sink = corner_sink
         self._pivot_sink = pivot_sink
         self._history_sink = history_sink
+        self._pixel_exact_provider = pixel_exact_provider or (lambda: False)
         self._context: ToolContext | None = None
         self._session: _Session | None = None
         self._handle: JobHandle | None = None
@@ -313,6 +315,16 @@ class TransformTool:
         requested = TransformParameters.from_values(
             tuple(float(value) for value in values)  # type: ignore[arg-type]
         )
+        if self._pixel_exact_provider():
+            requested = TransformParameters.from_values(
+                (
+                    float(round(requested.x)),
+                    float(round(requested.y)),
+                    float(max(1, round(requested.width))),
+                    float(max(1, round(requested.height))),
+                    requested.rotation,
+                )
+            )
         if not _valid_parameters(requested):
             self._parameter_sink(self._parameters(session).values)
             return
@@ -360,6 +372,11 @@ class TransformTool:
                 for index in range(0, 8, 2)
             ),
         )
+        if self._pixel_exact_provider():
+            requested = cast(
+                tuple[Point, Point, Point, Point],
+                tuple(Point(float(round(point.x)), float(round(point.y))) for point in requested),
+            )
         if self._irregular_provider():
             corners = requested
         else:
@@ -810,6 +827,9 @@ class TransformTool:
         if drag.kind == "move":
             dx = point.x - drag.press.x
             dy = point.y - drag.press.y
+            if self._pixel_exact_provider():
+                dx = float(round(dx))
+                dy = float(round(dy))
             if modifiers & Qt.KeyboardModifier.ShiftModifier:
                 if abs(dx) >= abs(dy):
                     dy = 0.0
@@ -834,8 +854,14 @@ class TransformTool:
                 tuple(_rotate(value, pivot, degrees) for value in corners),
             )
         elif drag.kind == "pivot":
-            pivot = point
+            pivot = (
+                Point(float(round(point.x)), float(round(point.y)))
+                if self._pixel_exact_provider()
+                else point
+            )
         elif drag.kind == "resize" and drag.handle in _HANDLE_NAMES:
+            if self._pixel_exact_provider():
+                point = Point(float(round(point.x)), float(round(point.y)))
             handle = cast(HandleName, drag.handle)
             if handle in _CORNER_NAMES:
                 index = _CORNER_NAMES.index(handle)

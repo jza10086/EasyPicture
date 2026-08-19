@@ -17,7 +17,7 @@ from easypicture.domain import (
     VectorObjectKind,
 )
 from easypicture.jobs import CancellationToken
-from easypicture.persistence import DocumentSnapshot
+from easypicture.persistence import PROJECT_SCHEMA_VERSION, DocumentSnapshot
 from easypicture.persistence.project_io import load_project, save_project
 
 
@@ -159,7 +159,7 @@ def test_current_schema_round_trip_keeps_interleaved_groups(tmp_path: Path, qapp
 
     with zipfile.ZipFile(path) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == PROJECT_SCHEMA_VERSION
     assert "layers" not in manifest
     assert [node["type"] for node in manifest["nodes"]] == ["raster_group", "vector_group"]
     restored = load_project(path, CancellationToken(), _progress).snapshot.to_document()

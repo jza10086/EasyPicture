@@ -2,9 +2,23 @@
 
 EasyPicture 是一款面向 Windows 的本地离线轻量图像编辑器，适合个人日常图片处理。项目以 Python 3.14、PySide6、NumPy 和 Pillow 为基础，权威像素采用 256 px Tile 存储，画布提供 OpenGL 3.3 与软件双渲染后端。
 
-当前版本支持两级栅格/矢量图层组、画笔与常用像素工具、统一选区、自由变换、基础图形、可编辑文字、静态 SVG、非破坏性颜色调整、`.limg` 工程保存和七种常用图片格式导出。EasyPicture 目前仅面向本机单用户使用，不以跨平台发布、多人协作或超大画布为主要目标。
+当前版本支持两级栅格/矢量图层组、画笔与常用像素工具、统一选区、自由变换、基础图形、可编辑文字、静态 SVG、非破坏性颜色调整、像素精确工作区、手动精灵帧切分、多工程标签、独立帧编辑、帧分组与 Atlas 导出、`.limg` 工程保存和七种常用图片格式导出。EasyPicture 目前仅面向本机单用户使用，不以跨平台发布、多人协作或超大画布为主要目标。
 
 ## 版本记录
+
+### 0.4.0 — 2026-08-19
+
+- 增加同一窗口多工程工作区，主画布使用“工程 → 源图/独立帧”两级标签，工程间保留各自撤销历史。
+- 精灵帧支持 linked 引用与 detached 独立内容；独立帧作为父工程内嵌完整文档，可继续使用图层、像素和矢量编辑能力。
+- 增加帧分组、分组标签和完整 Atlas PNG + JSON 导出；`.limg` 升级为 schema v3 并保存分组与嵌入帧。
+- 新建工程使用唯一的 Untitled 数字后缀；精灵帧面板支持框选、Shift/Ctrl 多选、Delete 删除、批量移动及带插入光标的稳定拖放。
+
+### 0.3.0 — 2026-08-03
+
+- 增加像素网格、统一单格网格、网格吸附和栅格工具整数坐标模式。
+- 增加固定尺寸手动精灵切片框、逐像素/单格步进、精确 X/Y 和画布内确定按钮；切片只保存源画布区域引用，不修改原图。
+- 增加底部精灵帧条、缩略图、名称、顺序、锚点和单帧 PNG 导出；源图变化后帧内容随权威可见合成更新。
+- `.limg` 升级为 schema v2，正式支持精灵工作区元数据，并提供 v1→v2 迁移。
 
 ### 0.2.0 — 2026-08-03
 
@@ -39,7 +53,7 @@ EasyPicture 是一款面向 Windows 的本地离线轻量图像编辑器，适�
 
 ## 当前格式边界
 
-- `.limg` 是唯一保存 EasyPicture 图层树、对象属性和工程身份的格式，当前 schema 为 v1。
+- `.limg` 是唯一保存 EasyPicture 图层树、对象属性、精灵帧定义和工程身份的格式，当前 schema 为 v2。
 - 普通图片和 SVG 是中立交换格式，不写入 EasyPicture 内部 UUID、图层树或应用元数据。
 - SVG 仅支持静态安全子集；动画、脚本、外部资源、滤镜和任意深度子图层不在当前范围内。
 - 栅格层始终与画布同尺寸且 origin 为零；裁切或缩小后，画布外像素只能通过撤销恢复。
@@ -77,4 +91,4 @@ uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\
 uv run python -m easypicture --svg-smoke-test .cache\svg-smoke
 ```
 
-总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p9d_acceptance.md`](docs/p9d_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。
+总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p10a_acceptance.md`](docs/p10a_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。

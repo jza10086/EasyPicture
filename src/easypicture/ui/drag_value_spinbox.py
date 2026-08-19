@@ -300,6 +300,19 @@ class DragValueSpinBox(QWidget):
         self._set_value_internal(value)
         self._restore_display_text()
 
+    def syncValue(self, value: int) -> bool:
+        """Apply model feedback without interrupting an active user interaction.
+
+        ``setValue()`` deliberately remains the authoritative/force-update API.
+        Views that mirror a value which originated from this control must use
+        this method so their feedback loop cannot cancel dragging or text input.
+        """
+
+        if self._state is not NumericEditState.IDLE:
+            return False
+        self.setValue(value)
+        return True
+
     def minimum(self) -> int:
         return self._spec.hard_minimum
 
@@ -341,6 +354,26 @@ class DragValueSpinBox(QWidget):
             hard_maximum=hard_maximum,
         )
         self.setValue(self._value)
+
+    def syncPropertyRange(
+        self,
+        drag_minimum: int,
+        drag_maximum: int,
+        *,
+        manual_minimum: int | None = None,
+        manual_maximum: int | None = None,
+    ) -> bool:
+        """Update a model-derived range only while the control is idle."""
+
+        if self._state is not NumericEditState.IDLE:
+            return False
+        self.setPropertyRange(
+            drag_minimum,
+            drag_maximum,
+            manual_minimum=manual_minimum,
+            manual_maximum=manual_maximum,
+        )
+        return True
 
     def suffix(self) -> str:
         return self._spec.suffix
@@ -1093,6 +1126,9 @@ class DragValueDoubleSpinBox(QWidget):
     def setValue(self, value: float) -> None:
         self._field.setValue(round(value * self._factor))
 
+    def syncValue(self, value: float) -> bool:
+        return self._field.syncValue(round(value * self._factor))
+
     def minimum(self) -> float:
         return float(self._field.minimum()) / self._factor
 
@@ -1114,6 +1150,25 @@ class DragValueDoubleSpinBox(QWidget):
         manual_maximum: float | None = None,
     ) -> None:
         self._field.setPropertyRange(
+            round(drag_minimum * self._factor),
+            round(drag_maximum * self._factor),
+            manual_minimum=(
+                None if manual_minimum is None else round(manual_minimum * self._factor)
+            ),
+            manual_maximum=(
+                None if manual_maximum is None else round(manual_maximum * self._factor)
+            ),
+        )
+
+    def syncPropertyRange(
+        self,
+        drag_minimum: float,
+        drag_maximum: float,
+        *,
+        manual_minimum: float | None = None,
+        manual_maximum: float | None = None,
+    ) -> bool:
+        return self._field.syncPropertyRange(
             round(drag_minimum * self._factor),
             round(drag_maximum * self._factor),
             manual_minimum=(

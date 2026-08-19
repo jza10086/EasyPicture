@@ -9,6 +9,7 @@ from uuid import UUID
 from easypicture.domain import (
     AffineTransform,
     Document,
+    DocumentKind,
     FloatRect,
     LayerGroupKind,
     PixelPoint,
@@ -17,6 +18,9 @@ from easypicture.domain import (
     RasterLayer,
     Selection,
     Size,
+    SpriteFrameDefinition,
+    SpriteFrameGroup,
+    SpriteWorkspace,
     SvgElementObject,
     TextHorizontalAlignment,
     TextObject,
@@ -266,6 +270,33 @@ class RasterGroupSnapshot:
 
 DocumentNodeSnapshot = RasterGroupSnapshot | VectorGroupSnapshot
 
+
+@dataclass(frozen=True, slots=True)
+class SpriteWorkspaceSnapshot:
+    cell_size: Size
+    frames: tuple[SpriteFrameDefinition, ...]
+    groups: tuple[SpriteFrameGroup, ...] = ()
+
+    @property
+    def ungrouped_frame_ids(self) -> tuple[UUID, ...]:
+        grouped = {frame_id for group in self.groups for frame_id in group.frame_ids}
+        return tuple(frame.id for frame in self.frames if frame.id not in grouped)
+
+    @classmethod
+    def capture(cls, workspace: SpriteWorkspace) -> SpriteWorkspaceSnapshot:
+        return cls(
+            workspace.cell_size,
+            tuple(workspace.frames),
+            tuple(workspace.groups),
+        )
+
+    def to_workspace(self) -> SpriteWorkspace:
+        return SpriteWorkspace(
+            self.cell_size,
+            list(self.frames),
+            list(self.groups),
+        )
+
 @dataclass(frozen=True, slots=True)
 class DocumentSnapshot:
     document_id: UUID
@@ -276,6 +307,9 @@ class DocumentSnapshot:
     project_path: Path | None
     source_name: str | None
     nodes: tuple[DocumentNodeSnapshot, ...]
+    kind: DocumentKind = DocumentKind.PROJECT
+    sprite_workspace: SpriteWorkspaceSnapshot | None = None
+    embedded_documents: tuple[DocumentSnapshot, ...] = ()
 
     @property
     def raster_layers(self) -> tuple[LayerSnapshot, ...]:
@@ -302,6 +336,19 @@ class DocumentSnapshot:
                 else VectorGroupSnapshot.capture(node)
                 for node in document.nodes
             ),
+            kind=document.kind,
+            sprite_workspace=(
+                SpriteWorkspaceSnapshot.capture(document.sprite_workspace)
+                if document.kind is DocumentKind.PROJECT
+                else None
+            ),
+            embedded_documents=tuple(
+                cls.capture(item)
+                for _, item in sorted(
+                    document.embedded_documents.items(),
+                    key=lambda pair: str(pair[0]),
+                )
+            ),
         )
 
     def to_document(
@@ -311,12 +358,23 @@ class DocumentSnapshot:
         modified: bool = False,
     ) -> Document:
         nodes = [node.to_group() for node in self.nodes]
+        embedded = {
+            snapshot.document_id: snapshot.to_document(modified=modified)
+            for snapshot in self.embedded_documents
+        }
         return Document.restore(
             document_id=self.document_id,
             size=self.size,
             active_layer_id=self.active_layer_id,
             selection=Selection(size=self.size, mask=self.selection.clone_shared()),
             nodes=nodes,
+            sprite_workspace=(
+                self.sprite_workspace.to_workspace()
+                if self.sprite_workspace is not None
+                else None
+            ),
+            kind=self.kind,
+            embedded_documents=embedded,
             project_path=project_path,
             source_name=self.source_name,
             modified=modified,
@@ -329,6 +387,7 @@ __all__ = [
     "LayerSnapshot",
     "RasterGroupSnapshot",
     "SvgElementSnapshot",
+    "SpriteWorkspaceSnapshot",
     "TextObjectSnapshot",
     "VectorGroupSnapshot",
     "VectorObjectSnapshot",

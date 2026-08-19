@@ -113,7 +113,7 @@ def test_failed_atomic_replace_preserves_existing_project(
     assert not list(tmp_path.glob(".existing.limg.*.tmp"))
 
 
-@pytest.mark.parametrize("schema_version", [2, 3, 4, 999])
+@pytest.mark.parametrize("schema_version", [4, 5, 999])
 def test_non_current_schema_is_rejected(
     tmp_path: Path,
     schema_version: int,
@@ -144,6 +144,28 @@ def test_non_current_schema_is_rejected(
 
     with pytest.raises(ProjectFormatError, match="version is unsupported"):
         load_project(altered, CancellationToken(), _progress)
+
+
+def test_schema_v1_migrates_to_empty_sprite_workspace(tmp_path: Path) -> None:
+    current = tmp_path / "current.limg"
+    legacy = tmp_path / "legacy.limg"
+    save_project(
+        DocumentSnapshot.capture(_sample_document()),
+        current,
+        CancellationToken(),
+        _progress,
+    )
+
+    def downgrade(manifest: dict[str, object]) -> None:
+        manifest["schema_version"] = 1
+        manifest.pop("sprite_workspace", None)
+
+    _rewrite_manifest(current, legacy, downgrade)
+    restored = load_project(legacy, CancellationToken(), _progress).snapshot.to_document()
+
+    assert restored.sprite_workspace.frames == []
+    assert restored.sprite_workspace.cell_size.width == 32
+    assert restored.sprite_workspace.cell_size.height == 32
 
 
 def test_path_traversal_entry_is_rejected(tmp_path: Path) -> None:

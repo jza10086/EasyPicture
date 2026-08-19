@@ -23,11 +23,18 @@ from easypicture.domain.events import (
     LayerPixelsChanged,
     LayerPropertiesChanged,
     SelectionChanged,
+    SpriteFrameContentChanged,
+    SpriteWorkspaceChanged,
     VectorObjectChanged,
 )
 from easypicture.domain.geometry import PixelPoint, Size
 from easypicture.domain.layer import RasterLayer
 from easypicture.domain.selection import Selection
+from easypicture.domain.sprite import (
+    DocumentKind,
+    SpriteFrameContentMode,
+    SpriteWorkspace,
+)
 from easypicture.domain.vector import (
     LayerGroup,
     RasterGroupLayer,
@@ -61,6 +68,9 @@ def _vector_object_kind(vector_object: VectorObject) -> VectorObjectKind:
 class Document:
     """Qt-free aggregate for one EasyPicture document."""
 
+    kind: DocumentKind
+    size: Size
+
     def __init__(
         self,
         *,
@@ -69,6 +79,9 @@ class Document:
         active_layer_id: UUID,
         selection: Selection,
         nodes: list[LayerGroup],
+        sprite_workspace: SpriteWorkspace | None = None,
+        kind: DocumentKind = DocumentKind.PROJECT,
+        embedded_documents: Mapping[UUID, Document] | None = None,
         project_path: Path | None = None,
         source_name: str | None = None,
         modified: bool = False,
@@ -87,6 +100,36 @@ class Document:
             raise ValueError("document height is out of range")
         if selection.size != size:
             raise ValueError("selection size must match the document")
+        if kind is DocumentKind.PROJECT:
+            resolved_sprite_workspace = (
+                SpriteWorkspace.create(size)
+                if sprite_workspace is None
+                else sprite_workspace.clone()
+            )
+            resolved_sprite_workspace.validate_for_canvas(size)
+        else:
+            if sprite_workspace is not None:
+                raise ValueError("embedded frame document cannot contain a sprite workspace")
+            if project_path is not None:
+                raise ValueError("embedded frame document cannot have a project path")
+            resolved_sprite_workspace = None
+        resolved_embedded_documents = dict(embedded_documents or {})
+        if kind is DocumentKind.SPRITE_FRAME and resolved_embedded_documents:
+            raise ValueError("embedded frame document cannot contain embedded documents")
+        if kind is DocumentKind.PROJECT:
+            assert resolved_sprite_workspace is not None
+            detached_ids = {
+                frame.embedded_document_id
+                for frame in resolved_sprite_workspace.frames
+                if frame.content_mode is SpriteFrameContentMode.DETACHED
+            }
+            if detached_ids != set(resolved_embedded_documents):
+                raise ValueError("detached sprite frames and embedded documents must match")
+            for embedded in resolved_embedded_documents.values():
+                if embedded.kind is not DocumentKind.SPRITE_FRAME:
+                    raise ValueError("project embedded documents must be sprite frames")
+                if embedded.size != resolved_sprite_workspace.cell_size:
+                    raise ValueError("embedded frame size must match sprite cell size")
         node_ids: set[UUID] = set()
         names: set[str] = set()
         for node in root_nodes:
@@ -123,6 +166,7 @@ class Document:
         if all(layer.id != active_layer_id for layer in raster_layers):
             raise ValueError("active layer must belong to the document")
         self.id = document_id
+        self.kind = kind
         self.size = size
         self._nodes = root_nodes
         self._layers = [
@@ -133,12 +177,16 @@ class Document:
         ]
         self._active_layer_id = active_layer_id
         self.selection = selection
+        self._sprite_workspace = resolved_sprite_workspace
+        self._embedded_documents = resolved_embedded_documents
+        self._embedded_unsubscribes: dict[UUID, Unsubscribe] = {}
         self._project_path = Path(project_path) if project_path is not None else None
         self._source_name = Path(source_name).name if source_name else None
         self._modified = modified
         self._revision = 0
         self._listeners: dict[int, DocumentEventListener] = {}
         self._next_listener_token = 0
+        self._subscribe_embedded_documents()
 
     @classmethod
     def create(cls, width: int, height: int) -> Document:
@@ -156,6 +204,21 @@ class Document:
             active_layer_id=layer.id,
             selection=Selection.create_empty(size),
             nodes=[group],
+            sprite_workspace=SpriteWorkspace.create(size),
+        )
+
+    @classmethod
+    def create_sprite_frame(cls, size: Size) -> Document:
+        layer = RasterLayer.create_blank("帧内容", size)
+        group = RasterGroupLayer.create("栅格组")
+        group.children.append(layer)
+        return cls(
+            document_id=uuid4(),
+            size=size,
+            active_layer_id=layer.id,
+            selection=Selection.create_empty(size),
+            nodes=[group],
+            kind=DocumentKind.SPRITE_FRAME,
         )
 
     @classmethod
@@ -167,6 +230,9 @@ class Document:
         active_layer_id: UUID,
         selection: Selection,
         nodes: list[LayerGroup],
+        sprite_workspace: SpriteWorkspace | None = None,
+        kind: DocumentKind = DocumentKind.PROJECT,
+        embedded_documents: Mapping[UUID, Document] | None = None,
         project_path: Path | None = None,
         source_name: str | None = None,
         modified: bool = False,
@@ -177,6 +243,9 @@ class Document:
             active_layer_id=active_layer_id,
             selection=selection,
             nodes=nodes,
+            sprite_workspace=sprite_workspace,
+            kind=kind,
+            embedded_documents=embedded_documents,
             project_path=project_path,
             source_name=source_name,
             modified=modified,
@@ -231,6 +300,66 @@ class Document:
     @property
     def revision(self) -> int:
         return self._revision
+
+    @property
+    def sprite_workspace(self) -> SpriteWorkspace:
+        if self._sprite_workspace is None:
+            raise ValueError("embedded frame document has no sprite workspace")
+        return self._sprite_workspace
+
+    @property
+    def embedded_documents(self) -> Mapping[UUID, Document]:
+        return dict(self._embedded_documents)
+
+    def embedded_document_by_id(self, document_id: UUID) -> Document:
+        try:
+            return self._embedded_documents[document_id]
+        except KeyError as error:
+            raise ValueError("embedded document does not belong to the project") from error
+
+    def embedded_document_for_frame(self, frame_id: UUID) -> Document:
+        frame = self.sprite_workspace.frame_by_id(frame_id)
+        if frame.embedded_document_id is None:
+            raise ValueError("sprite frame is not detached")
+        return self.embedded_document_by_id(frame.embedded_document_id)
+
+    def _subscribe_embedded_documents(self) -> None:
+        for unsubscribe in self._embedded_unsubscribes.values():
+            unsubscribe()
+        self._embedded_unsubscribes.clear()
+        if self.kind is not DocumentKind.PROJECT:
+            return
+        for embedded_id, embedded in self._embedded_documents.items():
+            self._embedded_unsubscribes[embedded_id] = embedded.subscribe(
+                lambda event, document_id=embedded_id: self._on_embedded_event(
+                    document_id,
+                    event,
+                )
+            )
+
+    def _on_embedded_event(self, embedded_id: UUID, event: DocumentEvent) -> None:
+        if not isinstance(event, DocumentRevisionChanged):
+            return
+        frame = next(
+            (
+                item
+                for item in self.sprite_workspace.frames
+                if item.embedded_document_id == embedded_id
+            ),
+            None,
+        )
+        if frame is None:
+            return
+        revision = self._begin_content_change()
+        self._emit(
+            SpriteFrameContentChanged(
+                document_id=self.id,
+                revision=revision,
+                frame_id=frame.id,
+                embedded_document_id=embedded_id,
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
 
     def subscribe(self, listener: DocumentEventListener) -> Unsubscribe:
         token = self._next_listener_token
@@ -1204,6 +1333,8 @@ class Document:
         layer_geometry: Mapping[UUID, tuple[Size, PixelPoint]],
         layer_updates: Mapping[UUID, Mapping[TileCoord, RGBAArray | None]],
         selection_updates: Mapping[TileCoord, MaskArray | None],
+        sprite_workspace: SpriteWorkspace | None = None,
+        embedded_documents: Mapping[UUID, Document] | None = None,
     ) -> bool:
         """Atomically apply a document size and multi-layer geometry transaction."""
         if (
@@ -1284,12 +1415,47 @@ class Document:
                 continue
             selection_changes[coord] = pixels
 
+        resolved_sprite_workspace = (
+            self.sprite_workspace.clone()
+            if sprite_workspace is None
+            else sprite_workspace.clone()
+        )
+        resolved_sprite_workspace.validate_for_canvas(document_size)
+        resolved_embedded = (
+            dict(self._embedded_documents)
+            if embedded_documents is None
+            else dict(embedded_documents)
+        )
+        detached_ids = {
+            frame.embedded_document_id
+            for frame in resolved_sprite_workspace.frames
+            if frame.content_mode is SpriteFrameContentMode.DETACHED
+        }
+        if detached_ids != set(resolved_embedded):
+            raise ValueError("geometry result has invalid embedded frame documents")
+        sprite_workspace_changed = (
+            resolved_sprite_workspace != self.sprite_workspace
+            or resolved_embedded != self._embedded_documents
+        )
+        changed_sprite_frame_ids = tuple(
+            sorted(
+                {
+                    frame.id
+                    for frame in (
+                        *self.sprite_workspace.frames,
+                        *resolved_sprite_workspace.frames,
+                    )
+                },
+                key=str,
+            )
+        )
         size_changed = self.size != document_size
         if (
             not size_changed
             and not geometry_changed
             and not pixel_changes
             and not selection_changes
+            and not sprite_workspace_changed
         ):
             return False
 
@@ -1300,6 +1466,9 @@ class Document:
         }
         self.size = document_size
         self.selection.size = document_size
+        self._sprite_workspace = resolved_sprite_workspace
+        self._embedded_documents = resolved_embedded
+        self._subscribe_embedded_documents()
         for layer_id, layer in resolved_layers.items():
             state = layer_geometry[layer_id]
             layer.size, layer.origin = state
@@ -1366,6 +1535,15 @@ class Document:
                     active=self.selection.is_active,
                 )
             )
+        if sprite_workspace_changed:
+            self._emit(
+                SpriteWorkspaceChanged(
+                    document_id=self.id,
+                    revision=revision,
+                    change="geometry_reset",
+                    frame_ids=changed_sprite_frame_ids,
+                )
+            )
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
         return True
 
@@ -1415,6 +1593,11 @@ class Document:
             )
         )
 
+    def set_source_name(self, name: str | None) -> None:
+        """Set the unsaved/imported display identity without modifying content."""
+        normalized = Path(name).name if name else None
+        self._source_name = normalized
+
     def set_active_layer(self, layer_id: UUID) -> None:
         if layer_id == self._active_layer_id:
             return
@@ -1423,6 +1606,49 @@ class Document:
         self._revision += 1
         self._emit_active_layer_changed(self._revision)
         self._emit(DocumentRevisionChanged(document_id=self.id, revision=self._revision))
+
+    def replace_sprite_workspace(
+        self,
+        workspace: SpriteWorkspace,
+        *,
+        change: str,
+        frame_ids: tuple[UUID, ...] = (),
+        embedded_documents: Mapping[UUID, Document] | None = None,
+    ) -> bool:
+        workspace.validate_for_canvas(self.size)
+        resolved_embedded = (
+            dict(self._embedded_documents)
+            if embedded_documents is None
+            else dict(embedded_documents)
+        )
+        detached_ids = {
+            frame.embedded_document_id
+            for frame in workspace.frames
+            if frame.content_mode is SpriteFrameContentMode.DETACHED
+        }
+        if detached_ids != set(resolved_embedded):
+            raise ValueError("detached sprite frames and embedded documents must match")
+        for embedded in resolved_embedded.values():
+            if embedded.kind is not DocumentKind.SPRITE_FRAME:
+                raise ValueError("embedded document must be a sprite frame")
+            if embedded.size != workspace.cell_size:
+                raise ValueError("embedded frame size must match sprite cell size")
+        if workspace == self.sprite_workspace and resolved_embedded == self._embedded_documents:
+            return False
+        self._sprite_workspace = workspace.clone()
+        self._embedded_documents = resolved_embedded
+        self._subscribe_embedded_documents()
+        revision = self._begin_content_change()
+        self._emit(
+            SpriteWorkspaceChanged(
+                document_id=self.id,
+                revision=revision,
+                change=change,
+                frame_ids=frame_ids,
+            )
+        )
+        self._emit(DocumentRevisionChanged(document_id=self.id, revision=revision))
+        return True
 
     def _set_layer_property(self, layer_id: UUID, property_name: str, value: object) -> bool:
         layer = self.layer_by_id(layer_id)

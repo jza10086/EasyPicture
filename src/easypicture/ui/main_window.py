@@ -1,4 +1,4 @@
-"""P2 single-document main window with layer management and undo."""
+"""Main window for the multi-project EasyPicture workspace."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from uuid import UUID
 
-from PySide6.QtCore import QModelIndex, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -22,29 +22,36 @@ from PySide6.QtWidgets import (
     QDialog,
     QDockWidget,
     QFrame,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QProgressDialog,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QStackedWidget,
+    QTabBar,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
 from easypicture import __version__
-from easypicture.controller import ApplicationController
 from easypicture.domain import (
     AffineTransform,
     Document,
     DocumentEvent,
+    DocumentKind,
+    GroupDeleteMode,
     GroupListChanged,
     GroupMembersChanged,
+    PixelPoint,
     Point,
     Size,
+    SpriteFrameContentChanged,
+    SpriteFrameContentMode,
+    SpriteWorkspaceChanged,
     SvgElementObject,
     TextObject,
     parse_editable_svg,
@@ -94,6 +101,7 @@ from easypicture.imaging import (
 )
 from easypicture.jobs import JobHandle, JobOperation, JobOutcome, JobStatus
 from easypicture.persistence import DocumentSnapshot
+from easypicture.pixels import Rect
 from easypicture.render import RenderBackendKind
 from easypicture.runtime import RuntimePaths
 from easypicture.tools import (
@@ -106,6 +114,7 @@ from easypicture.tools import (
     NullTool,
     RectangleSelectionTool,
     ShapeTool,
+    SpriteSliceTool,
     TextTool,
     TextTransformTool,
     Tool,
@@ -114,6 +123,7 @@ from easypicture.tools import (
     TransformTool,
 )
 from easypicture.ui.about_dialog import AboutDialog
+from easypicture.ui.atlas_export_dialog import AtlasExportDialog
 from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_adjustment_controller import ColorAdjustmentController
 from easypicture.ui.color_adjustment_panel import ColorAdjustmentPanel
@@ -126,10 +136,13 @@ from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.shape_properties import ShapePropertiesPanel
+from easypicture.ui.sprite_frame_panel import SpriteFramePanel
+from easypicture.ui.sprite_workspace_panel import SpriteWorkspacePanel
 from easypicture.ui.svg_properties import SvgPropertiesPanel
 from easypicture.ui.text_properties import TextPropertiesPanel
 from easypicture.ui.tool_options import ToolOptionsPanel
 from easypicture.ui.transform_properties import TransformPropertiesPanel
+from easypicture.workspace import CanvasViewState, EditingSurfaceRef, WorkspaceController
 
 RIGHT_SIDEBAR_STYLE = """
 QMainWindow#MainWindow {
@@ -201,7 +214,7 @@ class EmptyStateWidget(QFrame):
 class MainWindow(QMainWindow):
     def __init__(
         self,
-        controller: ApplicationController,
+        controller: WorkspaceController,
         settings: AppSettings,
         parent: QWidget | None = None,
         *,
@@ -219,6 +232,7 @@ class MainWindow(QMainWindow):
         self.controller.set_dialog_parent(self)
         self.setObjectName("MainWindow")
         self.setStyleSheet(RIGHT_SIDEBAR_STYLE)
+        self.setMinimumSize(800, 600)
         self.resize(1100, 720)
         self._editing_busy = False
         self._selected_vector_object = False
@@ -231,6 +245,8 @@ class MainWindow(QMainWindow):
         self._geometry_job: JobHandle | None = None
         self._geometry_progress: QProgressDialog | None = None
         self._adjustment_previous_tool: Tool | None = None
+        self._sprite_editing_frame_id: UUID | None = None
+        self._geometry_clear_sprite_frames = False
 
         self.canvas_view = CanvasView(
             self,
@@ -240,11 +256,42 @@ class MainWindow(QMainWindow):
             self.settings.selection_outline_color(),
             self.settings.selection_outline_width(),
         )
+        self.canvas_view.set_sprite_grid_visibility(
+            pixel_grid=self.settings.pixel_grid_visible(),
+            cell_grid=self.settings.sprite_grid_visible(),
+        )
         self.empty_state = EmptyStateWidget(self)
         self.central_stack = QStackedWidget(self)
         self.central_stack.addWidget(self.empty_state)
         self.central_stack.addWidget(self.canvas_view)
-        self.setCentralWidget(self.central_stack)
+        self.workspace_tabs = QTabBar(self)
+        self.workspace_tabs.setMovable(True)
+        self.workspace_tabs.setTabsClosable(True)
+        self.workspace_tabs.setExpanding(False)
+        self.workspace_tabs.currentChanged.connect(self._workspace_tab_changed)
+        self.workspace_tabs.tabCloseRequested.connect(self._workspace_tab_close_requested)
+        self.workspace_add_button = QPushButton("+", self)
+        self.workspace_add_button.setFixedWidth(34)
+        self.workspace_add_button.clicked.connect(lambda: self._request_new_document())
+        project_tab_row = QWidget(self)
+        project_tab_layout = QHBoxLayout(project_tab_row)
+        project_tab_layout.setContentsMargins(0, 0, 0, 0)
+        project_tab_layout.setSpacing(1)
+        project_tab_layout.addWidget(self.workspace_tabs, 1)
+        project_tab_layout.addWidget(self.workspace_add_button)
+        self.surface_tabs = QTabBar(self)
+        self.surface_tabs.setExpanding(False)
+        self.surface_tabs.setTabsClosable(True)
+        self.surface_tabs.currentChanged.connect(self._surface_tab_changed)
+        self.surface_tabs.tabCloseRequested.connect(self._surface_tab_close_requested)
+        central_container = QWidget(self)
+        central_layout = QVBoxLayout(central_container)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(project_tab_row)
+        central_layout.addWidget(self.surface_tabs)
+        central_layout.addWidget(self.central_stack, 1)
+        self.setCentralWidget(central_container)
 
         self.overlay_manager = OverlayManager(self.canvas_view.scene())
         self.tool_context = ToolContext(
@@ -278,7 +325,12 @@ class MainWindow(QMainWindow):
         self._create_status_bar()
         self._connect_signals()
         self._on_document_changed(self.controller.document)
+        self._refresh_workspace_tabs()
         self.settings.restore_window(self)
+        self.setCorner(
+            Qt.Corner.BottomRightCorner,
+            Qt.DockWidgetArea.RightDockWidgetArea,
+        )
 
     def _create_actions(self) -> None:
         self.new_action = QAction("新建(&N)", self)
@@ -297,8 +349,29 @@ class MainWindow(QMainWindow):
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
         self.save_as_action = QAction("另存为", self)
         self.export_action = QAction("导出图片…", self)
-        for action in (self.save_action, self.save_as_action, self.export_action):
+        self.export_sprite_frame_action = QAction("导出当前帧 PNG…", self)
+        self.export_sprite_atlas_action = QAction("导出完整精灵图…", self)
+        for action in (
+            self.save_action,
+            self.save_as_action,
+            self.export_action,
+            self.export_sprite_frame_action,
+            self.export_sprite_atlas_action,
+        ):
             action.setEnabled(False)
+
+        self.pixel_exact_action = QAction("像素精确坐标", self)
+        self.pixel_exact_action.setCheckable(True)
+        self.pixel_exact_action.setChecked(self.settings.pixel_exact_coordinates())
+        self.pixel_grid_action = QAction("显示像素网格", self)
+        self.pixel_grid_action.setCheckable(True)
+        self.pixel_grid_action.setChecked(self.settings.pixel_grid_visible())
+        self.sprite_grid_action = QAction("显示单格网格", self)
+        self.sprite_grid_action.setCheckable(True)
+        self.sprite_grid_action.setChecked(self.settings.sprite_grid_visible())
+        self.sprite_snap_action = QAction("吸附到单格网格", self)
+        self.sprite_snap_action.setCheckable(True)
+        self.sprite_snap_action.setChecked(self.settings.sprite_grid_snap_enabled())
 
         self.undo_action = QAction("撤销", self)
         self.redo_action = QAction("重做", self)
@@ -383,6 +456,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
         file_menu.addAction(self.export_action)
+        file_menu.addAction(self.export_sprite_frame_action)
+        file_menu.addAction(self.export_sprite_atlas_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
 
@@ -421,6 +496,11 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.zoom_out_action)
         view_menu.addAction(self.fit_action)
         view_menu.addAction(self.actual_size_action)
+        view_menu.addSeparator()
+        view_menu.addAction(self.pixel_exact_action)
+        view_menu.addAction(self.pixel_grid_action)
+        view_menu.addAction(self.sprite_grid_action)
+        view_menu.addAction(self.sprite_snap_action)
 
         selection_menu = self.menuBar().addMenu("选择(&S)")
         selection_menu.addAction(self.select_all_action)
@@ -472,6 +552,7 @@ class MainWindow(QMainWindow):
                 self._set_transform_corners,
                 self._set_transform_pivot,
                 self._update_undo_actions,
+                self.settings.pixel_exact_coordinates,
             ),
             "shape": ShapeTool(
                 self.tool_options_panel.shape.kind,
@@ -484,8 +565,15 @@ class MainWindow(QMainWindow):
                     if hasattr(self, "svg_properties")
                     else None
                 ),
+                self.settings.pixel_exact_coordinates,
             ),
             "text": TextTool(),
+            "sprite_slice": SpriteSliceTool(
+                self._set_sprite_region,
+                self._confirm_sprite_region,
+                self._cancel_sprite_slice,
+                self.settings.sprite_grid_snap_enabled,
+            ),
             "text_transform": TextTransformTool(
                 lambda: self.layer_panel.current_node() if hasattr(self, "layer_panel") else None,
                 lambda text_object: self.text_properties.set_preview_object(text_object),
@@ -503,6 +591,7 @@ class MainWindow(QMainWindow):
             ("transform", "自由变换", "T"),
             ("shape", "图形", "U"),
             ("text", "文字", ""),
+            ("sprite_slice", "精灵切片", ""),
         ):
             action = QAction(label, self)
             action.setCheckable(True)
@@ -591,13 +680,15 @@ class MainWindow(QMainWindow):
         self.properties_stack.addWidget(self.text_properties)
         self.svg_properties = SvgPropertiesPanel(self.controller.commands, self)
         self.properties_stack.addWidget(self.svg_properties)
+        self.sprite_properties = SpriteWorkspacePanel(self)
+        self.properties_stack.addWidget(self.sprite_properties)
         self.properties_stack.addWidget(self.color_adjustment_panel)
         self.color_adjustment_controller = ColorAdjustmentController(
             self.canvas_view,
             lambda: self.controller.document,
             self.controller.commands,
             self.controller.jobs,
-            self.statusBar().showMessage,
+            self._show_operation_status,
             self,
         )
         self.transform_properties.corners_changed.connect(self._transform_corners_changed)
@@ -643,18 +734,127 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
         self.tabifyDockWidget(self.color_dock, self.properties_dock)
 
+        self.sprite_frame_panel = SpriteFramePanel(self.settings, self)
+        self.sprite_frames_dock = QDockWidget("精灵帧", self)
+        self.sprite_frames_dock.setObjectName("SpriteFramesDock")
+        self.sprite_frames_dock.setWidget(self.sprite_frame_panel)
+        self.sprite_frames_dock.setMinimumHeight(140)
+        self.setCorner(
+            Qt.Corner.BottomRightCorner,
+            Qt.DockWidgetArea.RightDockWidgetArea,
+        )
+        self.addDockWidget(
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+            self.sprite_frames_dock,
+        )
+        self.sprite_frames_dock.hide()
+
+        self.sprite_properties.cell_size_requested.connect(self._set_sprite_cell_size)
+        self.sprite_properties.region_requested.connect(self._sprite_region_requested)
+        self.sprite_properties.frame_requested.connect(self._update_sprite_frame_details)
+        self.sprite_frame_panel.frame_selected.connect(self._select_sprite_frame)
+        self.sprite_frame_panel.new_requested.connect(self._new_sprite_frame)
+        self.sprite_frame_panel.delete_requested.connect(self._delete_sprite_frame)
+        self.sprite_frame_panel.rename_requested.connect(self._rename_sprite_frame)
+        self.sprite_frame_panel.move_requested.connect(self._move_sprite_frame)
+        self.sprite_frame_panel.reorder_requested.connect(self._reorder_sprite_frames)
+        self.sprite_frame_panel.export_requested.connect(self._export_sprite_frame)
+        self.sprite_frame_panel.frame_activated.connect(self._open_sprite_frame_surface)
+        self.sprite_frame_panel.duplicate_requested.connect(self._duplicate_sprite_frame)
+        self.sprite_frame_panel.detach_requested.connect(self._detach_sprite_frame)
+        self.sprite_frame_panel.reset_requested.connect(self._reset_sprite_frame)
+        self.sprite_frame_panel.project_selected.connect(self._workspace_tab_changed)
+        self.sprite_frame_panel.group_selected.connect(self._sprite_group_selected)
+        self.sprite_frame_panel.group_create_requested.connect(self._create_sprite_group)
+        self.sprite_frame_panel.group_rename_requested.connect(self._rename_sprite_group)
+        self.sprite_frame_panel.group_move_requested.connect(self._move_sprite_group)
+        self.sprite_frame_panel.group_delete_requested.connect(self._delete_sprite_group)
+        self.sprite_frame_panel.frame_group_move_requested.connect(
+            self._move_sprite_frame_to_group
+        )
+        self.sprite_frame_panel.view_size_changed.connect(
+            lambda _size: self._resize_sprite_frame_dock()
+        )
+
     def _create_status_bar(self) -> None:
+        self._status_message_generation = 0
+        self.shortcut_hint_label = QLabel("B 画笔 · 中键/Space 平移 · Ctrl+滚轮缩放", self)
+        status_bar = self.statusBar()
+        self.operation_status_label = QLabel("就绪", status_bar)
         self.coordinate_label = QLabel("x: —  y: —", self)
         self.document_size_label = QLabel("无文档", self)
+        self.sprite_count_label = QLabel("帧 0", self)
         self.zoom_label = QLabel("100%", self)
-        self.coordinate_label.setMinimumWidth(120)
-        self.document_size_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Preferred,
+        self.shortcut_hint_label.setMinimumWidth(260)
+        self.operation_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.operation_status_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            True,
         )
-        self.statusBar().addWidget(self.coordinate_label)
-        self.statusBar().addWidget(self.document_size_label, 1)
-        self.statusBar().addPermanentWidget(self.zoom_label)
+        self.operation_status_label.setStyleSheet("background-color: #252525; padding: 0 6px;")
+        status_bar.addWidget(self.shortcut_hint_label, 1)
+        status_bar.addPermanentWidget(self.document_size_label)
+        status_bar.addPermanentWidget(self.sprite_count_label)
+        status_bar.addPermanentWidget(self.coordinate_label)
+        status_bar.addPermanentWidget(self.zoom_label)
+        status_bar.installEventFilter(self)
+        QTimer.singleShot(0, self._position_operation_status)
+
+    def _position_operation_status(self) -> None:
+        if not hasattr(self, "operation_status_label"):
+            return
+        status_bar = self.statusBar()
+        width = max(180, min(440, status_bar.width() // 3))
+        x = (status_bar.width() - width) // 2
+        self.operation_status_label.setGeometry(x, 0, width, status_bar.height())
+        self.operation_status_label.raise_()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if (
+            hasattr(self, "operation_status_label")
+            and watched is self.statusBar()
+            and event.type()
+            in {
+                QEvent.Type.Resize,
+                QEvent.Type.Show,
+                QEvent.Type.LayoutRequest,
+            }
+        ):
+            QTimer.singleShot(0, self._position_operation_status)
+        return super().eventFilter(watched, event)
+
+    def _show_operation_status(self, message: str, timeout: int = 0) -> None:
+        self._status_message_generation += 1
+        generation = self._status_message_generation
+        self.operation_status_label.setText(message or "就绪")
+        self._position_operation_status()
+        if timeout > 0:
+            QTimer.singleShot(
+                timeout,
+                lambda: self._clear_operation_status(generation),
+            )
+
+    def _clear_operation_status(self, generation: int) -> None:
+        if generation == self._status_message_generation:
+            self.operation_status_label.setText("就绪")
+
+    def _update_shortcut_hint(self, tool_name: str) -> None:
+        hints = {
+            "brush": "B 画笔 · 拖动绘制 · 中键/Space 平移",
+            "eraser": "E 橡皮 · 拖动擦除 · 中键/Space 平移",
+            "eyedropper": "I 吸管 · 左键前景色 · 右键背景色",
+            "bucket": "G 油漆桶 · 左键填充 · Esc 取消任务",
+            "rectangle_selection": "M 矩形选区 · Shift 添加 · Alt 减去",
+            "magic_wand": "W 魔棒 · Shift 添加 · Alt 减去",
+            "crop": "C 裁切 · Enter 应用 · Esc 取消",
+            "transform": "T 自由变换 · Enter 应用 · Esc 取消",
+            "shape": "U 图形 · Enter 应用 · Esc 取消",
+            "text": "文字 · 拖动创建文本框 · 右键取消",
+            "sprite_slice": "精灵切片 · 拖动定位 · Enter 确定 · F2 重命名",
+        }
+        self.shortcut_hint_label.setText(
+            hints.get(tool_name, "中键/Space 平移 · Ctrl+滚轮缩放")
+        )
 
     def _connect_signals(self) -> None:
         self.empty_state.new_button.clicked.connect(self._request_new_document)
@@ -667,6 +867,8 @@ class MainWindow(QMainWindow):
         self.save_action.triggered.connect(self._request_save_document)
         self.save_as_action.triggered.connect(self._request_save_as_document)
         self.export_action.triggered.connect(self._request_export_image)
+        self.export_sprite_frame_action.triggered.connect(self._export_selected_sprite_frame)
+        self.export_sprite_atlas_action.triggered.connect(self._export_sprite_atlas)
         self.exit_action.triggered.connect(self.close)
         self.preferences_action.triggered.connect(self._show_preferences)
         self.open_log_folder_action.triggered.connect(self._open_log_folder)
@@ -681,6 +883,10 @@ class MainWindow(QMainWindow):
         self.zoom_out_action.triggered.connect(self.canvas_view.zoom_out)
         self.fit_action.triggered.connect(self.canvas_view.fit_document)
         self.actual_size_action.triggered.connect(self.canvas_view.actual_size)
+        self.pixel_exact_action.toggled.connect(self._set_pixel_exact_coordinates)
+        self.pixel_grid_action.toggled.connect(self._set_pixel_grid_visible)
+        self.sprite_grid_action.toggled.connect(self._set_sprite_grid_visible)
+        self.sprite_snap_action.toggled.connect(self._set_sprite_snap_enabled)
         self.select_all_action.triggered.connect(self._select_all)
         self.deselect_action.triggered.connect(self._deselect)
         self.invert_selection_action.triggered.connect(self._invert_selection)
@@ -718,13 +924,154 @@ class MainWindow(QMainWindow):
         undo_stack.redoTextChanged.connect(self._update_undo_actions)
         self.controller.document_changed.connect(self._on_document_changed)
         self.controller.document_event.connect(self._on_document_event)
-        self.controller.status_message.connect(self.statusBar().showMessage)
+        self.controller.status_message.connect(self._show_operation_status)
         self.controller.recent_files_changed.connect(self._rebuild_recent_files_menu)
         self.controller.notifications.notice.connect(self._show_user_notice)
+        if hasattr(self.controller, "sessions_changed"):
+            self.controller.sessions_changed.connect(self._refresh_workspace_tabs)
+            self.controller.active_session_changed.connect(self._refresh_workspace_tabs)
+            self.controller.surfaces_changed.connect(self._refresh_surface_tabs)
+            self.workspace_tabs.tabMoved.connect(self.controller.move_session)
         self.canvas_view.render_backend_fallback.connect(self._on_render_backend_fallback)
         self.canvas_view.render_coordinator.diagnostics_changed.connect(self._on_render_diagnostics)
         self.canvas_view.zoom_changed.connect(self._on_zoom_changed)
         self.canvas_view.cursor_document_position_changed.connect(self._on_cursor_position)
+
+    def _project_document(self) -> Document | None:
+        return getattr(self.controller, "project_document", self.controller.document)
+
+    @staticmethod
+    def _project_display_label(document: Document) -> str:
+        # A project without a .limg path is not yet saved as a project even if
+        # its contents are still clean.  Keep lifecycle prompts tied to
+        # Document.modified, while the title marker communicates both states.
+        unsaved = document.modified or document.project_path is None
+        return f"{document.display_name}{'*' if unsaved else ''}"
+
+    def _refresh_workspace_tabs(self, *_args: object) -> None:
+        if not hasattr(self.controller, "sessions"):
+            self.workspace_tabs.hide()
+            self.surface_tabs.hide()
+            return
+        sessions = self.controller.sessions
+        active = self.controller.active_session
+        self.workspace_tabs.blockSignals(True)
+        try:
+            while self.workspace_tabs.count():
+                self.workspace_tabs.removeTab(0)
+            for session in sessions:
+                document = session.document
+                index = self.workspace_tabs.addTab(self._project_display_label(document))
+                self.workspace_tabs.setTabData(index, session.id)
+            if active is not None:
+                self.workspace_tabs.setCurrentIndex(sessions.index(active))
+        finally:
+            self.workspace_tabs.blockSignals(False)
+        self.workspace_tabs.setVisible(bool(sessions))
+        self.surface_tabs.setVisible(bool(sessions))
+        if hasattr(self, "sprite_frame_panel"):
+            labels = tuple(
+                self._project_display_label(session.document)
+                for session in sessions
+            )
+            active_index = sessions.index(active) if active is not None else -1
+            self.sprite_frame_panel.set_projects(labels, active_index)
+        self._refresh_surface_tabs()
+
+    def _refresh_surface_tabs(self, *_args: object) -> None:
+        session = getattr(self.controller, "active_session", None)
+        self.surface_tabs.blockSignals(True)
+        try:
+            while self.surface_tabs.count():
+                self.surface_tabs.removeTab(0)
+            if session is None:
+                return
+            for surface in session.open_surfaces:
+                if surface.kind == "source":
+                    title = "源图"
+                else:
+                    assert surface.frame_id is not None
+                    try:
+                        frame = session.document.sprite_workspace.frame_by_id(surface.frame_id)
+                        if frame.content_mode is SpriteFrameContentMode.LINKED:
+                            title = f"{frame.name}（只读）"
+                        else:
+                            embedded = session.document.embedded_document_for_frame(
+                                surface.frame_id
+                            )
+                            title = f"{frame.name}{'*' if embedded.modified else ''}"
+                    except ValueError:
+                        continue
+                index = self.surface_tabs.addTab(title)
+                self.surface_tabs.setTabData(index, surface)
+                if surface == session.active_surface:
+                    self.surface_tabs.setCurrentIndex(index)
+            if self.surface_tabs.count():
+                self.surface_tabs.setTabButton(0, QTabBar.ButtonPosition.RightSide, None)
+        finally:
+            self.surface_tabs.blockSignals(False)
+
+    def _workspace_tab_changed(self, index: int) -> None:
+        if index >= 0 and hasattr(self.controller, "set_active_session"):
+            self._capture_canvas_state()
+            self.controller.set_active_session(index)
+            self._restore_canvas_state()
+
+    def _workspace_tab_close_requested(self, index: int) -> None:
+        if hasattr(self.controller, "close_session"):
+            self.controller.close_session(index, self)
+
+    def _surface_tab_changed(self, index: int) -> None:
+        if index < 0 or not hasattr(self.controller, "set_active_surface"):
+            return
+        surface = self.surface_tabs.tabData(index)
+        if isinstance(surface, EditingSurfaceRef):
+            self._capture_canvas_state()
+            self.controller.set_active_surface(surface)
+            self._restore_canvas_state()
+
+    def _surface_tab_close_requested(self, index: int) -> None:
+        surface = self.surface_tabs.tabData(index)
+        if (
+            isinstance(surface, EditingSurfaceRef)
+            and surface.frame_id is not None
+            and hasattr(self.controller, "close_frame_surface")
+        ):
+            self.controller.close_frame_surface(surface.frame_id)
+
+    def _capture_canvas_state(self) -> None:
+        session = getattr(self.controller, "active_session", None)
+        if session is None or self.controller.document is None:
+            return
+        center = self.canvas_view.mapToScene(self.canvas_view.viewport().rect().center())
+        tool_name = next(
+            (
+                name
+                for name, action in self.tool_actions.items()
+                if action.isChecked()
+            ),
+            "brush",
+        )
+        session.canvas_states[session.active_surface] = CanvasViewState(
+            zoom=self.canvas_view.zoom,
+            center_x=center.x(),
+            center_y=center.y(),
+            tool_name=tool_name,
+        )
+
+    def _restore_canvas_state(self) -> None:
+        session = getattr(self.controller, "active_session", None)
+        if session is None:
+            return
+        state = session.canvas_states.get(session.active_surface)
+        if state is None:
+            return
+        self.canvas_view.set_zoom(state.zoom)
+        self.canvas_view.centerOn(state.center_x, state.center_y)
+        action = self.tool_actions.get(state.tool_name)
+        if action is not None and action.isEnabled():
+            action.setChecked(True)
+            self._activate_tool(state.tool_name)
 
     def _make_dock(self, title: str, object_name: str, widget: QWidget) -> QDockWidget:
         dock = QDockWidget(title, self)
@@ -902,7 +1249,7 @@ class MainWindow(QMainWindow):
             return
         layer = document.active_layer
         if layer.locked or layer.alpha_locked:
-            self.statusBar().showMessage("锁定或透明像素锁定的图层不能缩放")
+            self._show_operation_status("锁定或透明像素锁定的图层不能缩放")
             return
         snapshot = DocumentSnapshot.capture(document)
         interpolation = self.settings.transform_interpolation()
@@ -950,6 +1297,7 @@ class MainWindow(QMainWindow):
                 progress,
             ),
             "缩放图层",
+            clear_sprite_frames_on_success=False,
         )
 
     def _crop_to_selection(self) -> None:
@@ -959,7 +1307,7 @@ class MainWindow(QMainWindow):
         snapshot = DocumentSnapshot.capture(document)
         rect = selection_bounds(snapshot)
         if rect is None:
-            self.statusBar().showMessage("当前没有活动选区")
+            self._show_operation_status("当前没有活动选区")
             return
         self._commit_crop_rect(rect)
 
@@ -983,25 +1331,45 @@ class MainWindow(QMainWindow):
             return
         transform = self._tools.get("transform")
         if isinstance(transform, TransformTool) and transform.has_active_session:
-            self.statusBar().showMessage("请先应用或取消自由变换")
+            self._show_operation_status("请先应用或取消自由变换")
             return
         if not document.selection.is_active:
-            self.statusBar().showMessage("当前没有活动选区")
+            self._show_operation_status("当前没有活动选区")
             return
         layer = document.active_layer
         if layer.locked or layer.alpha_locked:
-            self.statusBar().showMessage("锁定或透明像素锁定的图层不能清除")
+            self._show_operation_status("锁定或透明像素锁定的图层不能清除")
             return
         if not self.controller.commands.clear_selected_pixels(layer.id):
-            self.statusBar().showMessage("选区内没有可清除的像素")
+            self._show_operation_status("选区内没有可清除的像素")
 
     def _start_geometry_job(
         self,
         operation: JobOperation,
         label: str,
+        *,
+        clear_sprite_frames_on_success: bool = True,
     ) -> None:
         if self._geometry_job is not None:
             return
+        document = self.controller.document
+        clear_frames = bool(
+            clear_sprite_frames_on_success
+            and document is not None
+            and document.kind is DocumentKind.PROJECT
+            and document.sprite_workspace.frames
+        )
+        if clear_frames:
+            answer = QMessageBox.question(
+                self,
+                label,
+                "此操作会清空现有精灵帧定义；撤销几何操作可同时恢复。是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer is not QMessageBox.StandardButton.Yes:
+                return
+        self._geometry_clear_sprite_frames = clear_frames
         handle = self.controller.jobs.submit(operation)
         self._geometry_job = handle
         dialog = QProgressDialog(f"正在{label}…", "取消", 0, 0, self)
@@ -1026,20 +1394,23 @@ class MainWindow(QMainWindow):
         self._close_geometry_progress()
         self._geometry_job = None
         self._set_editing_busy(False)
+        clear_sprite_frames = self._geometry_clear_sprite_frames
+        self._geometry_clear_sprite_frames = False
         if outcome.status is JobStatus.CANCELLED:
-            self.statusBar().showMessage(f"已取消{label}")
+            self._show_operation_status(f"已取消{label}")
             return
         if outcome.status is JobStatus.FAILED:
-            self.statusBar().showMessage(f"{label}失败：{outcome.error}")
+            self._show_operation_status(f"{label}失败：{outcome.error}")
             return
         if not isinstance(outcome.value, DocumentGeometryResult):
-            self.statusBar().showMessage(f"{label}失败：无效的任务结果")
+            self._show_operation_status(f"{label}失败：无效的任务结果")
             return
         if not self.controller.commands.apply_document_geometry(
             outcome.value,
             label,
+            clear_sprite_frames=clear_sprite_frames,
         ):
-            self.statusBar().showMessage(f"{label}未产生变化或结果已过期")
+            self._show_operation_status(f"{label}未产生变化或结果已过期")
 
     def _close_geometry_progress(self) -> None:
         if self._geometry_progress is not None:
@@ -1048,7 +1419,9 @@ class MainWindow(QMainWindow):
             self._geometry_progress = None
 
     def _on_document_changed(self, document: Document | None) -> None:
+        project_document = self._project_document()
         self._selected_vector_object = False
+        self._sprite_editing_frame_id = None
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             self.color_adjustment_controller.cancel()
         if self._selection_job is not None:
@@ -1065,6 +1438,13 @@ class MainWindow(QMainWindow):
         self.canvas_view.set_document(document)
         self.tool_controller.reset_active_tool()
         self.layer_panel.set_document(document)
+        self.sprite_properties.set_document(project_document)
+        self.sprite_properties.set_region(None)
+        self.sprite_properties.set_frame(None)
+        self.sprite_frame_panel.set_document(project_document)
+        active_session = getattr(self.controller, "active_session", None)
+        if active_session is not None and active_session.active_frame_group_id is not None:
+            self.sprite_frame_panel.set_active_group(active_session.active_frame_group_id)
         self._group_expansion_state = {}
         self._pending_group_expansion = None
         self._restore_group_expansion()
@@ -1076,15 +1456,25 @@ class MainWindow(QMainWindow):
         self.save_action.setEnabled(has_document)
         self.save_as_action.setEnabled(has_document)
         self.export_action.setEnabled(has_document)
-        self.append_action.setEnabled(has_document and not self._editing_busy)
-        self.transform_action.setEnabled(has_document and not self._editing_busy)
+        self.export_sprite_frame_action.setEnabled(False)
+        self.export_sprite_atlas_action.setEnabled(
+            bool(project_document and project_document.sprite_workspace.frames)
+        )
+        linked_read_only = self._active_surface_is_linked()
+        self.append_action.setEnabled(
+            has_document and not linked_read_only and not self._editing_busy
+        )
+        self.transform_action.setEnabled(
+            has_document and not linked_read_only and not self._editing_busy
+        )
+        source_surface = document is not None and document.kind is DocumentKind.PROJECT
         for action in (
             self.canvas_size_action,
             self.image_scale_action,
             self.layer_scale_action,
             self.trim_transparent_action,
         ):
-            action.setEnabled(has_document and not self._editing_busy)
+            action.setEnabled(source_surface and not self._editing_busy)
         for action in (
             self.zoom_in_action,
             self.zoom_out_action,
@@ -1093,18 +1483,34 @@ class MainWindow(QMainWindow):
         ):
             action.setEnabled(has_document)
         self._refresh_tool_actions(has_document)
-        self.tool_options_panel.setEnabled(has_document and not self._editing_busy)
+        self.tool_options_panel.setEnabled(
+            has_document and not linked_read_only and not self._editing_busy
+        )
+        self.layer_panel.setEnabled(not linked_read_only and not self._editing_busy)
         for action in self.color_adjustment_actions.values():
-            action.setEnabled(has_document and not self._editing_busy)
+            action.setEnabled(
+                has_document and not linked_read_only and not self._editing_busy
+            )
         if document is None:
             self.document_size_label.setText("无文档")
+            self.sprite_count_label.setText("帧 0")
         else:
             self.document_size_label.setText(f"{document.width} × {document.height} px")
+            self.sprite_count_label.setText(
+                f"帧 {len(project_document.sprite_workspace.frames) if project_document else 0}"
+            )
+        if "sprite_slice" in self.tool_actions:
+            self.tool_actions["sprite_slice"].setEnabled(
+                source_surface and not self._editing_busy
+            )
+        self._refresh_workspace_tabs()
         self._update_undo_actions()
         self._update_selection_actions()
         self._update_window_title()
 
     def _activate_tool(self, tool_name: str) -> None:
+        if hasattr(self, "shortcut_hint_label"):
+            self._update_shortcut_hint(tool_name)
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             self.color_adjustment_controller.cancel()
         if tool_name == "crop":
@@ -1137,6 +1543,15 @@ class MainWindow(QMainWindow):
             self.properties_stack.setCurrentWidget(self.shape_properties)
             self.properties_dock.show()
             self.properties_dock.raise_()
+        elif tool_name == "sprite_slice" and hasattr(self, "properties_stack"):
+            self.properties_stack.setCurrentWidget(self.sprite_properties)
+            self.properties_dock.show()
+            self.properties_dock.raise_()
+            if not self.sprite_frames_dock.isVisible():
+                self.sprite_frames_dock.show()
+            self.sprite_frames_dock.raise_()
+            self._resize_sprite_frame_dock()
+            QTimer.singleShot(0, self._resize_sprite_frame_dock)
         elif hasattr(self, "properties_stack"):
             self.properties_stack.setCurrentIndex(0)
 
@@ -1145,6 +1560,309 @@ class MainWindow(QMainWindow):
             return
         self.tool_actions["transform"].setChecked(True)
         self._activate_tool("transform")
+
+    def _set_sprite_region(self, region: Rect | None) -> None:
+        self.sprite_properties.set_region(region)
+
+    def _sprite_region_requested(self, region: object) -> None:
+        tool = self._tools.get("sprite_slice")
+        if isinstance(tool, SpriteSliceTool) and isinstance(region, Rect):
+            tool.set_region(region)
+
+    def _confirm_sprite_region(self, region: Rect) -> None:
+        document = self._project_document()
+        if document is None:
+            return
+        frame_id = self._sprite_editing_frame_id
+        if frame_id is None:
+            if not self.controller.commands.create_sprite_frame(region):
+                self._show_operation_status("无法创建精灵帧")
+                return
+            self._sprite_editing_frame_id = None
+            self.sprite_properties.set_frame(None)
+            self._show_operation_status("已添加精灵帧")
+            return
+        self.controller.commands.update_sprite_frame(frame_id, region=region)
+
+    def _cancel_sprite_slice(self) -> None:
+        self.tool_actions["brush"].setChecked(True)
+        self._activate_tool("brush")
+
+    def _select_sprite_frame(self, frame_id: object) -> None:
+        if frame_id is not None and not isinstance(frame_id, UUID):
+            return
+        self._sprite_editing_frame_id = frame_id
+        document = self.controller.document
+        frame = None
+        if document is not None and frame_id is not None:
+            try:
+                frame = document.sprite_workspace.frame_by_id(frame_id)
+            except ValueError:
+                frame = None
+        self.sprite_properties.set_frame(frame)
+        self.export_sprite_frame_action.setEnabled(frame is not None)
+        if frame is None:
+            return
+        if self.tool_controller.active_tool is not self._tools["sprite_slice"]:
+            self.tool_actions["sprite_slice"].setChecked(True)
+            self._activate_tool("sprite_slice")
+        tool = self._tools.get("sprite_slice")
+        if isinstance(tool, SpriteSliceTool):
+            tool.set_region(frame.region)
+
+    def _new_sprite_frame(self) -> None:
+        self._sprite_editing_frame_id = None
+        self.sprite_frame_panel.select_frame(None)
+        self.sprite_properties.set_frame(None)
+        if self.tool_controller.active_tool is not self._tools["sprite_slice"]:
+            self.tool_actions["sprite_slice"].setChecked(True)
+            self._activate_tool("sprite_slice")
+
+    def _delete_sprite_frame(self, frame_id: object) -> None:
+        frame_ids = (
+            frame_id
+            if isinstance(frame_id, tuple)
+            and all(isinstance(item, UUID) for item in frame_id)
+            else (frame_id,) if isinstance(frame_id, UUID) else ()
+        )
+        if not frame_ids:
+            return
+        if self.controller.commands.delete_sprite_frames(frame_ids):
+            self._sprite_editing_frame_id = None
+            self.sprite_properties.set_frame(None)
+
+    def _rename_sprite_frame(self, frame_id: object, name: str) -> None:
+        if isinstance(frame_id, UUID):
+            self.controller.commands.update_sprite_frame(frame_id, name=name)
+
+    def _move_sprite_frame(self, frame_id: object, target_index: int) -> None:
+        if isinstance(frame_id, UUID):
+            group_id = self.sprite_frame_panel.active_group_id
+            if isinstance(group_id, UUID) or group_id is None:
+                self.controller.commands.move_sprite_frame_to_group(
+                    frame_id,
+                    group_id,
+                    target_index,
+                )
+            else:
+                self.controller.commands.move_sprite_frame(frame_id, target_index)
+
+    def _open_sprite_frame_surface(self, frame_id: object) -> None:
+        if not isinstance(frame_id, UUID) or not hasattr(self.controller, "open_frame_surface"):
+            return
+        project = self._project_document()
+        if project is None:
+            return
+        try:
+            project.sprite_workspace.frame_by_id(frame_id)
+        except ValueError:
+            return
+        self.controller.open_frame_surface(frame_id)
+
+    def _detach_sprite_frame(self, frame_id: object) -> None:
+        if isinstance(frame_id, UUID) and self.controller.commands.detach_sprite_frame(frame_id):
+            if hasattr(self.controller, "open_frame_surface"):
+                self.controller.open_frame_surface(frame_id)
+
+    def _reset_sprite_frame(self, frame_id: object) -> None:
+        if not isinstance(frame_id, UUID):
+            return
+        if hasattr(self.controller, "set_active_surface"):
+            self.controller.set_active_surface(EditingSurfaceRef("source"))
+        if self.controller.commands.reset_sprite_frame_to_source(frame_id):
+            if hasattr(self.controller, "close_frame_surface"):
+                self.controller.close_frame_surface(frame_id)
+
+    def _duplicate_sprite_frame(self, frame_id: object) -> None:
+        if isinstance(frame_id, UUID):
+            self.controller.commands.duplicate_sprite_frame(frame_id)
+
+    def _sprite_group_selected(self, group_id: object) -> None:
+        session = getattr(self.controller, "active_session", None)
+        if session is not None:
+            session.active_frame_group_id = group_id if isinstance(group_id, UUID) else None
+
+    def _create_sprite_group(self, name: str) -> None:
+        self.controller.commands.create_sprite_frame_group(name)
+
+    def _rename_sprite_group(self, group_id: object, name: str) -> None:
+        if isinstance(group_id, UUID):
+            self.controller.commands.rename_sprite_frame_group(group_id, name)
+
+    def _move_sprite_group(self, group_id: object, target_index: int) -> None:
+        if isinstance(group_id, UUID):
+            self.controller.commands.move_sprite_frame_group(group_id, target_index)
+
+    def _move_sprite_frame_to_group(
+        self,
+        frame_id: object,
+        group_id: object,
+        target_index: int,
+    ) -> None:
+        frame_ids = (
+            frame_id
+            if isinstance(frame_id, tuple)
+            and all(isinstance(item, UUID) for item in frame_id)
+            else (frame_id,) if isinstance(frame_id, UUID) else ()
+        )
+        if frame_ids and (group_id is None or isinstance(group_id, UUID)):
+            self.controller.commands.move_sprite_frames_to_group(
+                frame_ids,
+                group_id,
+                target_index,
+            )
+
+    def _delete_sprite_group(self, group_id: object) -> None:
+        if not isinstance(group_id, UUID):
+            return
+        project = self._project_document()
+        if project is None:
+            return
+        try:
+            group = project.sprite_workspace.group_by_id(group_id)
+        except ValueError:
+            return
+        if not group.frame_ids:
+            self.controller.commands.delete_sprite_frame_group(
+                group_id,
+                GroupDeleteMode.MOVE_TO_UNGROUPED,
+            )
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("删除帧分组")
+        box.setText("此分组包含精灵帧。")
+        move_button = box.addButton("移到未分组", QMessageBox.ButtonRole.AcceptRole)
+        delete_button = box.addButton("同时删除帧", QMessageBox.ButtonRole.DestructiveRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is move_button:
+            mode = GroupDeleteMode.MOVE_TO_UNGROUPED
+        elif box.clickedButton() is delete_button:
+            mode = GroupDeleteMode.DELETE_FRAMES
+        else:
+            return
+        self.controller.commands.delete_sprite_frame_group(group_id, mode)
+
+    def _reorder_sprite_frames(self, frame_ids: object, label: str) -> None:
+        if isinstance(frame_ids, tuple) and all(
+            isinstance(frame_id, UUID) for frame_id in frame_ids
+        ):
+            group_id = self.sprite_frame_panel.active_group_id
+            if isinstance(group_id, UUID):
+                self.controller.commands.reorder_sprite_frame_group(
+                    group_id,
+                    frame_ids,
+                    label=label,
+                )
+            elif group_id is None:
+                self.controller.commands.reorder_ungrouped_sprite_frames(
+                    frame_ids,
+                    label=label,
+                )
+            else:
+                self.controller.commands.reorder_sprite_frames(frame_ids, label=label)
+
+    def _resize_sprite_frame_dock(self) -> None:
+        height = self.sprite_frame_panel.preferred_dock_height()
+        self.sprite_frames_dock.setMinimumHeight(height)
+        self.sprite_frames_dock.setMaximumHeight(16_777_215)
+        if self.sprite_frames_dock.isVisible() and self.sprite_frames_dock.height() < height:
+            self.resizeDocks(
+                [self.sprite_frames_dock],
+                [height],
+                Qt.Orientation.Vertical,
+            )
+
+    def _update_sprite_frame_details(
+        self,
+        frame_id: object,
+        name: object,
+        pivot: object,
+    ) -> None:
+        if isinstance(frame_id, UUID) and isinstance(name, str) and isinstance(
+            pivot,
+            PixelPoint,
+        ):
+            self.controller.commands.update_sprite_frame(
+                frame_id,
+                name=name,
+                pivot=pivot,
+            )
+
+    def _set_sprite_cell_size(self, size: object) -> None:
+        document = self._project_document()
+        if document is None or not isinstance(size, Size):
+            return
+        clear_frames = False
+        if document.sprite_workspace.frames:
+            answer = QMessageBox.question(
+                self,
+                "更改单格尺寸",
+                "更改单格尺寸会清空现有精灵帧定义。是否继续？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer is not QMessageBox.StandardButton.Yes:
+                self.sprite_properties.set_document(document)
+                return
+            clear_frames = True
+        if self.controller.commands.set_sprite_cell_size(size, clear_frames=clear_frames):
+            self._sprite_editing_frame_id = None
+            tool = self._tools.get("sprite_slice")
+            if isinstance(tool, SpriteSliceTool):
+                tool.reset_for_cell_size()
+
+    def _export_sprite_frame(self, frame_id: object) -> None:
+        if isinstance(frame_id, UUID):
+            self.controller.request_export_sprite_frame(self, frame_id)
+
+    def _export_selected_sprite_frame(self) -> None:
+        frame_id = self.sprite_frame_panel.selected_frame_id
+        if frame_id is not None:
+            self._export_sprite_frame(frame_id)
+
+    def _export_sprite_atlas(self) -> None:
+        project = self._project_document()
+        if project is None or not project.sprite_workspace.frames:
+            return
+        suggested = Path(f"{Path(project.display_name).stem or 'sprites'}_atlas.png")
+        dialog = AtlasExportDialog(DocumentSnapshot.capture(project), suggested, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        spec = dialog.spec
+        self.controller.export_sprite_atlas_to(
+            self,
+            spec.path,
+            included_group_ids=spec.included_group_ids,
+            include_ungrouped=spec.include_ungrouped,
+            horizontal_spacing=spec.horizontal_spacing,
+            vertical_spacing=spec.vertical_spacing,
+            margin=spec.margin,
+        )
+
+    def _set_pixel_exact_coordinates(self, enabled: bool) -> None:
+        self.settings.set_pixel_exact_coordinates(enabled)
+        self.settings.sync()
+
+    def _set_pixel_grid_visible(self, visible: bool) -> None:
+        self.settings.set_pixel_grid_visible(visible)
+        self.settings.sync()
+        self.canvas_view.set_sprite_grid_visibility(
+            pixel_grid=visible,
+            cell_grid=self.sprite_grid_action.isChecked(),
+        )
+
+    def _set_sprite_grid_visible(self, visible: bool) -> None:
+        self.settings.set_sprite_grid_visible(visible)
+        self.settings.sync()
+        self.canvas_view.set_sprite_grid_visibility(
+            pixel_grid=self.pixel_grid_action.isChecked(),
+            cell_grid=visible,
+        )
+
+    def _set_sprite_snap_enabled(self, enabled: bool) -> None:
+        self.settings.set_sprite_grid_snap_enabled(enabled)
+        self.settings.sync()
 
     def _foreground_rgba(self) -> tuple[int, int, int, int]:
         color = self.color_panel.foreground
@@ -1257,7 +1975,7 @@ class MainWindow(QMainWindow):
             tool.cancel()
 
     def _svg_preview_changed(self, preview: object) -> None:
-        document = self.controller.document
+        document = self._project_document()
         if document is None or not isinstance(preview, SvgElementObject):
             return
         try:
@@ -1393,7 +2111,7 @@ class MainWindow(QMainWindow):
                 if family in self._warned_text_fonts or QFontDatabase.hasFamily(family):
                     continue
                 self._warned_text_fonts.add(family)
-                self.statusBar().showMessage(
+                self._show_operation_status(
                     f"字体“{family}”不可用，文字将使用系统回退字体",
                     8000,
                 )
@@ -1502,9 +2220,21 @@ class MainWindow(QMainWindow):
         }
         for name, action in self.tool_actions.items():
             enabled = has_document and not self._editing_busy
+            if self._active_surface_is_linked() and name != "eyedropper":
+                enabled = False
             if self._selected_vector_object and name in raster_tools:
                 enabled = False
+            if (
+                self.controller.document is not None
+                and self.controller.document.kind is DocumentKind.SPRITE_FRAME
+                and name in {"crop", "sprite_slice"}
+            ):
+                enabled = False
             action.setEnabled(enabled)
+
+    def _active_surface_is_linked(self) -> bool:
+        session = getattr(self.controller, "active_session", None)
+        return bool(session is not None and session.active_surface_is_linked)
 
     def _cancel_color_adjustment_for_lifecycle(self) -> None:
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
@@ -1626,6 +2356,7 @@ class MainWindow(QMainWindow):
             self,
             numeric_drag_sensitivity=self.settings.numeric_drag_sensitivity(),
             numeric_fine_drag_sensitivity=(self.settings.numeric_fine_drag_sensitivity()),
+            pixel_exact_coordinates=self.settings.pixel_exact_coordinates(),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1638,6 +2369,8 @@ class MainWindow(QMainWindow):
             dialog.numeric_drag_sensitivity,
             dialog.numeric_fine_drag_sensitivity,
         )
+        self.settings.set_pixel_exact_coordinates(dialog.pixel_exact_coordinates)
+        self.pixel_exact_action.setChecked(dialog.pixel_exact_coordinates)
         self.settings.sync()
         configure_numeric_drag_sensitivity(
             dialog.numeric_drag_sensitivity,
@@ -1672,7 +2405,7 @@ class MainWindow(QMainWindow):
             NoticeSeverity.ERROR: "错误：",
         }[notice.severity]
         timeout = 5_000 if notice.severity is NoticeSeverity.INFO else 10_000
-        self.statusBar().showMessage(f"{prefix}{notice.message}", timeout)
+        self._show_operation_status(f"{prefix}{notice.message}", timeout)
 
     def _on_render_backend_fallback(self, reason: str) -> None:
         logging.getLogger("easypicture.render").warning(
@@ -1694,26 +2427,31 @@ class MainWindow(QMainWindow):
     def _set_editing_busy(self, busy: bool) -> None:
         self._editing_busy = busy
         has_document = self.controller.document is not None
+        linked_read_only = self._active_surface_is_linked()
         self._refresh_tool_actions(has_document)
-        self.tool_options_panel.setEnabled(has_document and not busy)
-        self.layer_panel.setEnabled(not busy)
+        self.tool_options_panel.setEnabled(has_document and not linked_read_only and not busy)
+        self.layer_panel.setEnabled(not linked_read_only and not busy)
         for action in self.color_adjustment_actions.values():
-            action.setEnabled(has_document and not busy)
+            action.setEnabled(has_document and not linked_read_only and not busy)
         for action in (
             self.save_action,
             self.save_as_action,
             self.export_action,
             self.append_action,
         ):
-            action.setEnabled(has_document and not busy)
-        self.transform_action.setEnabled(has_document and not busy)
+            action.setEnabled(has_document and not linked_read_only and not busy)
+        self.transform_action.setEnabled(has_document and not linked_read_only and not busy)
+        source_surface = (
+            self.controller.document is not None
+            and self.controller.document.kind is DocumentKind.PROJECT
+        )
         for action in (
             self.canvas_size_action,
             self.image_scale_action,
             self.layer_scale_action,
             self.trim_transparent_action,
         ):
-            action.setEnabled(has_document and not busy)
+            action.setEnabled(source_surface and not busy)
         self._update_selection_actions()
         self._update_undo_actions()
 
@@ -1740,9 +2478,40 @@ class MainWindow(QMainWindow):
             self._restore_group_expansion(restore_state)
             self._schedule_group_expansion_restore(preserved_expansion)
         document = self.controller.document
+        project_document = self._project_document()
         if document is not None:
             self.document_size_label.setText(f"{document.width} × {document.height} px")
+            self.sprite_count_label.setText(
+                f"帧 {len(project_document.sprite_workspace.frames) if project_document else 0}"
+            )
+            if isinstance(event, SpriteWorkspaceChanged):
+                selected = self._sprite_editing_frame_id
+                self.sprite_properties.set_document(project_document)
+                if project_document is not None:
+                    self.sprite_frame_panel.handle_workspace_change(event)
+                if selected is not None and project_document is not None:
+                    try:
+                        frame = project_document.sprite_workspace.frame_by_id(selected)
+                    except ValueError:
+                        self._sprite_editing_frame_id = None
+                        self.sprite_properties.set_frame(None)
+                    else:
+                        self.sprite_properties.set_frame(frame)
+            elif isinstance(event, SpriteFrameContentChanged):
+                self.sprite_frame_panel.invalidate_thumbnails((event.frame_id,))
+            elif document.kind is DocumentKind.SPRITE_FRAME:
+                session = getattr(self.controller, "active_session", None)
+                frame_id = (
+                    session.active_surface.frame_id
+                    if session is not None and session.active_surface.kind == "frame"
+                    else None
+                )
+                if frame_id is not None:
+                    self.sprite_frame_panel.invalidate_thumbnails((frame_id,))
+            else:
+                self.sprite_frame_panel.invalidate_thumbnails()
         self._update_window_title()
+        self._refresh_workspace_tabs()
         self._update_selection_actions()
 
     def _select_all(self) -> None:
@@ -1890,13 +2659,13 @@ class MainWindow(QMainWindow):
         self._selection_job = None
         self._set_editing_busy(False)
         if outcome.status is JobStatus.CANCELLED:
-            self.statusBar().showMessage(f"已取消{label}")
+            self._show_operation_status(f"已取消{label}")
             return
         if outcome.status is JobStatus.FAILED:
-            self.statusBar().showMessage(f"{label}失败：{outcome.error}")
+            self._show_operation_status(f"{label}失败：{outcome.error}")
             return
         if not isinstance(outcome.value, SelectionOperationResult):
-            self.statusBar().showMessage(f"{label}失败：无效的任务结果")
+            self._show_operation_status(f"{label}失败：无效的任务结果")
             return
         result = outcome.value
         document = self.controller.document
@@ -1905,10 +2674,10 @@ class MainWindow(QMainWindow):
             or document.id != result.document_id
             or document.revision != result.revision
         ):
-            self.statusBar().showMessage(f"文档已变化，已丢弃过期{label}结果")
+            self._show_operation_status(f"文档已变化，已丢弃过期{label}结果")
             return
         if not self.controller.commands.apply_selection_tiles(result.updates, label):
-            self.statusBar().showMessage(f"{label}未产生变化")
+            self._show_operation_status(f"{label}未产生变化")
 
     def _close_selection_progress(self) -> None:
         if self._selection_progress is not None:
@@ -1919,11 +2688,16 @@ class MainWindow(QMainWindow):
     def _update_selection_actions(self) -> None:
         document = self.controller.document
         has_document = document is not None
+        writable = has_document and not self._active_surface_is_linked()
         active = has_document and document.selection.is_active if document is not None else False
-        self.select_all_action.setEnabled(has_document and not self._editing_busy)
-        self.crop_to_selection_action.setEnabled(active and not self._editing_busy)
-        self.clear_selected_pixels_action.setEnabled(active and not self._editing_busy)
-        self.tool_options_panel.set_selection_active(active and not self._editing_busy)
+        self.select_all_action.setEnabled(writable and not self._editing_busy)
+        self.crop_to_selection_action.setEnabled(writable and active and not self._editing_busy)
+        self.clear_selected_pixels_action.setEnabled(
+            writable and active and not self._editing_busy
+        )
+        self.tool_options_panel.set_selection_active(
+            writable and active and not self._editing_busy
+        )
         for action in (
             self.deselect_action,
             self.invert_selection_action,
@@ -1932,7 +2706,7 @@ class MainWindow(QMainWindow):
             self.shrink_selection_action,
             self.smooth_selection_action,
         ):
-            action.setEnabled(active and not self._editing_busy)
+            action.setEnabled(writable and active and not self._editing_busy)
 
     def _update_undo_actions(self, *_args: object) -> None:
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
@@ -1990,12 +2764,11 @@ class MainWindow(QMainWindow):
         self.controller.commands.undo_stack.redo()
 
     def _update_window_title(self) -> None:
-        document = self.controller.document
+        document = self._project_document()
         if document is None:
             self.setWindowTitle(f"EasyPicture {__version__}")
             return
-        modified_marker = "*" if document.modified else ""
-        self.setWindowTitle(f"{document.display_name}{modified_marker} — EasyPicture")
+        self.setWindowTitle(f"{self._project_display_label(document)} — EasyPicture")
 
     def _on_zoom_changed(self, zoom: float) -> None:
         self.zoom_label.setText(f"{zoom * 100:.1f}%")

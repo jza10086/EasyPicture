@@ -128,6 +128,7 @@ class ShapeTool:
         geometry_sink: Callable[[ShapeGeometry | None], None] | None = None,
         history_sink: Callable[[], None] | None = None,
         vector_object_sink: Callable[[SvgElementObject | None], None] | None = None,
+        pixel_exact_provider: Callable[[], bool] | None = None,
     ) -> None:
         self._kind_provider = kind_provider
         self._settings_provider = settings_provider
@@ -135,6 +136,7 @@ class ShapeTool:
         self._geometry_sink = geometry_sink
         self._history_sink = history_sink
         self._vector_object_sink = vector_object_sink
+        self._pixel_exact_provider = pixel_exact_provider or (lambda: False)
         self._context: ToolContext | None = None
         self._session: _Session | None = None
         self._draft_start: Point | None = None
@@ -1037,7 +1039,15 @@ class ShapeTool:
 
     def _event_point(self, event: QMouseEvent) -> Point:
         assert self._context is not None
-        return self._context.canvas.viewport_to_document(event.position().toPoint())
+        point = self._context.canvas.viewport_to_document(event.position().toPoint())
+        target = (
+            self._session.output_target
+            if self._session is not None
+            else self._output_target_provider()
+        )
+        if self._pixel_exact_provider() and target is ShapeOutputTarget.RASTER:
+            return Point(float(round(point.x)), float(round(point.y)))
+        return point
 
     def _created_geometry(
         self,

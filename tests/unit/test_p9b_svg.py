@@ -23,6 +23,7 @@ from easypicture.domain import (
 )
 from easypicture.jobs import CancellationToken
 from easypicture.persistence import (
+    PROJECT_SCHEMA_VERSION,
     DocumentSnapshot,
     ImageExportRequest,
     SvgExportOptions,
@@ -133,7 +134,7 @@ def test_svg_objects_round_trip_in_current_schema(tmp_path: Path, qapp) -> None:
     )
     with zipfile.ZipFile(project) as archive:
         manifest = json.loads(archive.read("manifest.json"))
-        assert manifest["schema_version"] == 1
+        assert manifest["schema_version"] == PROJECT_SCHEMA_VERSION
         assert any(name.startswith("vectors/") for name in archive.namelist())
     loaded = load_project(project, CancellationToken(), _progress)
     vector = next(node for node in loaded.snapshot.nodes if isinstance(node, VectorGroupSnapshot))

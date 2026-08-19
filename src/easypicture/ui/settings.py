@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID
 
 from PySide6.QtCore import QByteArray, QSettings
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import QMainWindow
 
 from easypicture.domain import Size
@@ -40,6 +40,8 @@ DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY = 0.001
 MIN_NUMERIC_DRAG_SENSITIVITY = 0.0001
 MAX_NUMERIC_DRAG_SENSITIVITY = 0.1
 MAX_RECENT_FILES = 10
+SPRITE_THUMBNAIL_SIZES = (48, 64, 96)
+WINDOW_STATE_VERSION = 2
 
 
 class AppSettings:
@@ -240,6 +242,38 @@ class AppSettings:
             min(MAX_NUMERIC_DRAG_SENSITIVITY, max(MIN_NUMERIC_DRAG_SENSITIVITY, fine)),
         )
 
+    def pixel_exact_coordinates(self) -> bool:
+        return self._bool_value("sprite/pixel_exact_coordinates", False)
+
+    def set_pixel_exact_coordinates(self, enabled: bool) -> None:
+        self._settings.setValue("sprite/pixel_exact_coordinates", bool(enabled))
+
+    def pixel_grid_visible(self) -> bool:
+        return self._bool_value("sprite/pixel_grid_visible", False)
+
+    def set_pixel_grid_visible(self, visible: bool) -> None:
+        self._settings.setValue("sprite/pixel_grid_visible", bool(visible))
+
+    def sprite_grid_visible(self) -> bool:
+        return self._bool_value("sprite/cell_grid_visible", True)
+
+    def set_sprite_grid_visible(self, visible: bool) -> None:
+        self._settings.setValue("sprite/cell_grid_visible", bool(visible))
+
+    def sprite_grid_snap_enabled(self) -> bool:
+        return self._bool_value("sprite/cell_grid_snap", False)
+
+    def set_sprite_grid_snap_enabled(self, enabled: bool) -> None:
+        self._settings.setValue("sprite/cell_grid_snap", bool(enabled))
+
+    def sprite_thumbnail_size(self) -> int:
+        value = self._int_value("sprite/thumbnail_size", 64)
+        return value if value in SPRITE_THUMBNAIL_SIZES else 64
+
+    def set_sprite_thumbnail_size(self, size: int) -> None:
+        resolved = size if size in SPRITE_THUMBNAIL_SIZES else 64
+        self._settings.setValue("sprite/thumbnail_size", resolved)
+
     def brush_settings(self) -> BrushSettings:
         return BrushSettings(
             size=self._bounded_int("tools/brush/size", 32, 1, MAX_BRUSH_SIZE),
@@ -437,15 +471,38 @@ class AppSettings:
         if isinstance(geometry, QByteArray) and not geometry.isEmpty():
             window.restoreGeometry(geometry)
         if isinstance(state, QByteArray) and not state.isEmpty():
-            window.restoreState(state)
+            window.restoreState(state, WINDOW_STATE_VERSION)
+        self._ensure_window_visible(window)
 
     def save_window(self, window: QMainWindow) -> None:
         self._settings.setValue("window/geometry", window.saveGeometry())
-        self._settings.setValue("window/state", window.saveState())
+        self._settings.setValue("window/state", window.saveState(WINDOW_STATE_VERSION))
         self._settings.sync()
 
     def sync(self) -> None:
         self._settings.sync()
+
+    @staticmethod
+    def _ensure_window_visible(window: QMainWindow) -> None:
+        screens = QGuiApplication.screens()
+        if not screens:
+            return
+        frame = window.frameGeometry()
+        screen = max(
+            screens,
+            key=lambda candidate: (
+                frame.intersected(candidate.availableGeometry()).width()
+                * frame.intersected(candidate.availableGeometry()).height()
+            ),
+        )
+        available = screen.availableGeometry()
+        width = min(window.width(), available.width())
+        height = min(window.height(), available.height())
+        if (width, height) != (window.width(), window.height()):
+            window.resize(width, height)
+        x = min(max(frame.x(), available.left()), available.right() - width + 1)
+        y = min(max(frame.y(), available.top()), available.bottom() - height + 1)
+        window.move(x, y)
 
     def _int_value(self, key: str, default: int) -> int:
         value = self._settings.value(key, default)

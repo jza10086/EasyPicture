@@ -108,6 +108,22 @@ class SelectionChanged:
     active: bool
 
 
+@dataclass(frozen=True, slots=True)
+class SpriteWorkspaceChanged:
+    document_id: UUID
+    revision: int
+    change: str
+    frame_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SpriteFrameContentChanged:
+    document_id: UUID
+    revision: int
+    frame_id: UUID
+    embedded_document_id: UUID
+
+
 type DocumentEvent = (
     DocumentModifiedChanged
     | DocumentPathChanged
@@ -121,6 +137,8 @@ type DocumentEvent = (
     | LayerPropertiesChanged
     | LayerPixelsChanged
     | SelectionChanged
+    | SpriteWorkspaceChanged
+    | SpriteFrameContentChanged
 )
 
 
@@ -142,5 +160,7 @@ __all__ = [
     "LayerPixelsChanged",
     "LayerPropertiesChanged",
     "SelectionChanged",
+    "SpriteWorkspaceChanged",
+    "SpriteFrameContentChanged",
     "VectorObjectChanged",
 ]

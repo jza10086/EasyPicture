@@ -486,6 +486,27 @@ def test_drag_value_programmatic_update_cleans_active_drag(qtbot) -> None:
     assert QApplication.overrideCursor() is None
 
 
+def test_drag_value_feedback_sync_does_not_interrupt_active_drag(qtbot) -> None:
+    spin = DragValueSpinBox(0, 100, 50)
+    qtbot.addWidget(spin)
+    spin.resize(160, 26)
+    spin.show()
+
+    qtbot.mousePress(spin, Qt.MouseButton.LeftButton, pos=QPoint(10, 10))
+    qtbot.mouseMove(spin, QPoint(70, 10))
+    assert spin.interaction_state is NumericEditState.DRAGGING
+    dragged_value = spin.value()
+
+    assert not spin.syncValue(dragged_value + 10)
+    assert spin.value() == dragged_value
+    assert spin.interaction_state is NumericEditState.DRAGGING
+
+    qtbot.mouseRelease(spin, Qt.MouseButton.LeftButton, pos=QPoint(70, 10))
+    assert spin.interaction_state is NumericEditState.IDLE
+    assert spin.syncValue(25)
+    assert spin.value() == 25
+
+
 def test_drag_value_disable_and_hide_cleanup_active_sessions(qtbot) -> None:
     spin = DragValueSpinBox(0, 100, 50)
     qtbot.addWidget(spin)

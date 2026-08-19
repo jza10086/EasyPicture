@@ -178,3 +178,22 @@ def test_window_geometry_round_trip(qtbot, tmp_path) -> None:
     settings.restore_window(second)
 
     assert second.size() == first.size()
+
+
+def test_window_restore_clamps_tiny_offscreen_geometry(qtbot, tmp_path) -> None:
+    settings = make_settings(str(tmp_path / "settings.ini"))
+    first = QMainWindow()
+    qtbot.addWidget(first)
+    first.resize(50, 50)
+    first.move(100_000, 100_000)
+    settings.save_window(first)
+
+    second = QMainWindow()
+    qtbot.addWidget(second)
+    second.setMinimumSize(800, 600)
+    settings.restore_window(second)
+
+    available = QApplication.primaryScreen().availableGeometry()
+    assert second.width() >= 800
+    assert second.height() >= 600
+    assert available.contains(second.frameGeometry().center())

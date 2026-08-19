@@ -1,5 +1,10 @@
 """Project snapshots and durable file persistence."""
 
+from easypicture.persistence.atlas_io import (
+    SpriteAtlasExportReceipt,
+    SpriteAtlasExportRequest,
+    export_sprite_atlas,
+)
 from easypicture.persistence.document_append import (
     DocumentAppendPayload,
     prepare_document_append,
@@ -46,9 +51,16 @@ from easypicture.persistence.snapshots import (
     DocumentSnapshot,
     LayerSnapshot,
     RasterGroupSnapshot,
+    SpriteWorkspaceSnapshot,
     SvgElementSnapshot,
     TextObjectSnapshot,
     VectorGroupSnapshot,
+)
+from easypicture.persistence.sprite_io import (
+    SpriteFrameExportReceipt,
+    SpriteFrameExportRequest,
+    export_sprite_frame_png,
+    render_snapshot_region,
 )
 from easypicture.persistence.svg_io import SvgImportResult, SvgImportWarning, import_svg
 
@@ -68,6 +80,7 @@ __all__ = [
     "LayerSnapshot",
     "RasterGroupSnapshot",
     "SvgElementSnapshot",
+    "SpriteWorkspaceSnapshot",
     "SvgImportResult",
     "SvgImportWarning",
     "TextObjectSnapshot",
@@ -83,16 +96,23 @@ __all__ = [
     "TiffExportOptions",
     "SvgExportOptions",
     "SvgVectorExportMode",
+    "SpriteFrameExportReceipt",
+    "SpriteFrameExportRequest",
     "WebpExportOptions",
     "canonical_extension",
     "default_export_options",
     "detect_export_capabilities",
     "export_format_for_options",
     "export_image",
+    "export_sprite_frame_png",
     "export_png",
     "import_image",
     "import_svg",
     "load_project",
+    "render_snapshot_region",
+    "SpriteAtlasExportReceipt",
+    "SpriteAtlasExportRequest",
+    "export_sprite_atlas",
     "normalize_export_path",
     "prepare_document_append",
     "save_project",

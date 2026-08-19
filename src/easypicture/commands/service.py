@@ -14,11 +14,16 @@ from easypicture.commands.patch_store import PatchHandle, UndoPatchStore
 from easypicture.domain import (
     Document,
     FloatRect,
+    GroupDeleteMode,
     LayerGroup,
     PixelPoint,
     RasterGroupLayer,
     RasterLayer,
     Size,
+    SpriteFrameContentMode,
+    SpriteFrameDefinition,
+    SpriteFrameGroup,
+    SpriteWorkspace,
     SvgElementObject,
     TextObject,
     VectorGroupLayer,
@@ -28,7 +33,10 @@ from easypicture.domain.document import MAX_DOCUMENT_LAYERS
 from easypicture.imaging.geometry_ops import DocumentGeometryResult
 from easypicture.imaging.transform import RasterTransformResult
 from easypicture.imaging.vector_rasterize import rasterize_vector_objects
-from easypicture.pixels import MaskArray, RGBAArray, TileCoord
+from easypicture.jobs import CancellationToken
+from easypicture.persistence.snapshots import DocumentSnapshot
+from easypicture.persistence.sprite_io import render_snapshot_region
+from easypicture.pixels import MaskArray, Rect, RGBAArray, TileCoord
 
 DEFAULT_UNDO_BUDGET_BYTES = 1024 * 1024 * 1024
 DEFAULT_UNDO_LIMIT = 100
@@ -495,6 +503,50 @@ class _VectorObjectPropertyCommand(_DocumentCommand):
         self._apply(self.before)
 
 
+class _SpriteWorkspaceCommand(_DocumentCommand):
+    def __init__(
+        self,
+        document: Document,
+        before: SpriteWorkspace,
+        after: SpriteWorkspace,
+        text: str,
+        *,
+        change: str,
+        frame_ids: tuple[UUID, ...] = (),
+        before_embedded: Mapping[UUID, Document] | None = None,
+        after_embedded: Mapping[UUID, Document] | None = None,
+    ) -> None:
+        super().__init__(document, text)
+        self.before = before.clone()
+        self.after = after.clone()
+        self.change = change
+        self.frame_ids = frame_ids
+        self.before_embedded = dict(
+            document.embedded_documents if before_embedded is None else before_embedded
+        )
+        self.after_embedded = dict(
+            self.before_embedded if after_embedded is None else after_embedded
+        )
+
+    def _apply(
+        self,
+        workspace: SpriteWorkspace,
+        embedded_documents: Mapping[UUID, Document],
+    ) -> None:
+        self.document.replace_sprite_workspace(
+            workspace,
+            change=self.change,
+            frame_ids=self.frame_ids,
+            embedded_documents=embedded_documents,
+        )
+
+    def redo(self) -> None:
+        self._apply(self.after, self.after_embedded)
+
+    def undo(self) -> None:
+        self._apply(self.before, self.before_embedded)
+
+
 @dataclass(frozen=True, slots=True)
 class _TilePatch:
     coord: TileCoord
@@ -656,6 +708,10 @@ class _DocumentGeometryCommand(_DocumentCommand):
         after_document_size: Size,
         layers: tuple[_LayerGeometryPatch, ...],
         selection_patches: tuple[_TilePatch, ...],
+        before_sprite_workspace: SpriteWorkspace,
+        after_sprite_workspace: SpriteWorkspace,
+        before_embedded_documents: Mapping[UUID, Document],
+        after_embedded_documents: Mapping[UUID, Document],
         patch_store: UndoPatchStore,
         text: str,
     ) -> None:
@@ -669,6 +725,10 @@ class _DocumentGeometryCommand(_DocumentCommand):
         self.after_document_size = after_document_size
         self.layers = layers
         self.selection_patches = selection_patches
+        self.before_sprite_workspace = before_sprite_workspace.clone()
+        self.after_sprite_workspace = after_sprite_workspace.clone()
+        self.before_embedded_documents = dict(before_embedded_documents)
+        self.after_embedded_documents = dict(after_embedded_documents)
         self.patch_store = patch_store
 
     def _apply(self, *, use_after: bool) -> None:
@@ -696,6 +756,14 @@ class _DocumentGeometryCommand(_DocumentCommand):
             layer_geometry=layer_geometry,
             layer_updates=layer_updates,
             selection_updates=selection_updates,
+            sprite_workspace=(
+                self.after_sprite_workspace if use_after else self.before_sprite_workspace
+            ),
+            embedded_documents=(
+                self.after_embedded_documents
+                if use_after
+                else self.before_embedded_documents
+            ),
         )
 
     def redo(self) -> None:
@@ -738,6 +806,7 @@ class DocumentCommandService:
         self.undo_stack.setUndoLimit(DEFAULT_UNDO_LIMIT)
         self.patch_store = UndoPatchStore()
         self._document: Document | None = None
+        self._project_document: Document | None = None
         self._commands: dict[UUID, _DocumentCommand] = {}
         self._suppress_clean_sync = False
         self._visibility_macro_open = False
@@ -748,6 +817,10 @@ class DocumentCommandService:
         return self._document
 
     @property
+    def project_document(self) -> Document | None:
+        return self._project_document
+
+    @property
     def history_bytes(self) -> int:
         return sum(command.storage_bytes for command in self._commands.values())
 
@@ -756,6 +829,7 @@ class DocumentCommandService:
             self.end_visibility_scrub()
         self._clear_stack()
         self._document = document
+        self._project_document = document
         self._suppress_clean_sync = True
         try:
             if document is not None and document.modified:
@@ -764,6 +838,611 @@ class DocumentCommandService:
                 self.undo_stack.setClean()
         finally:
             self._suppress_clean_sync = False
+
+    def set_edit_document(self, document: Document) -> None:
+        """Change the active source/frame editing target without resetting history."""
+        project = self._project_document
+        if project is None:
+            raise RuntimeError("no project document is attached")
+        if document is not project and all(
+            candidate is not document for candidate in project.embedded_documents.values()
+        ):
+            raise ValueError("edit document does not belong to the current project")
+        if self._visibility_macro_open:
+            self.end_visibility_scrub()
+        self._document = document
+
+    def create_sprite_frame(self, region: Rect) -> bool:
+        document = self._require_project_document()
+        workspace = document.sprite_workspace
+        if (
+            region.width != workspace.cell_size.width
+            or region.height != workspace.cell_size.height
+            or region.right > document.width
+            or region.bottom > document.height
+            or len(workspace.frames) >= 1024
+        ):
+            return False
+        used = {frame.name for frame in workspace.frames}
+        index = 1
+        while f"frame_{index:03d}" in used:
+            index += 1
+        frame = SpriteFrameDefinition.create(f"frame_{index:03d}", region)
+        after = workspace.clone()
+        after.frames.append(frame)
+        return self._push(
+            _SpriteWorkspaceCommand(
+                document,
+                workspace,
+                after,
+                "创建精灵帧",
+                change="created",
+                frame_ids=(frame.id,),
+            )
+        )
+
+    def update_sprite_frame(
+        self,
+        frame_id: UUID,
+        *,
+        region: Rect | None = None,
+        pivot: PixelPoint | None = None,
+        name: str | None = None,
+    ) -> bool:
+        document = self._require_project_document()
+        workspace = document.sprite_workspace
+        try:
+            current = workspace.frame_by_id(frame_id)
+        except ValueError:
+            return False
+        resolved_region = current.region if region is None else region
+        if (
+            resolved_region.width != workspace.cell_size.width
+            or resolved_region.height != workspace.cell_size.height
+            or resolved_region.right > document.width
+            or resolved_region.bottom > document.height
+        ):
+            return False
+        resolved_name = current.name if name is None else name.strip()
+        if not resolved_name:
+            return False
+        existing_names = {frame.name for frame in workspace.frames if frame.id != frame_id}
+        resolved_name = _unique_name(resolved_name, existing_names)
+        try:
+            updated = current.with_changes(
+                name=resolved_name,
+                region=resolved_region,
+                pivot=pivot,
+            )
+        except ValueError:
+            return False
+        if updated == current:
+            return False
+        after = workspace.clone()
+        after.frames[after.frames.index(current)] = updated
+        return self._push(
+            _SpriteWorkspaceCommand(
+                document,
+                workspace,
+                after,
+                "更新精灵帧",
+                change="updated",
+                frame_ids=(frame_id,),
+            )
+        )
+
+    def delete_sprite_frame(self, frame_id: UUID) -> bool:
+        return self.delete_sprite_frames((frame_id,))
+
+    def delete_sprite_frames(self, frame_ids: tuple[UUID, ...]) -> bool:
+        document = self._require_project_document()
+        workspace = document.sprite_workspace
+        unique_ids = tuple(dict.fromkeys(frame_ids))
+        if not unique_ids:
+            return False
+        removed_ids = set(unique_ids)
+        frames_by_id = {frame.id: frame for frame in workspace.frames}
+        if any(frame_id not in frames_by_id for frame_id in unique_ids):
+            return False
+        after = workspace.clone()
+        after.frames = [frame for frame in after.frames if frame.id not in removed_ids]
+        after.groups = [
+            group.with_changes(
+                frame_ids=tuple(item for item in group.frame_ids if item not in removed_ids)
+            )
+            for group in after.groups
+        ]
+        after_embedded = dict(document.embedded_documents)
+        for frame_id in unique_ids:
+            embedded_id = frames_by_id[frame_id].embedded_document_id
+            if embedded_id is not None:
+                after_embedded.pop(embedded_id, None)
+        return self._push(
+            _SpriteWorkspaceCommand(
+                document,
+                workspace,
+                after,
+                "删除精灵帧" if len(unique_ids) == 1 else f"删除 {len(unique_ids)} 个精灵帧",
+                change="deleted",
+                frame_ids=unique_ids,
+                after_embedded=after_embedded,
+            )
+        )
+
+    def move_sprite_frame(self, frame_id: UUID, target_index: int) -> bool:
+        document = self._require_project_document()
+        workspace = document.sprite_workspace
+        try:
+            frame = workspace.frame_by_id(frame_id)
+            source_index = workspace.frames.index(frame)
+        except ValueError:
+            return False
+        if source_index == target_index or not 0 <= target_index < len(workspace.frames):
+            return False
+        after = workspace.clone()
+        moved = after.frames.pop(source_index)
+        after.frames.insert(target_index, moved)
+        return self._push(
+            _SpriteWorkspaceCommand(
+                document,
+                workspace,
+                after,
+                "移动精灵帧",
+                change="reordered",
+                frame_ids=(frame_id,),
+            )
+        )
+
+    def reorder_sprite_frames(
+        self,
+        frame_ids: tuple[UUID, ...],
+        *,
+        label: str = "排序精灵帧",
+    ) -> bool:
+        document = self._require_project_document()
+        workspace = document.sprite_workspace
+        current_ids = tuple(frame.id for frame in workspace.frames)
+        if frame_ids == current_ids or len(frame_ids) != len(current_ids):
+            return False
+        if len(set(frame_ids)) != len(frame_ids) or set(frame_ids) != set(current_ids):
+            return False
+        frames_by_id = {frame.id: frame for frame in workspace.frames}
+        after = workspace.clone()
+        after.frames = [frames_by_id[frame_id] for frame_id in frame_ids]
+        return self._push(
+            _SpriteWorkspaceCommand(
+                document,
+                workspace,
+                after,
+                label,
+                change="reordered",
+                frame_ids=frame_ids,
+            )
+        )
+
+    def set_sprite_cell_size(self, size: Size, *, clear_frames: bool) -> bool:
+        document = self._require_project_document()
+        workspace = document.sprite_workspace
+        if size == workspace.cell_size:
+            return False
+        if size.width > document.width or size.height > document.height:
+            return False
+        if workspace.frames and not clear_frames:
+            return False
+        after = workspace.clone()
+        after.cell_size = size
+        if clear_frames:
+            after.frames.clear()
+            after.groups = [group.with_changes(frame_ids=()) for group in after.groups]
+        return self._push(
+            _SpriteWorkspaceCommand(
+                document,
+                workspace,
+                after,
+                "更改单帧尺寸",
+                change="cell_size",
+                frame_ids=tuple(frame.id for frame in workspace.frames),
+                after_embedded={} if clear_frames else None,
+            )
+        )
+
+    def detach_sprite_frame(self, frame_id: UUID) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            frame = workspace.frame_by_id(frame_id)
+        except ValueError:
+            return False
+        if frame.content_mode is SpriteFrameContentMode.DETACHED:
+            return False
+        pixels = render_snapshot_region(
+            DocumentSnapshot.capture(project),
+            frame.region,
+            CancellationToken(),
+            lambda _done, _total, _label: None,
+        )
+        embedded = Document.create_sprite_frame(workspace.cell_size)
+        embedded.active_layer.pixels.write_region(
+            Rect(0, 0, workspace.cell_size.width, workspace.cell_size.height),
+            pixels,
+        )
+        updated = frame.with_changes(
+            content_mode=SpriteFrameContentMode.DETACHED,
+            embedded_document_id=embedded.id,
+        )
+        after = workspace.clone()
+        after.frames[after.frames.index(frame)] = updated
+        after_embedded = dict(project.embedded_documents)
+        after_embedded[embedded.id] = embedded
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "独立化精灵帧",
+                change="detached",
+                frame_ids=(frame_id,),
+                after_embedded=after_embedded,
+            )
+        )
+
+    def reset_sprite_frame_to_source(self, frame_id: UUID) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            frame = workspace.frame_by_id(frame_id)
+        except ValueError:
+            return False
+        if frame.content_mode is SpriteFrameContentMode.LINKED:
+            return False
+        updated = frame.with_changes(
+            content_mode=SpriteFrameContentMode.LINKED,
+            embedded_document_id=None,
+        )
+        after = workspace.clone()
+        after.frames[after.frames.index(frame)] = updated
+        after_embedded = dict(project.embedded_documents)
+        assert frame.embedded_document_id is not None
+        after_embedded.pop(frame.embedded_document_id, None)
+        if self._document is project.embedded_documents.get(frame.embedded_document_id):
+            self._document = project
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "重置精灵帧为源区域",
+                change="reset_to_source",
+                frame_ids=(frame_id,),
+                after_embedded=after_embedded,
+            )
+        )
+
+    def duplicate_sprite_frame(self, frame_id: UUID) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            frame = workspace.frame_by_id(frame_id)
+        except ValueError:
+            return False
+        if len(workspace.frames) >= 1024:
+            return False
+        new_frame_id = uuid4()
+        embedded_id: UUID | None = None
+        after_embedded = dict(project.embedded_documents)
+        if frame.embedded_document_id is not None:
+            source = project.embedded_document_by_id(frame.embedded_document_id)
+            source_snapshot = DocumentSnapshot.capture(source)
+            embedded_id = uuid4()
+            copied_snapshot = replace(source_snapshot, document_id=embedded_id)
+            after_embedded[embedded_id] = copied_snapshot.to_document()
+        copied = SpriteFrameDefinition(
+            id=new_frame_id,
+            name=_unique_name(frame.name, {item.name for item in workspace.frames}),
+            region=frame.region,
+            pivot=frame.pivot,
+            content_mode=frame.content_mode,
+            embedded_document_id=embedded_id,
+        )
+        after = workspace.clone()
+        source_index = after.frames.index(frame)
+        after.frames.insert(source_index + 1, copied)
+        group = after.group_for_frame(frame_id)
+        if group is not None:
+            ids = list(group.frame_ids)
+            ids.insert(ids.index(frame_id) + 1, new_frame_id)
+            after.groups[after.groups.index(group)] = group.with_changes(frame_ids=tuple(ids))
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "复制精灵帧",
+                change="duplicated",
+                frame_ids=(new_frame_id,),
+                after_embedded=after_embedded,
+            )
+        )
+
+    def create_sprite_frame_group(self, name: str = "帧分组") -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        if len(workspace.groups) >= 128:
+            return False
+        resolved = _unique_name(name, {group.name for group in workspace.groups})
+        group = SpriteFrameGroup.create(resolved)
+        after = workspace.clone()
+        after.groups.append(group)
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "新建帧分组",
+                change="group_created",
+            )
+        )
+
+    def rename_sprite_frame_group(self, group_id: UUID, name: str) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            group = workspace.group_by_id(group_id)
+        except ValueError:
+            return False
+        normalized = name.strip()
+        if not normalized:
+            return False
+        normalized = _unique_name(
+            normalized,
+            {item.name for item in workspace.groups if item.id != group_id},
+        )
+        updated = group.with_changes(name=normalized)
+        if updated == group:
+            return False
+        after = workspace.clone()
+        after.groups[after.groups.index(group)] = updated
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "重命名帧分组",
+                change="group_renamed",
+            )
+        )
+
+    def move_sprite_frame_group(self, group_id: UUID, target_index: int) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            group = workspace.group_by_id(group_id)
+            source_index = workspace.groups.index(group)
+        except ValueError:
+            return False
+        if not 0 <= target_index < len(workspace.groups) or source_index == target_index:
+            return False
+        after = workspace.clone()
+        after.groups.insert(target_index, after.groups.pop(source_index))
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "移动帧分组",
+                change="group_reordered",
+            )
+        )
+
+    def delete_sprite_frame_group(
+        self,
+        group_id: UUID,
+        mode: GroupDeleteMode,
+    ) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            group = workspace.group_by_id(group_id)
+        except ValueError:
+            return False
+        after = workspace.clone()
+        after.groups.remove(group)
+        after_embedded = dict(project.embedded_documents)
+        changed_ids = group.frame_ids
+        if mode is GroupDeleteMode.DELETE_FRAMES:
+            removed = set(group.frame_ids)
+            for frame in tuple(after.frames):
+                if frame.id not in removed:
+                    continue
+                after.frames.remove(frame)
+                if frame.embedded_document_id is not None:
+                    after_embedded.pop(frame.embedded_document_id, None)
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "删除帧分组",
+                change="group_deleted",
+                frame_ids=changed_ids,
+                after_embedded=after_embedded,
+            )
+        )
+
+    def move_sprite_frame_to_group(
+        self,
+        frame_id: UUID,
+        group_id: UUID | None,
+        target_index: int,
+    ) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            workspace.frame_by_id(frame_id)
+        except ValueError:
+            return False
+        after = workspace.clone()
+        for index, group in enumerate(after.groups):
+            if frame_id in group.frame_ids:
+                after.groups[index] = group.with_changes(
+                    frame_ids=tuple(item for item in group.frame_ids if item != frame_id)
+                )
+        if group_id is not None:
+            try:
+                target = after.group_by_id(group_id)
+            except ValueError:
+                return False
+            ids = list(target.frame_ids)
+            insert_at = min(max(target_index, 0), len(ids))
+            ids.insert(insert_at, frame_id)
+            after.groups[after.groups.index(target)] = target.with_changes(frame_ids=tuple(ids))
+        if after == workspace:
+            return False
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "移动精灵帧到分组",
+                change="frame_group_changed",
+                frame_ids=(frame_id,),
+            )
+        )
+
+    def move_sprite_frames_to_group(
+        self,
+        frame_ids: tuple[UUID, ...],
+        group_id: UUID | None,
+        target_index: int,
+    ) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        unique_ids = tuple(dict.fromkeys(frame_ids))
+        if not unique_ids:
+            return False
+        all_ids = {frame.id for frame in workspace.frames}
+        if any(frame_id not in all_ids for frame_id in unique_ids):
+            return False
+        moved_ids = set(unique_ids)
+        after = workspace.clone()
+        for index, group in enumerate(after.groups):
+            if moved_ids.intersection(group.frame_ids):
+                after.groups[index] = group.with_changes(
+                    frame_ids=tuple(
+                        frame_id
+                        for frame_id in group.frame_ids
+                        if frame_id not in moved_ids
+                    )
+                )
+        if group_id is not None:
+            try:
+                target = after.group_by_id(group_id)
+            except ValueError:
+                return False
+            ids = list(target.frame_ids)
+            insert_at = min(max(target_index, 0), len(ids))
+            ids[insert_at:insert_at] = unique_ids
+            after.groups[after.groups.index(target)] = target.with_changes(
+                frame_ids=tuple(ids)
+            )
+        else:
+            grouped = {
+                frame_id
+                for group in after.groups
+                for frame_id in group.frame_ids
+            }
+            current = [
+                frame.id
+                for frame in after.frames
+                if frame.id not in grouped and frame.id not in moved_ids
+            ]
+            insert_at = min(max(target_index, 0), len(current))
+            current[insert_at:insert_at] = unique_ids
+            replacements = iter(current)
+            ungrouped_slots = {
+                frame.id
+                for frame in after.frames
+                if frame.id not in grouped
+            }
+            by_id = {frame.id: frame for frame in after.frames}
+            after.frames = [
+                by_id[next(replacements)] if frame.id in ungrouped_slots else frame
+                for frame in after.frames
+            ]
+        if after == workspace:
+            return False
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "移动精灵帧到分组",
+                change="frame_group_changed",
+                frame_ids=unique_ids,
+            )
+        )
+
+    def reorder_sprite_frame_group(
+        self,
+        group_id: UUID,
+        frame_ids: tuple[UUID, ...],
+        *,
+        label: str = "排序帧分组",
+    ) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            group = workspace.group_by_id(group_id)
+        except ValueError:
+            return False
+        if (
+            frame_ids == group.frame_ids
+            or len(frame_ids) != len(group.frame_ids)
+            or set(frame_ids) != set(group.frame_ids)
+        ):
+            return False
+        after = workspace.clone()
+        after.groups[after.groups.index(group)] = group.with_changes(frame_ids=frame_ids)
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                label,
+                change="group_frames_reordered",
+                frame_ids=frame_ids,
+            )
+        )
+
+    def reorder_ungrouped_sprite_frames(
+        self,
+        frame_ids: tuple[UUID, ...],
+        *,
+        label: str = "排序未分组帧",
+    ) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        current = workspace.ungrouped_frame_ids
+        if frame_ids == current or len(frame_ids) != len(current) or set(frame_ids) != set(current):
+            return False
+        replacements = iter(frame_ids)
+        ungrouped = set(current)
+        by_id = {frame.id: frame for frame in workspace.frames}
+        after = workspace.clone()
+        after.frames = [
+            by_id[next(replacements)] if frame.id in ungrouped else frame
+            for frame in workspace.frames
+        ]
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                label,
+                change="ungrouped_frames_reordered",
+                frame_ids=frame_ids,
+            )
+        )
 
     def create_layer(self) -> bool:
         document = self._require_document()
@@ -1696,6 +2375,8 @@ class DocumentCommandService:
         self,
         result: DocumentGeometryResult,
         label: str,
+        *,
+        clear_sprite_frames: bool = False,
     ) -> bool:
         document = self._require_document()
         if (
@@ -1794,9 +2475,34 @@ class DocumentCommandService:
                 self.patch_store.release(patch.after)
             return False
 
+        before_sprite_workspace = document.sprite_workspace.clone()
+        if clear_sprite_frames:
+            after_sprite_workspace = SpriteWorkspace(
+                cell_size=Size(
+                    min(before_sprite_workspace.cell_size.width, result.document_size.width),
+                    min(before_sprite_workspace.cell_size.height, result.document_size.height),
+                ),
+                frames=[],
+            )
+        else:
+            after_sprite_workspace = before_sprite_workspace.clone()
+            if not after_sprite_workspace.frames:
+                after_sprite_workspace.cell_size = Size(
+                    min(after_sprite_workspace.cell_size.width, result.document_size.width),
+                    min(after_sprite_workspace.cell_size.height, result.document_size.height),
+                )
+            try:
+                after_sprite_workspace.validate_for_canvas(result.document_size)
+            except ValueError:
+                for patch in captured_patches:
+                    self.patch_store.release(patch.before)
+                    self.patch_store.release(patch.after)
+                return False
+
         changed = (
             document.size != result.document_size
             or bool(selection_patches)
+            or before_sprite_workspace != after_sprite_workspace
             or any(
                 layer.before_size != layer.after_size
                 or layer.before_origin != layer.after_origin
@@ -1813,6 +2519,10 @@ class DocumentCommandService:
                 result.document_size,
                 tuple(layers),
                 tuple(selection_patches),
+                before_sprite_workspace,
+                after_sprite_workspace,
+                document.embedded_documents,
+                {} if clear_sprite_frames else document.embedded_documents,
                 self.patch_store,
                 label.strip() or "几何变更",
             )
@@ -1829,11 +2539,13 @@ class DocumentCommandService:
             self._suppress_clean_sync = False
 
     def mark_saved(self, document_id: UUID, revision: int) -> bool:
-        document = self._document
+        document = self._project_document
         if document is None or document.id != document_id or document.revision != revision:
             return False
         self.undo_stack.setClean()
         document.mark_clean()
+        for embedded in document.embedded_documents.values():
+            embedded.mark_clean()
         return True
 
     def _push_property(
@@ -1908,11 +2620,16 @@ class DocumentCommandService:
             raise RuntimeError("no document is attached")
         return self._document
 
+    def _require_project_document(self) -> Document:
+        if self._project_document is None:
+            raise RuntimeError("no project document is attached")
+        return self._project_document
+
     def _on_clean_changed(self, clean: bool) -> None:
-        if self._suppress_clean_sync or self._document is None:
+        if self._suppress_clean_sync or self._project_document is None:
             return
         if clean:
-            self._document.mark_clean()
+            self._project_document.mark_clean()
 
 
 __all__ = [

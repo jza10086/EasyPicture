@@ -15,6 +15,8 @@ from easypicture.domain.events import (
     LayerPixelsChanged,
     LayerPropertiesChanged,
     SelectionChanged,
+    SpriteFrameContentChanged,
+    SpriteWorkspaceChanged,
     VectorObjectChanged,
 )
 from easypicture.domain.geometry import (
@@ -29,6 +31,16 @@ from easypicture.domain.geometry import (
 )
 from easypicture.domain.layer import RasterLayer
 from easypicture.domain.selection import Selection
+from easypicture.domain.sprite import (
+    MAX_SPRITE_FRAME_GROUPS,
+    MAX_SPRITE_FRAMES,
+    DocumentKind,
+    GroupDeleteMode,
+    SpriteFrameContentMode,
+    SpriteFrameDefinition,
+    SpriteFrameGroup,
+    SpriteWorkspace,
+)
 from easypicture.domain.svg_primitives import (
     EditableSvgPrimitive,
     SvgCircleGeometry,
@@ -80,6 +92,8 @@ __all__ = [
     "LayerPixelsChanged",
     "LayerPropertiesChanged",
     "SelectionChanged",
+    "SpriteFrameContentChanged",
+    "SpriteWorkspaceChanged",
     "VectorObjectChanged",
     "PixelPoint",
     "Point",
@@ -97,6 +111,14 @@ __all__ = [
     "VectorGroupLayer",
     "VectorObjectKind",
     "Selection",
+    "MAX_SPRITE_FRAMES",
+    "MAX_SPRITE_FRAME_GROUPS",
+    "DocumentKind",
+    "GroupDeleteMode",
+    "SpriteFrameContentMode",
+    "SpriteFrameDefinition",
+    "SpriteFrameGroup",
+    "SpriteWorkspace",
     "EditableSvgPrimitive",
     "SvgCircleGeometry",
     "SvgEllipseGeometry",

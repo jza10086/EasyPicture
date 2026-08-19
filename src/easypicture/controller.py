@@ -24,6 +24,8 @@ from easypicture.domain import (
     LayerPixelsChanged,
     LayerPropertiesChanged,
     SelectionChanged,
+    SpriteFrameContentChanged,
+    SpriteWorkspaceChanged,
     VectorObjectChanged,
 )
 from easypicture.domain.document import Unsubscribe
@@ -37,9 +39,15 @@ from easypicture.persistence import (
     LoadedProject,
     PngExportReceipt,
     SaveReceipt,
+    SpriteAtlasExportReceipt,
+    SpriteAtlasExportRequest,
+    SpriteFrameExportReceipt,
+    SpriteFrameExportRequest,
     SvgImportResult,
     export_image,
     export_png,
+    export_sprite_atlas,
+    export_sprite_frame_png,
     import_image,
     import_svg,
     load_project,
@@ -114,7 +122,15 @@ class ApplicationController(QObject):
 
     @property
     def recovery_path(self) -> Path:
-        return self.recovery_dir / "current.recovery.limg"
+        name = (
+            f"{self._document.id}.recovery.limg"
+            if self._document is not None
+            else "current.recovery.limg"
+        )
+        return self.recovery_dir / name
+
+    def discard_recovery(self) -> None:
+        self._clear_recovery()
 
     def set_dialog_parent(self, parent: QWidget) -> None:
         self._dialog_parent = parent
@@ -325,6 +341,75 @@ class ApplicationController(QObject):
         self._report_job_failure(parent, "导出失败", outcome)
         return False
 
+    def request_export_sprite_frame(self, parent: QWidget, frame_id: UUID) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        try:
+            frame = document.sprite_workspace.frame_by_id(frame_id)
+        except ValueError:
+            return False
+        path = self.dialogs.choose_png_export_file(parent, f"{frame.name}.png")
+        if path is None:
+            return False
+        request = SpriteFrameExportRequest(
+            DocumentSnapshot.capture(document),
+            frame_id,
+            path,
+        )
+        outcome = self._run_foreground(
+            parent,
+            "导出精灵帧 PNG",
+            lambda token, progress: export_sprite_frame_png(request, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            SpriteFrameExportReceipt,
+        ):
+            self.status_message.emit(f"已导出 {outcome.value.path.name}")
+            return True
+        self._report_job_failure(parent, "导出精灵帧失败", outcome)
+        return False
+
+    def export_sprite_atlas_to(
+        self,
+        parent: QWidget,
+        path: Path,
+        *,
+        included_group_ids: tuple[UUID, ...] | None = None,
+        include_ungrouped: bool = True,
+        horizontal_spacing: int = 0,
+        vertical_spacing: int = 0,
+        margin: int = 0,
+    ) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        request = SpriteAtlasExportRequest(
+            snapshot=DocumentSnapshot.capture(document),
+            path=path,
+            included_group_ids=included_group_ids,
+            include_ungrouped=include_ungrouped,
+            horizontal_spacing=horizontal_spacing,
+            vertical_spacing=vertical_spacing,
+            margin=margin,
+        )
+        outcome = self._run_foreground(
+            parent,
+            "导出完整精灵图",
+            lambda token, progress: export_sprite_atlas(request, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            SpriteAtlasExportReceipt,
+        ):
+            self.status_message.emit(
+                f"已导出 {outcome.value.png_path.name} 与 {outcome.value.json_path.name}"
+            )
+            return True
+        self._report_job_failure(parent, "导出精灵图失败", outcome)
+        return False
+
     def close_document(self, parent: QWidget) -> bool:
         if self._document is None:
             return True
@@ -338,13 +423,18 @@ class ApplicationController(QObject):
     def request_exit(self, parent: QWidget) -> bool:
         return self.close_document(parent)
 
-    def offer_recovery(self, parent: QWidget) -> bool:
-        if not self.recovery_enabled or not self.recovery_path.exists():
+    def offer_recovery(self, parent: QWidget, path: Path | None = None) -> bool:
+        recovery_path = self.recovery_path if path is None else Path(path)
+        if path is None and not recovery_path.exists():
+            candidates = tuple(self.recovery_dir.glob("*.recovery.limg"))
+            if candidates:
+                recovery_path = max(candidates, key=lambda candidate: candidate.stat().st_mtime)
+        if not self.recovery_enabled or not recovery_path.exists():
             return False
         outcome = self._run_foreground(
             parent,
             "检查恢复草稿",
-            lambda token, progress: load_project(self.recovery_path, token, progress),
+            lambda token, progress: load_project(recovery_path, token, progress),
         )
         if outcome.status is JobStatus.CANCELLED:
             return False
@@ -352,12 +442,12 @@ class ApplicationController(QObject):
             outcome.value,
             LoadedProject,
         ):
-            self._quarantine_corrupt_recovery()
+            self._quarantine_recovery_path(recovery_path)
             self._report_job_failure(parent, "恢复草稿损坏", outcome)
             return False
         loaded = outcome.value
         if not loaded.is_recovery:
-            self._quarantine_corrupt_recovery()
+            self._quarantine_recovery_path(recovery_path)
             self.dialogs.show_error(parent, "恢复草稿损坏", "该文件不是自动恢复草稿。")
             return False
         display_name = loaded.snapshot.source_name or (
@@ -367,7 +457,7 @@ class ApplicationController(QObject):
         )
         decision = self.dialogs.confirm_recovery(parent, display_name)
         if decision is RecoveryDecision.DISCARD:
-            self._clear_recovery()
+            recovery_path.unlink(missing_ok=True)
             return False
         if decision is RecoveryDecision.KEEP:
             return False
@@ -377,8 +467,16 @@ class ApplicationController(QObject):
         )
         self._replace_document(document)
         self.status_message.emit("已恢复自动保存草稿")
-        self._logger.info("restored recovery draft %s", self.recovery_path)
+        self._logger.info("restored recovery draft %s", recovery_path)
         return True
+
+    def _quarantine_recovery_path(self, path: Path) -> None:
+        timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        corrupt = path.with_name(f"{path.name}.{timestamp}.corrupt")
+        try:
+            os.replace(path, corrupt)
+        except OSError:
+            self._logger.exception("failed to quarantine recovery draft %s", path)
 
     def _load_project_candidate(
         self,
@@ -522,6 +620,8 @@ class ApplicationController(QObject):
                     LayerPixelsChanged,
                     LayerPropertiesChanged,
                     SelectionChanged,
+                    SpriteFrameContentChanged,
+                    SpriteWorkspaceChanged,
                     VectorObjectChanged,
                 ),
             )

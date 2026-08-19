@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QColorDialog,
     QDialog,
     QDialogButtonBox,
@@ -42,6 +43,7 @@ class PreferencesDialog(QDialog):
         *,
         numeric_drag_sensitivity: float = DEFAULT_NUMERIC_DRAG_SENSITIVITY,
         numeric_fine_drag_sensitivity: float = DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY,
+        pixel_exact_coordinates: bool = False,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("全局设置")
@@ -80,6 +82,11 @@ class PreferencesDialog(QDialog):
             decimals=3,
             parent=self,
         )
+        self.pixel_exact_coordinates_check = QCheckBox(
+            "栅格工具使用整数坐标",
+            self,
+        )
+        self.pixel_exact_coordinates_check.setChecked(pixel_exact_coordinates)
 
         self.render_backend_combo = BlenderComboBox(self)
         self.render_backend_combo.addItem("自动（推荐）", RenderBackendKind.AUTO)
@@ -113,6 +120,7 @@ class PreferencesDialog(QDialog):
         self.render_diagnostics_label.setWordWrap(True)
 
         form = QFormLayout()
+        form.addRow("像素精确坐标", self.pixel_exact_coordinates_check)
         form.addRow("选区颜色", self.selection_color_button)
         form.addRow("选区粗细", self.selection_width_spin)
         form.addRow("数值拖动灵敏度", self.numeric_drag_sensitivity_spin)
@@ -156,6 +164,10 @@ class PreferencesDialog(QDialog):
     @property
     def numeric_fine_drag_sensitivity(self) -> float:
         return self.numeric_fine_drag_sensitivity_spin.value() / 100.0
+
+    @property
+    def pixel_exact_coordinates(self) -> bool:
+        return self.pixel_exact_coordinates_check.isChecked()
 
     def _choose_selection_color(self) -> None:
         color = QColorDialog.getColor(

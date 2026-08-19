@@ -32,6 +32,7 @@ from easypicture.domain import (
     Point,
     RasterLayer,
     Size,
+    SpriteWorkspaceChanged,
     TransformMatrix,
     VectorObject,
 )
@@ -50,6 +51,7 @@ from easypicture.ui.selection_style import (
     DEFAULT_SELECTION_OUTLINE_WIDTH,
     MAX_SELECTION_OUTLINE_WIDTH,
 )
+from easypicture.ui.sprite_grid_overlay import SpriteGridOverlayItem
 
 if TYPE_CHECKING:
     from easypicture.tools.controller import ToolController
@@ -118,6 +120,9 @@ class CanvasView(QGraphicsView):
                 fallback_reason=f"Qt {platform_name} platform does not support QOpenGLWidget",
             )
         self._selection_overlay: SelectionOverlayItem | None = None
+        self._sprite_grid_overlay: SpriteGridOverlayItem | None = None
+        self._pixel_grid_visible = False
+        self._sprite_grid_visible = False
         self._selection_outline_color = QColor(DEFAULT_SELECTION_OUTLINE_COLOR)
         self._selection_outline_width = float(DEFAULT_SELECTION_OUTLINE_WIDTH)
         self._zoom = 1.0
@@ -161,6 +166,15 @@ class CanvasView(QGraphicsView):
             self._selection_overlay.set_style(
                 self._selection_outline_color,
                 self._selection_outline_width,
+            )
+
+    def set_sprite_grid_visibility(self, *, pixel_grid: bool, cell_grid: bool) -> None:
+        self._pixel_grid_visible = bool(pixel_grid)
+        self._sprite_grid_visible = bool(cell_grid)
+        if self._sprite_grid_overlay is not None:
+            self._sprite_grid_overlay.set_visibility(
+                pixel_grid=self._pixel_grid_visible,
+                cell_grid=self._sprite_grid_visible,
             )
 
     def set_tool_cursor(self, cursor: Qt.CursorShape | QCursor | None) -> None:
@@ -302,6 +316,9 @@ class CanvasView(QGraphicsView):
             self._selection_overlay.dispose()
             self.scene().removeItem(self._selection_overlay)
             self._selection_overlay = None
+        if self._sprite_grid_overlay is not None:
+            self.scene().removeItem(self._sprite_grid_overlay)
+            self._sprite_grid_overlay = None
         if self._canvas_item is not None:
             self.scene().removeItem(self._canvas_item)
         self._document = document
@@ -325,6 +342,12 @@ class CanvasView(QGraphicsView):
             self._selection_outline_width,
         )
         self.scene().addItem(self._selection_overlay)
+        self._sprite_grid_overlay = SpriteGridOverlayItem(document, lambda: self._zoom)
+        self._sprite_grid_overlay.set_visibility(
+            pixel_grid=self._pixel_grid_visible,
+            cell_grid=self._sprite_grid_visible,
+        )
+        self.scene().addItem(self._sprite_grid_overlay)
         self.set_zoom(1.0)
         self.centerOn(self._canvas_item)
 
@@ -700,10 +723,17 @@ class CanvasView(QGraphicsView):
         self.viewport().update()
 
     def _on_document_event(self, event: DocumentEvent) -> None:
+        if isinstance(event, SpriteWorkspaceChanged):
+            if self._sprite_grid_overlay is not None:
+                self._sprite_grid_overlay.update()
+            self.viewport().update()
+            return
         if not isinstance(event, DocumentSizeChanged):
             return
         if self._canvas_item is not None:
             self._canvas_item.set_size(event.new_size)
+        if self._sprite_grid_overlay is not None:
+            self._sprite_grid_overlay.document_size_changed()
         self._update_pan_bounds()
         self.viewport().update()
 

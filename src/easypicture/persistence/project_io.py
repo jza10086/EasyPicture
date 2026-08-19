@@ -22,10 +22,15 @@ from PIL import Image
 from easypicture import __version__
 from easypicture.domain import (
     AffineTransform,
+    DocumentKind,
     FloatRect,
     PixelPoint,
     Point,
     Size,
+    SpriteFrameContentMode,
+    SpriteFrameDefinition,
+    SpriteFrameGroup,
+    SpriteWorkspace,
     SvgElementObject,
     TextHorizontalAlignment,
     TextObject,
@@ -36,16 +41,17 @@ from easypicture.domain.document import MAX_DOCUMENT_DIMENSION, MAX_DOCUMENT_LAY
 from easypicture.jobs import CancellationToken
 from easypicture.jobs.runner import ProgressSink
 from easypicture.persistence.image_io import create_thumbnail_png
-from easypicture.persistence.schema import PROJECT_SCHEMA_VERSION, require_current_schema
+from easypicture.persistence.schema import PROJECT_SCHEMA_VERSION, migrate_to_current_schema
 from easypicture.persistence.snapshots import (
     DocumentSnapshot,
     LayerSnapshot,
     RasterGroupSnapshot,
+    SpriteWorkspaceSnapshot,
     SvgElementSnapshot,
     TextObjectSnapshot,
     VectorGroupSnapshot,
 )
-from easypicture.pixels import DEFAULT_TILE_SIZE, MaskTileStore, TilePixelStore
+from easypicture.pixels import DEFAULT_TILE_SIZE, MaskTileStore, Rect, TilePixelStore
 from easypicture.temp_files import cleanup_stale_sibling_temps
 
 PROJECT_FORMAT = "easypicture"
@@ -95,6 +101,27 @@ def save_project(
     try:
         thumbnail, thumbnail_size = create_thumbnail_png(snapshot, token, progress)
         token.raise_if_cancelled()
+        embedded_blobs: dict[UUID, bytes] = {}
+        for embedded in snapshot.embedded_documents:
+            token.raise_if_cancelled()
+            handle = tempfile.NamedTemporaryFile(
+                prefix=".easypicture-frame-",
+                suffix=".limg",
+                dir=destination.parent,
+                delete=False,
+            )
+            embedded_path = Path(handle.name)
+            handle.close()
+            try:
+                save_project(
+                    embedded,
+                    embedded_path,
+                    token,
+                    lambda _done, _total, _label: None,
+                )
+                embedded_blobs[embedded.document_id] = embedded_path.read_bytes()
+            finally:
+                embedded_path.unlink(missing_ok=True)
         manifest_layers_by_id: dict[UUID, dict[str, Any]] = {}
         manifest_nodes: list[dict[str, Any]] = []
         selection_tiles: list[dict[str, Any]] = []
@@ -111,6 +138,23 @@ def save_project(
             allowZip64=True,
         ) as archive:
             _write_entry(archive, THUMBNAIL_PATH, thumbnail)
+            if snapshot.kind is DocumentKind.PROJECT:
+                assert snapshot.sprite_workspace is not None
+                for frame in snapshot.sprite_workspace.frames:
+                    if frame.content_mode is not SpriteFrameContentMode.DETACHED:
+                        continue
+                    assert frame.embedded_document_id is not None
+                    try:
+                        blob = embedded_blobs[frame.embedded_document_id]
+                    except KeyError as error:
+                        raise ProjectFormatError(
+                            "detached sprite frame has no embedded document"
+                        ) from error
+                    _write_entry(
+                        archive,
+                        f"sprite_frames/{frame.id}/document.limg",
+                        blob,
+                    )
             for layer in snapshot.raster_layers:
                 descriptors: list[dict[str, Any]] = []
                 for coord, tile in layer.pixels.iter_allocated_tiles():
@@ -213,6 +257,7 @@ def save_project(
                 "format": PROJECT_FORMAT,
                 "schema_version": PROJECT_SCHEMA_VERSION,
                 "app_version": __version__,
+                "document_kind": snapshot.kind.value,
                 "document_id": str(snapshot.document_id),
                 "canvas": {
                     "width": snapshot.size.width,
@@ -222,6 +267,11 @@ def save_project(
                 "active_layer_id": str(snapshot.active_layer_id),
                 "source_name": snapshot.source_name,
                 "nodes": manifest_nodes,
+                "sprite_workspace": (
+                    _sprite_workspace_manifest(snapshot.sprite_workspace)
+                    if snapshot.sprite_workspace is not None
+                    else None
+                ),
                 "selection": {"tiles": selection_tiles},
                 "thumbnail": {
                     "path": THUMBNAIL_PATH,
@@ -275,6 +325,34 @@ def validate_project(
     _read_project(Path(path), token, progress, build=False)
 
 
+def _read_embedded_project(
+    payload: bytes,
+    token: CancellationToken,
+    progress: ProgressSink,
+) -> DocumentSnapshot:
+    """Validate and decode a one-level embedded frame project."""
+    handle = tempfile.NamedTemporaryFile(
+        prefix="easypicture-embedded-",
+        suffix=".limg",
+        delete=False,
+    )
+    temporary = Path(handle.name)
+    try:
+        handle.write(payload)
+        handle.flush()
+        handle.close()
+        loaded = _read_project(temporary, token, progress, build=True)
+        if not isinstance(loaded, LoadedProject):
+            raise ProjectFormatError("embedded frame document could not be decoded")
+        if loaded.snapshot.embedded_documents:
+            raise ProjectFormatError("embedded frame documents cannot be nested")
+        return loaded.snapshot
+    finally:
+        if not handle.closed:
+            handle.close()
+        temporary.unlink(missing_ok=True)
+
+
 def _read_project(
     path: Path,
     token: CancellationToken,
@@ -313,20 +391,34 @@ def _read_project(
         if not isinstance(manifest_value, dict):
             raise ProjectFormatError("project manifest must be an object")
         try:
-            require_current_schema(manifest_value)
+            manifest = migrate_to_current_schema(manifest_value)
         except ValueError as error:
             raise ProjectFormatError(str(error)) from error
-        manifest = manifest_value
 
         if manifest.get("format") != PROJECT_FORMAT:
             raise ProjectFormatError("project format marker is invalid")
         if manifest.get("working_color_space") != "sRGB":
             raise ProjectFormatError("project working color space is unsupported")
+        kind_value = manifest.get("document_kind")
+        try:
+            document_kind = DocumentKind(kind_value) if isinstance(kind_value, str) else None
+        except (TypeError, ValueError) as error:
+            raise ProjectFormatError("project document kind is invalid") from error
+        if document_kind is None:
+            raise ProjectFormatError("project document kind is invalid")
         document_id = _uuid_field(manifest, "document_id")
         canvas = _object_field(manifest, "canvas")
         width = _bounded_int(canvas, "width", 1, MAX_DOCUMENT_DIMENSION)
         height = _bounded_int(canvas, "height", 1, MAX_DOCUMENT_DIMENSION)
         size = Size(width, height)
+        if document_kind is DocumentKind.PROJECT:
+            sprite_workspace = _parse_sprite_workspace(manifest, size)
+        else:
+            if manifest.get("sprite_workspace") is not None:
+                raise ProjectFormatError(
+                    "embedded frame document cannot contain a sprite workspace"
+                )
+            sprite_workspace = None
         active_layer_id = _uuid_field(manifest, "active_layer_id")
         source_name = _optional_filename(manifest.get("source_name"))
         nodes_value = manifest.get("nodes")
@@ -565,6 +657,33 @@ def _read_project(
             completed += 1
             progress(completed, max(descriptor_total, 1), "校验选区 Tile")
 
+        embedded_snapshots: list[DocumentSnapshot] = []
+        if sprite_workspace is not None:
+            for frame in sprite_workspace.frames:
+                if frame.content_mode is not SpriteFrameContentMode.DETACHED:
+                    continue
+                member = f"sprite_frames/{frame.id}/document.limg"
+                embedded_info = by_name.get(member)
+                if embedded_info is None:
+                    raise ProjectFormatError("embedded sprite frame document is missing")
+                if embedded_info.file_size > MAX_DECODED_BYTES:
+                    raise ProjectFormatError("embedded sprite frame document is too large")
+                decoded_total += embedded_info.file_size
+                _check_decoded_total(decoded_total)
+                expected_names.add(member)
+                embedded = _read_embedded_project(
+                    archive.read(embedded_info),
+                    token,
+                    progress,
+                )
+                if (
+                    embedded.kind is not DocumentKind.SPRITE_FRAME
+                    or embedded.size != sprite_workspace.cell_size
+                    or embedded.document_id != frame.embedded_document_id
+                ):
+                    raise ProjectFormatError("embedded sprite frame document is invalid")
+                embedded_snapshots.append(embedded)
+
         _validate_thumbnail(archive, by_name, manifest)
         if names != expected_names:
             raise ProjectFormatError("project contains undeclared or missing archive entries")
@@ -585,11 +704,195 @@ def _read_project(
             size=size,
             active_layer_id=active_layer_id,
             selection=selection_store,
-            project_path=original_path if is_recovery else path,
+            project_path=(
+                (original_path if is_recovery else path)
+                if document_kind is DocumentKind.PROJECT
+                else None
+            ),
             source_name=source_name,
             nodes=tuple(node_snapshots),
+            kind=document_kind,
+            sprite_workspace=(
+                SpriteWorkspaceSnapshot.capture(sprite_workspace)
+                if sprite_workspace is not None
+                else None
+            ),
+            embedded_documents=tuple(embedded_snapshots),
         )
         return LoadedProject(snapshot, is_recovery, original_path)
+
+
+def _sprite_workspace_manifest(
+    workspace: SpriteWorkspaceSnapshot,
+) -> dict[str, Any]:
+    return {
+        "cell_size": {
+            "width": workspace.cell_size.width,
+            "height": workspace.cell_size.height,
+        },
+        "frames": [
+            {
+                "id": str(frame.id),
+                "name": frame.name,
+                "region": [
+                    frame.region.x,
+                    frame.region.y,
+                    frame.region.width,
+                    frame.region.height,
+                ],
+                "pivot": [frame.pivot.x, frame.pivot.y],
+                "content_mode": frame.content_mode.value,
+                "embedded_document_id": (
+                    str(frame.embedded_document_id)
+                    if frame.embedded_document_id is not None
+                    else None
+                ),
+                "embedded_path": (
+                    f"sprite_frames/{frame.id}/document.limg"
+                    if frame.content_mode is SpriteFrameContentMode.DETACHED
+                    else None
+                ),
+            }
+            for frame in workspace.frames
+        ],
+        "groups": [
+            {
+                "id": str(group.id),
+                "name": group.name,
+                "frame_ids": [str(frame_id) for frame_id in group.frame_ids],
+            }
+            for group in workspace.groups
+        ],
+    }
+
+
+def _parse_sprite_workspace(
+    manifest: dict[str, Any],
+    canvas_size: Size,
+) -> SpriteWorkspace:
+    value = _object_field(manifest, "sprite_workspace")
+    cell = _object_field(value, "cell_size")
+    cell_size = Size(
+        _bounded_int(cell, "width", 1, canvas_size.width),
+        _bounded_int(cell, "height", 1, canvas_size.height),
+    )
+    frames_value = value.get("frames")
+    if not isinstance(frames_value, list) or len(frames_value) > 1024:
+        raise ProjectFormatError("sprite frame count is invalid")
+    frames: list[SpriteFrameDefinition] = []
+    for frame_value in frames_value:
+        if not isinstance(frame_value, dict):
+            raise ProjectFormatError("sprite frame entry is invalid")
+        frame_id = _uuid_field(frame_value, "id")
+        name = frame_value.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > 1024:
+            raise ProjectFormatError("sprite frame name is invalid")
+        region_value = frame_value.get("region")
+        if (
+            not isinstance(region_value, list)
+            or len(region_value) != 4
+            or not all(
+                isinstance(item, int) and not isinstance(item, bool)
+                for item in region_value
+            )
+        ):
+            raise ProjectFormatError("sprite frame region is invalid")
+        region = Rect(*region_value)
+        if (
+            region.width != cell_size.width
+            or region.height != cell_size.height
+            or region.right > canvas_size.width
+            or region.bottom > canvas_size.height
+        ):
+            raise ProjectFormatError("sprite frame region is outside the canvas")
+        pivot_value = frame_value.get("pivot")
+        if (
+            not isinstance(pivot_value, list)
+            or len(pivot_value) != 2
+            or not all(
+                isinstance(item, int) and not isinstance(item, bool)
+                for item in pivot_value
+            )
+        ):
+            raise ProjectFormatError("sprite frame pivot is invalid")
+        try:
+            mode_value = frame_value.get("content_mode")
+            try:
+                content_mode = (
+                    SpriteFrameContentMode(mode_value)
+                    if isinstance(mode_value, str)
+                    else None
+                )
+            except (TypeError, ValueError) as error:
+                raise ProjectFormatError("sprite frame content mode is invalid") from error
+            if content_mode is None:
+                raise ProjectFormatError("sprite frame content mode is invalid")
+            embedded_value = frame_value.get("embedded_document_id")
+            if embedded_value is None:
+                embedded_id = None
+            elif isinstance(embedded_value, str):
+                try:
+                    embedded_id = UUID(embedded_value)
+                except ValueError as error:
+                    raise ProjectFormatError(
+                        "sprite frame embedded document id is invalid"
+                    ) from error
+            else:
+                raise ProjectFormatError("sprite frame embedded document id is invalid")
+            expected_embedded_path = (
+                f"sprite_frames/{frame_id}/document.limg"
+                if content_mode is SpriteFrameContentMode.DETACHED
+                else None
+            )
+            if frame_value.get("embedded_path") != expected_embedded_path:
+                raise ProjectFormatError("sprite frame embedded document path is invalid")
+            frames.append(
+                SpriteFrameDefinition(
+                    frame_id,
+                    name.strip(),
+                    region,
+                    PixelPoint(pivot_value[0], pivot_value[1]),
+                    content_mode,
+                    embedded_id,
+                )
+            )
+        except ValueError as error:
+            raise ProjectFormatError("sprite frame values are invalid") from error
+    groups_value = value.get("groups")
+    if not isinstance(groups_value, list) or len(groups_value) > 128:
+        raise ProjectFormatError("sprite frame group count is invalid")
+    groups: list[SpriteFrameGroup] = []
+    for group_value in groups_value:
+        if not isinstance(group_value, dict):
+            raise ProjectFormatError("sprite frame group entry is invalid")
+        group_id = _uuid_field(group_value, "id")
+        name = group_value.get("name")
+        frame_ids_value = group_value.get("frame_ids")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 1024
+            or not isinstance(frame_ids_value, list)
+        ):
+            raise ProjectFormatError("sprite frame group values are invalid")
+        try:
+            frame_ids = tuple(UUID(value) for value in frame_ids_value)
+        except (TypeError, ValueError) as error:
+            raise ProjectFormatError("sprite frame group member is invalid") from error
+        try:
+            groups.append(SpriteFrameGroup(group_id, name.strip(), frame_ids))
+        except ValueError as error:
+            raise ProjectFormatError("sprite frame group values are invalid") from error
+    try:
+        workspace = SpriteWorkspace(
+            cell_size,
+            frames,
+            groups,
+        )
+        workspace.validate_for_canvas(canvas_size)
+    except ValueError as error:
+        raise ProjectFormatError("sprite workspace is invalid") from error
+    return workspace
 
 
 def _encode_tile(
