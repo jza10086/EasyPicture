@@ -295,7 +295,7 @@ def test_recent_files_and_help_actions_are_available(qtbot, tmp_path) -> None:
     window._rebuild_recent_files_menu()  # noqa: SLF001
     recent_texts = [action.text() for action in window.recent_files_menu.actions()]
 
-    assert any("second.png" in text for text in recent_texts)
+    assert not any("second.png" in text for text in recent_texts)
     assert any("first.limg" in text for text in recent_texts)
     assert window.about_action.text() == "关于 EasyPicture…"
     assert window.open_log_folder_action.text() == "打开日志目录"

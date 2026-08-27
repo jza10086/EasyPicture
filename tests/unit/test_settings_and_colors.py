@@ -9,6 +9,7 @@ from easypicture.render import RenderBackendKind
 from easypicture.ui.color_dialog import ColorPickerDialog
 from easypicture.ui.color_panel import ColorPanel
 from easypicture.ui.drag_value_spinbox import DRAG_THRESHOLD, NumericEditState
+from easypicture.ui.settings import OnionSkinSettings
 from tests.fakes import FakeDialogService, make_settings
 
 
@@ -33,6 +34,45 @@ def test_settings_round_trip_size_and_colors(tmp_path) -> None:
     assert second.render_backend() is RenderBackendKind.SOFTWARE
     assert second.numeric_drag_sensitivity() == 0.02
     assert second.numeric_fine_drag_sensitivity() == 0.0005
+
+
+def test_onion_skin_settings_round_trip_without_document_changes(tmp_path) -> None:
+    path = str(tmp_path / "settings.ini")
+    first = make_settings(path)
+    first.set_onion_skin_settings(
+        OnionSkinSettings(
+            previous_count=2,
+            next_count=3,
+            opacity_percent=48,
+            falloff_percent=72,
+            previous_color=QColor("#aa2211"),
+            next_color=QColor("#1155dd"),
+            enabled=True,
+        )
+    )
+    document = Document.create(8, 8)
+    second = make_settings(path).onion_skin_settings()
+    assert second.previous_count == 2
+    assert second.next_count == 3
+    assert second.opacity_percent == 48
+    assert second.falloff_percent == 72
+    assert second.previous_color.name() == "#aa2211"
+    assert second.next_color.name() == "#1155dd"
+    assert second.enabled
+    assert not document.modified
+
+
+def test_sprite_slice_reference_preview_settings_round_trip(tmp_path) -> None:
+    path = str(tmp_path / "settings.ini")
+    first = make_settings(path)
+    first.set_sprite_slice_preview_enabled(False)
+    first.set_sprite_slice_preview_opacity(67)
+    first.set_sprite_pivot_marker_radius(9)
+
+    second = make_settings(path)
+    assert not second.sprite_slice_preview_enabled()
+    assert second.sprite_slice_preview_opacity() == 67
+    assert second.sprite_pivot_marker_radius() == 9
 
 
 def test_invalid_settings_fall_back_to_defaults(tmp_path) -> None:

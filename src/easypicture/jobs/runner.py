@@ -125,6 +125,18 @@ class JobRunner(QObject):
         self._pool.start(worker)
         return handle
 
+    def wait_for_idle(self) -> None:
+        """Wait until the serial worker has fully returned from its runnable.
+
+        A worker emits ``finished`` immediately before ``run()`` unwinds.  A
+        nested UI event loop may therefore resume while Qt still regards the
+        runnable as active.  Waiting at synchronous foreground boundaries
+        prevents a short-lived controller from destroying its thread pool in
+        that interval on Windows.
+        """
+
+        self._pool.waitForDone()
+
     @Slot(object)
     def _forget_worker(self, outcome: JobOutcome) -> None:
         self._workers.pop(outcome.job_id, None)

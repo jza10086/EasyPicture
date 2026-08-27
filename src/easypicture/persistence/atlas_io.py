@@ -1,4 +1,4 @@
-"""Authoritative grouped sprite-atlas PNG and JSON export."""
+"""Authoritative animation-row sprite-atlas PNG and JSON export."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from easypicture.pixels import Rect
 class SpriteAtlasExportRequest:
     snapshot: DocumentSnapshot
     path: Path
-    included_group_ids: tuple[UUID, ...] | None = None
+    included_animation_ids: tuple[UUID, ...] | None = None
     include_ungrouped: bool = True
     horizontal_spacing: int = 0
     vertical_spacing: int = 0
@@ -59,17 +59,19 @@ def export_sprite_atlas(
 
     frame_by_id = {frame.id: frame for frame in workspace.frames}
     selected = (
-        {group.id for group in workspace.groups}
-        if request.included_group_ids is None
-        else set(request.included_group_ids)
+        {animation.id for animation in workspace.animations}
+        if request.included_animation_ids is None
+        else set(request.included_animation_ids)
     )
-    unknown = selected.difference(group.id for group in workspace.groups)
+    unknown = selected.difference(
+        animation.id for animation in workspace.animations
+    )
     if unknown:
-        raise ValueError("atlas selection contains an unknown group")
+        raise ValueError("atlas selection contains an unknown animation")
     rows: list[tuple[UUID | None, str, tuple[UUID, ...]]] = [
-        (group.id, group.name, group.frame_ids)
-        for group in workspace.groups
-        if group.id in selected and group.frame_ids
+        (animation.id, animation.name, animation.frame_ids)
+        for animation in workspace.animations
+        if animation.id in selected and animation.frame_ids
     ]
     if request.include_ungrouped and workspace.ungrouped_frame_ids:
         rows.append((None, "未分组", workspace.ungrouped_frame_ids))
@@ -89,7 +91,7 @@ def export_sprite_atlas(
     records: list[dict[str, object]] = []
     total = sum(len(frame_ids) for _, _, frame_ids in rows)
     completed = 0
-    for row_index, (group_id, group_name, frame_ids) in enumerate(rows):
+    for row_index, (animation_id, animation_name, frame_ids) in enumerate(rows):
         y = request.margin + row_index * (cell.height + request.vertical_spacing)
         for column_index, frame_id in enumerate(frame_ids):
             token.raise_if_cancelled()
@@ -124,9 +126,12 @@ def export_sprite_atlas(
                     "name": frame.name,
                     "rect": [x, y, cell.width, cell.height],
                     "pivot": [frame.pivot.x, frame.pivot.y],
-                    "group_id": str(group_id) if group_id is not None else None,
-                    "group": group_name,
+                    "animation_id": (
+                        str(animation_id) if animation_id is not None else None
+                    ),
+                    "animation": animation_name,
                     "content_mode": frame.content_mode.value,
+                    "duration_ticks": frame.duration_ticks,
                 }
             )
             completed += 1
@@ -149,17 +154,26 @@ def export_sprite_atlas(
         )
         manifest = {
             "format": "easypicture-sprite-atlas",
-            "schema_version": 1,
+            "schema_version": 2,
             "image": png_path.name,
             "size": [width, height],
             "cell_size": [cell.width, cell.height],
-            "groups": [
+            "animations": [
                 {
-                    "id": str(group_id) if group_id is not None else None,
-                    "name": name,
-                    "frame_ids": [str(frame_id) for frame_id in frame_ids],
+                    "id": str(animation.id),
+                    "name": animation.name,
+                    "fps": animation.fps,
+                    "playback_mode": animation.playback_mode.value,
+                    "frames": [
+                        {
+                            "frame_id": str(frame_id),
+                            "duration_ticks": frame_by_id[frame_id].duration_ticks,
+                        }
+                        for frame_id in animation.frame_ids
+                    ],
                 }
-                for group_id, name, frame_ids in rows
+                for animation in workspace.animations
+                if animation.id in selected and animation.frame_ids
             ],
             "frames": records,
         }
@@ -175,7 +189,7 @@ def export_sprite_atlas(
             if reopened.format != "PNG" or reopened.size != (width, height):
                 raise ValueError("atlas PNG validation failed")
         decoded = json.loads(json_temp.read_text(encoding="utf-8"))
-        if decoded.get("schema_version") != 1 or len(decoded.get("frames", [])) != total:
+        if decoded.get("schema_version") != 2 or len(decoded.get("frames", [])) != total:
             raise ValueError("atlas JSON validation failed")
         os.replace(png_temp, png_path)
         try:

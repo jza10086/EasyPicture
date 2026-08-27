@@ -60,7 +60,10 @@ from easypicture.persistence.sprite_io import (
     SpriteFrameExportReceipt,
     SpriteFrameExportRequest,
     export_sprite_frame_png,
+    render_animation_preview,
+    render_frame_reference_preview,
     render_snapshot_region,
+    render_sprite_frame_pixels,
 )
 from easypicture.persistence.svg_io import SvgImportResult, SvgImportWarning, import_svg
 
@@ -110,6 +113,9 @@ __all__ = [
     "import_svg",
     "load_project",
     "render_snapshot_region",
+    "render_animation_preview",
+    "render_frame_reference_preview",
+    "render_sprite_frame_pixels",
     "SpriteAtlasExportReceipt",
     "SpriteAtlasExportRequest",
     "export_sprite_atlas",

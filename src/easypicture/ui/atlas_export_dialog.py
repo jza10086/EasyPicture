@@ -1,4 +1,4 @@
-"""Grouped sprite-atlas export options and authoritative preview."""
+"""Animation-row sprite-atlas export options and authoritative preview."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 @dataclass(frozen=True, slots=True)
 class AtlasExportSpec:
     path: Path
-    included_group_ids: tuple[UUID, ...]
+    included_animation_ids: tuple[UUID, ...]
     include_ungrouped: bool
     horizontal_spacing: int
     vertical_spacing: int
@@ -66,20 +66,20 @@ class AtlasExportDialog(QDialog):
         path_layout.addWidget(self.path_edit, 1)
         path_layout.addWidget(browse)
 
-        self.group_checks: dict[UUID, QCheckBox] = {}
-        group_box = QWidget(self)
-        group_layout = QVBoxLayout(group_box)
-        group_layout.setContentsMargins(0, 0, 0, 0)
-        for group in workspace.groups:
-            checkbox = QCheckBox(group.name, group_box)
-            checkbox.setChecked(bool(group.frame_ids))
+        self.animation_checks: dict[UUID, QCheckBox] = {}
+        animation_box = QWidget(self)
+        animation_layout = QVBoxLayout(animation_box)
+        animation_layout.setContentsMargins(0, 0, 0, 0)
+        for animation in workspace.animations:
+            checkbox = QCheckBox(animation.name, animation_box)
+            checkbox.setChecked(bool(animation.frame_ids))
             checkbox.toggled.connect(self._refresh_preview)
-            self.group_checks[group.id] = checkbox
-            group_layout.addWidget(checkbox)
-        self.ungrouped_check = QCheckBox("未分组", group_box)
+            self.animation_checks[animation.id] = checkbox
+            animation_layout.addWidget(checkbox)
+        self.ungrouped_check = QCheckBox("未分组", animation_box)
         self.ungrouped_check.setChecked(bool(workspace.ungrouped_frame_ids))
         self.ungrouped_check.toggled.connect(self._refresh_preview)
-        group_layout.addWidget(self.ungrouped_check)
+        animation_layout.addWidget(self.ungrouped_check)
 
         self.horizontal_spacing = self._number(0, 1024)
         self.vertical_spacing = self._number(0, 1024)
@@ -88,7 +88,7 @@ class AtlasExportDialog(QDialog):
             control.valueChanged.connect(self._refresh_preview)
         form = QFormLayout()
         form.addRow("输出路径", path_row)
-        form.addRow("包含分组", group_box)
+        form.addRow("包含动画", animation_box)
         form.addRow("水平间距", self.horizontal_spacing)
         form.addRow("垂直间距", self.vertical_spacing)
         form.addRow("外边距", self.margin)
@@ -123,9 +123,9 @@ class AtlasExportDialog(QDialog):
     def spec(self) -> AtlasExportSpec:
         return AtlasExportSpec(
             path=Path(self.path_edit.text()).with_suffix(".png"),
-            included_group_ids=tuple(
-                group_id
-                for group_id, checkbox in self.group_checks.items()
+            included_animation_ids=tuple(
+                animation_id
+                for animation_id, checkbox in self.animation_checks.items()
                 if checkbox.isChecked()
             ),
             include_ungrouped=self.ungrouped_check.isChecked(),
@@ -146,9 +146,10 @@ class AtlasExportDialog(QDialog):
 
     def _selected_rows(self) -> list[tuple[UUID | None, tuple[UUID, ...]]]:
         rows: list[tuple[UUID | None, tuple[UUID, ...]]] = [
-            (group.id, group.frame_ids)
-            for group in self._workspace.groups
-            if self.group_checks[group.id].isChecked() and group.frame_ids
+            (animation.id, animation.frame_ids)
+            for animation in self._workspace.animations
+            if self.animation_checks[animation.id].isChecked()
+            and animation.frame_ids
         ]
         if self.ungrouped_check.isChecked() and self._workspace.ungrouped_frame_ids:
             rows.append((None, self._workspace.ungrouped_frame_ids))
@@ -158,7 +159,7 @@ class AtlasExportDialog(QDialog):
         rows = self._selected_rows()
         if not rows:
             self.preview.clear()
-            self.preview.setText("请选择至少一个非空分组")
+            self.preview.setText("请选择至少一个非空动画")
             self.size_label.setText("0 × 0 px")
             return
         cell = self._workspace.cell_size

@@ -163,6 +163,37 @@ def test_middle_mouse_pan_moves_scrollbars_without_editing(qtbot) -> None:
     assert document.active_layer.pixels.revision == 0
 
 
+def test_repeated_preview_document_replacement_does_not_drift(qtbot) -> None:
+    view = CanvasView()
+    qtbot.addWidget(view)
+    view.resize(801, 601)
+    view.show()
+    qtbot.waitExposed(view)
+
+    view.set_document(Document.create(32, 32))
+    view.set_zoom(8.0)
+    view.centerOn(12.25, 17.75)
+    expected_zoom = view.zoom
+    expected_scroll = (
+        view.horizontalScrollBar().value(),
+        view.verticalScrollBar().value(),
+    )
+    expected_center = view.mapToScene(view.viewport().rect().center())
+
+    for _ in range(100):
+        view.set_document(Document.create(32, 32), preserve_view=True)
+        qtbot.wait(1)
+
+    actual_center = view.mapToScene(view.viewport().rect().center())
+    assert view.zoom == expected_zoom
+    assert (
+        view.horizontalScrollBar().value(),
+        view.verticalScrollBar().value(),
+    ) == expected_scroll
+    assert actual_center.x() == expected_center.x()
+    assert actual_center.y() == expected_center.y()
+
+
 def test_document_to_layer_subtracts_nonzero_origin() -> None:
     layer = RasterLayer.create_blank(
         "偏移层",

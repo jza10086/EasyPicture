@@ -5,7 +5,15 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QKeyEvent, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QImage,
+    QKeyEvent,
+    QMouseEvent,
+    QPainter,
+    QPen,
+)
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from easypicture.pixels import Rect
@@ -22,6 +30,8 @@ class SpriteSliceOverlayItem(QGraphicsItem):
         self.region = region
         self._zoom_provider = zoom_provider
         self.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+        self._reference_image: QImage | None = None
+        self._reference_opacity = 0.5
 
     def boundingRect(self) -> QRectF:
         zoom = max(0.0625, self._zoom_provider())
@@ -54,6 +64,15 @@ class SpriteSliceOverlayItem(QGraphicsItem):
         self.region = region
         self.update()
 
+    def set_reference_preview(self, image: QImage | None, opacity: float) -> None:
+        self._reference_image = None if image is None else image.copy()
+        self._reference_opacity = min(max(float(opacity), 0.0), 1.0)
+        self.update()
+
+    def set_reference_opacity(self, opacity: float) -> None:
+        self._reference_opacity = min(max(float(opacity), 0.0), 1.0)
+        self.update()
+
     def paint(
         self,
         painter: QPainter,
@@ -67,6 +86,11 @@ class SpriteSliceOverlayItem(QGraphicsItem):
         pen.setCosmetic(True)
         pen.setWidth(2)
         painter.save()
+        if self._reference_image is not None:
+            painter.save()
+            painter.setOpacity(self._reference_opacity)
+            painter.drawImage(self.region_rect(), self._reference_image)
+            painter.restore()
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(self.region_rect())
@@ -141,6 +165,14 @@ class SpriteSliceTool:
         self._region = self._clamp(region.x, region.y)
         self._refresh_overlay()
         self._publish()
+
+    def set_reference_preview(self, image: QImage | None, opacity: float) -> None:
+        if self._overlay is not None:
+            self._overlay.set_reference_preview(image, opacity)
+
+    def set_reference_opacity(self, opacity: float) -> None:
+        if self._overlay is not None:
+            self._overlay.set_reference_opacity(opacity)
 
     def reset_for_cell_size(self) -> None:
         if self._context is None:

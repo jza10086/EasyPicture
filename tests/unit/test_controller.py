@@ -212,7 +212,7 @@ def _progress(_completed: int, _total: int, _message: str) -> None:
     return None
 
 
-def test_import_image_creates_clean_source_named_document(qtbot, tmp_path: Path) -> None:
+def test_import_image_creates_saved_limg_project(qtbot, tmp_path: Path) -> None:
     parent = QWidget()
     qtbot.addWidget(parent)
     source = tmp_path / "photo.png"
@@ -221,6 +221,7 @@ def test_import_image_creates_clean_source_named_document(qtbot, tmp_path: Path)
     Image.fromarray(pixels, "RGBA").save(source)
     dialogs = FakeDialogService()
     dialogs.image_import_path = source
+    dialogs.project_save_path = tmp_path / "photo.limg"
     controller = ApplicationController(
         make_settings(str(tmp_path / "settings.ini")),
         dialogs,
@@ -230,10 +231,36 @@ def test_import_image_creates_clean_source_named_document(qtbot, tmp_path: Path)
     assert controller.request_import_document(parent)
 
     assert controller.document is not None
-    assert controller.document.display_name == "photo.png"
-    assert controller.document.project_path is None
+    assert controller.document.display_name == "photo.limg"
+    assert controller.document.project_path == dialogs.project_save_path
     assert not controller.document.modified
-    assert controller.recent_files == (source,)
+    assert dialogs.project_save_path.is_file()
+    assert controller.recent_files == (dialogs.project_save_path,)
+
+
+def test_import_cancelled_at_project_path_keeps_current_document(
+    qtbot,
+    tmp_path: Path,
+) -> None:
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    source = tmp_path / "photo.png"
+    Image.new("RGBA", (2, 2), (1, 2, 3, 255)).save(source)
+    dialogs = FakeDialogService()
+    dialogs.next_document = NewDocumentSpec(3, 3)
+    controller = ApplicationController(
+        make_settings(str(tmp_path / "settings.ini")),
+        dialogs,
+        recovery_dir=tmp_path / "recovery",
+    )
+    assert controller.request_new_document(parent)
+    original = controller.document
+    dialogs.image_import_path = source
+    dialogs.project_save_path = None
+
+    assert not controller.request_import_document(parent)
+    assert controller.document is original
+    assert tuple(tmp_path.glob("*.limg")) == ()
 
 
 def test_open_rejects_images_without_replacing_document(qtbot, tmp_path: Path) -> None:

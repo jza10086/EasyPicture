@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 from uuid import UUID
 
@@ -14,6 +15,7 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QFontDatabase,
+    QImage,
     QKeyEvent,
     QKeySequence,
     QShortcut,
@@ -40,17 +42,20 @@ from PySide6.QtWidgets import (
 from easypicture import __version__
 from easypicture.domain import (
     AffineTransform,
+    AnimationDeleteMode,
     Document,
     DocumentEvent,
     DocumentKind,
-    GroupDeleteMode,
     GroupListChanged,
     GroupMembersChanged,
     PixelPoint,
     Point,
     Size,
+    SpriteAnimation,
     SpriteFrameContentChanged,
     SpriteFrameContentMode,
+    SpritePlaybackCursor,
+    SpritePlaybackMode,
     SpriteWorkspaceChanged,
     SvgElementObject,
     TextObject,
@@ -99,8 +104,12 @@ from easypicture.imaging import (
     select_all_candidate,
     selection_bounds,
 )
-from easypicture.jobs import JobHandle, JobOperation, JobOutcome, JobStatus
-from easypicture.persistence import DocumentSnapshot
+from easypicture.jobs import CancellationToken, JobHandle, JobOperation, JobOutcome, JobStatus
+from easypicture.persistence import (
+    DocumentSnapshot,
+    render_animation_preview,
+    render_frame_reference_preview,
+)
 from easypicture.pixels import Rect
 from easypicture.render import RenderBackendKind
 from easypicture.runtime import RuntimePaths
@@ -136,6 +145,7 @@ from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings
 from easypicture.ui.shape_properties import ShapePropertiesPanel
+from easypicture.ui.sprite_animation_toolbar import SpriteAnimationToolbar
 from easypicture.ui.sprite_frame_panel import SpriteFramePanel
 from easypicture.ui.sprite_workspace_panel import SpriteWorkspacePanel
 from easypicture.ui.svg_properties import SvgPropertiesPanel
@@ -246,6 +256,15 @@ class MainWindow(QMainWindow):
         self._geometry_progress: QProgressDialog | None = None
         self._adjustment_previous_tool: Tool | None = None
         self._sprite_editing_frame_id: UUID | None = None
+        self._slice_preview_reference_id: UUID | None = None
+        self._slice_preview_project_id: UUID | None = None
+        self._slice_preview_enabled = self.settings.sprite_slice_preview_enabled()
+        self._slice_preview_opacity = self.settings.sprite_slice_preview_opacity()
+        self._sprite_pivot_marker_radius = (
+            self.settings.sprite_pivot_marker_radius()
+        )
+        self._slice_preview_picking = False
+        self._slice_preview_manual_reference = False
         self._geometry_clear_sprite_frames = False
 
         self.canvas_view = CanvasView(
@@ -284,12 +303,19 @@ class MainWindow(QMainWindow):
         self.surface_tabs.setTabsClosable(True)
         self.surface_tabs.currentChanged.connect(self._surface_tab_changed)
         self.surface_tabs.tabCloseRequested.connect(self._surface_tab_close_requested)
+        self.animation_toolbar = SpriteAnimationToolbar(self.settings, self)
+        self._animation_cursor: SpritePlaybackCursor | None = None
+        self._animation_id: UUID | None = None
+        self._animation_timer = QTimer(self)
+        self._animation_timer.setInterval(8)
+        self._animation_timer.timeout.connect(self._animation_tick)
         central_container = QWidget(self)
         central_layout = QVBoxLayout(central_container)
         central_layout.setContentsMargins(0, 0, 0, 0)
         central_layout.setSpacing(0)
         central_layout.addWidget(project_tab_row)
         central_layout.addWidget(self.surface_tabs)
+        central_layout.addWidget(self.animation_toolbar)
         central_layout.addWidget(self.central_stack, 1)
         self.setCentralWidget(central_container)
 
@@ -681,6 +707,9 @@ class MainWindow(QMainWindow):
         self.svg_properties = SvgPropertiesPanel(self.controller.commands, self)
         self.properties_stack.addWidget(self.svg_properties)
         self.sprite_properties = SpriteWorkspacePanel(self)
+        self.sprite_properties.set_pivot_marker_radius(
+            self._sprite_pivot_marker_radius
+        )
         self.properties_stack.addWidget(self.sprite_properties)
         self.properties_stack.addWidget(self.color_adjustment_panel)
         self.color_adjustment_controller = ColorAdjustmentController(
@@ -752,7 +781,29 @@ class MainWindow(QMainWindow):
         self.sprite_properties.cell_size_requested.connect(self._set_sprite_cell_size)
         self.sprite_properties.region_requested.connect(self._sprite_region_requested)
         self.sprite_properties.frame_requested.connect(self._update_sprite_frame_details)
+        self.sprite_properties.frame_duration_requested.connect(
+            self._set_selected_sprite_frame_duration
+        )
+        self.sprite_properties.slice_preview_toggled.connect(
+            self._set_slice_preview_enabled
+        )
+        self.sprite_properties.slice_preview_opacity_changed.connect(
+            self._set_slice_preview_opacity
+        )
+        self.sprite_properties.slice_preview_opacity_committed.connect(
+            self.settings.set_sprite_slice_preview_opacity
+        )
+        self.sprite_properties.slice_preview_pick_requested.connect(
+            self._start_slice_preview_pick
+        )
+        self.sprite_properties.pivot_marker_radius_changed.connect(
+            self._set_sprite_pivot_marker_radius
+        )
+        self.sprite_properties.pivot_marker_radius_committed.connect(
+            self.settings.set_sprite_pivot_marker_radius
+        )
         self.sprite_frame_panel.frame_selected.connect(self._select_sprite_frame)
+        self.sprite_frame_panel.frame_clicked.connect(self._sprite_frame_clicked)
         self.sprite_frame_panel.new_requested.connect(self._new_sprite_frame)
         self.sprite_frame_panel.delete_requested.connect(self._delete_sprite_frame)
         self.sprite_frame_panel.rename_requested.connect(self._rename_sprite_frame)
@@ -772,8 +823,39 @@ class MainWindow(QMainWindow):
         self.sprite_frame_panel.frame_group_move_requested.connect(
             self._move_sprite_frame_to_group
         )
+        self.sprite_frame_panel.animation_open_requested.connect(
+            self._open_sprite_animation_surface
+        )
+        self.sprite_frame_panel.animation_fps_requested.connect(
+            self._set_sprite_animation_fps
+        )
+        self.sprite_frame_panel.animation_mode_requested.connect(
+            self._set_sprite_animation_mode
+        )
         self.sprite_frame_panel.view_size_changed.connect(
             lambda _size: self._resize_sprite_frame_dock()
+        )
+        self.animation_toolbar.first_requested.connect(
+            lambda: self._seek_animation("first")
+        )
+        self.animation_toolbar.previous_requested.connect(
+            lambda: self._seek_animation("previous")
+        )
+        self.animation_toolbar.play_toggled.connect(self._toggle_animation_playback)
+        self.animation_toolbar.next_requested.connect(
+            lambda: self._seek_animation("next")
+        )
+        self.animation_toolbar.last_requested.connect(
+            lambda: self._seek_animation("last")
+        )
+        self.animation_toolbar.fps_requested.connect(
+            self._set_active_animation_fps
+        )
+        self.animation_toolbar.mode_requested.connect(
+            self._set_active_animation_mode
+        )
+        self.animation_toolbar.onion_settings_changed.connect(
+            lambda _settings: self._render_active_animation_frame()
         )
 
     def _create_status_bar(self) -> None:
@@ -930,7 +1012,13 @@ class MainWindow(QMainWindow):
         if hasattr(self.controller, "sessions_changed"):
             self.controller.sessions_changed.connect(self._refresh_workspace_tabs)
             self.controller.active_session_changed.connect(self._refresh_workspace_tabs)
+            self.controller.active_session_changed.connect(
+                lambda _index: QTimer.singleShot(0, self._configure_animation_surface)
+            )
             self.controller.surfaces_changed.connect(self._refresh_surface_tabs)
+            self.controller.animation_surface_changed.connect(
+                self._on_animation_surface_changed
+            )
             self.workspace_tabs.tabMoved.connect(self.controller.move_session)
         self.canvas_view.render_backend_fallback.connect(self._on_render_backend_fallback)
         self.canvas_view.render_coordinator.diagnostics_changed.connect(self._on_render_diagnostics)
@@ -989,7 +1077,7 @@ class MainWindow(QMainWindow):
             for surface in session.open_surfaces:
                 if surface.kind == "source":
                     title = "源图"
-                else:
+                elif surface.kind == "frame":
                     assert surface.frame_id is not None
                     try:
                         frame = session.document.sprite_workspace.frame_by_id(surface.frame_id)
@@ -1002,6 +1090,15 @@ class MainWindow(QMainWindow):
                             title = f"{frame.name}{'*' if embedded.modified else ''}"
                     except ValueError:
                         continue
+                else:
+                    assert surface.animation_id is not None
+                    try:
+                        animation = session.document.sprite_workspace.animation_by_id(
+                            surface.animation_id
+                        )
+                    except ValueError:
+                        continue
+                    title = f"动画：{animation.name}"
                 index = self.surface_tabs.addTab(title)
                 self.surface_tabs.setTabData(index, surface)
                 if surface == session.active_surface:
@@ -1029,15 +1126,16 @@ class MainWindow(QMainWindow):
             self._capture_canvas_state()
             self.controller.set_active_surface(surface)
             self._restore_canvas_state()
+            self._configure_animation_surface()
 
     def _surface_tab_close_requested(self, index: int) -> None:
         surface = self.surface_tabs.tabData(index)
-        if (
-            isinstance(surface, EditingSurfaceRef)
-            and surface.frame_id is not None
-            and hasattr(self.controller, "close_frame_surface")
-        ):
+        if not isinstance(surface, EditingSurfaceRef):
+            return
+        if surface.kind == "frame" and surface.frame_id is not None:
             self.controller.close_frame_surface(surface.frame_id)
+        elif surface.kind == "animation" and surface.animation_id is not None:
+            self.controller.close_animation_surface(surface.animation_id)
 
     def _capture_canvas_state(self) -> None:
         session = getattr(self.controller, "active_session", None)
@@ -1420,6 +1518,14 @@ class MainWindow(QMainWindow):
 
     def _on_document_changed(self, document: Document | None) -> None:
         project_document = self._project_document()
+        if (
+            self._slice_preview_reference_id is not None
+            and (
+                project_document is None
+                or project_document.id != self._slice_preview_project_id
+            )
+        ):
+            self._clear_slice_preview_reference()
         self._selected_vector_object = False
         self._sprite_editing_frame_id = None
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
@@ -1439,12 +1545,25 @@ class MainWindow(QMainWindow):
         self.tool_controller.reset_active_tool()
         self.layer_panel.set_document(document)
         self.sprite_properties.set_document(project_document)
+        self.sprite_properties.set_pivot_marker_radius(
+            self._resolved_sprite_pivot_marker_radius()
+        )
+        self.sprite_properties.set_slice_preview_reference(
+            None,
+            enabled=self._slice_preview_enabled,
+            opacity=self._slice_preview_opacity,
+        )
         self.sprite_properties.set_region(None)
         self.sprite_properties.set_frame(None)
         self.sprite_frame_panel.set_document(project_document)
         active_session = getattr(self.controller, "active_session", None)
-        if active_session is not None and active_session.active_frame_group_id is not None:
-            self.sprite_frame_panel.set_active_group(active_session.active_frame_group_id)
+        if (
+            active_session is not None
+            and active_session.active_sprite_animation_id is not None
+        ):
+            self.sprite_frame_panel.set_active_group(
+                active_session.active_sprite_animation_id
+            )
         self._group_expansion_state = {}
         self._pending_group_expansion = None
         self._restore_group_expansion()
@@ -1460,7 +1579,7 @@ class MainWindow(QMainWindow):
         self.export_sprite_atlas_action.setEnabled(
             bool(project_document and project_document.sprite_workspace.frames)
         )
-        linked_read_only = self._active_surface_is_linked()
+        linked_read_only = self._active_surface_is_read_only()
         self.append_action.setEnabled(
             has_document and not linked_read_only and not self._editing_busy
         )
@@ -1509,6 +1628,8 @@ class MainWindow(QMainWindow):
         self._update_window_title()
 
     def _activate_tool(self, tool_name: str) -> None:
+        if tool_name != "sprite_slice" and self._slice_preview_reference_id is not None:
+            self._clear_slice_preview_reference()
         if hasattr(self, "shortcut_hint_label"):
             self._update_shortcut_hint(tool_name)
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
@@ -1575,9 +1696,21 @@ class MainWindow(QMainWindow):
             return
         frame_id = self._sprite_editing_frame_id
         if frame_id is None:
+            previous_ids = {frame.id for frame in document.sprite_workspace.frames}
             if not self.controller.commands.create_sprite_frame(region):
                 self._show_operation_status("无法创建精灵帧")
                 return
+            if not self._slice_preview_manual_reference:
+                created = next(
+                    (
+                        frame
+                        for frame in reversed(document.sprite_workspace.frames)
+                        if frame.id not in previous_ids
+                    ),
+                    None,
+                )
+                if created is not None:
+                    self._set_slice_preview_reference(created.id, manual=False)
             self._sprite_editing_frame_id = None
             self.sprite_properties.set_frame(None)
             self._show_operation_status("已添加精灵帧")
@@ -1585,11 +1718,15 @@ class MainWindow(QMainWindow):
         self.controller.commands.update_sprite_frame(frame_id, region=region)
 
     def _cancel_sprite_slice(self) -> None:
+        self._clear_slice_preview_reference()
         self.tool_actions["brush"].setChecked(True)
         self._activate_tool("brush")
 
     def _select_sprite_frame(self, frame_id: object) -> None:
         if frame_id is not None and not isinstance(frame_id, UUID):
+            return
+        if isinstance(frame_id, UUID) and self._slice_preview_picking:
+            self._set_slice_preview_reference(frame_id, manual=True)
             return
         self._sprite_editing_frame_id = frame_id
         document = self.controller.document
@@ -1610,13 +1747,140 @@ class MainWindow(QMainWindow):
         if isinstance(tool, SpriteSliceTool):
             tool.set_region(frame.region)
 
+    def _sprite_frame_clicked(self, frame_id: object) -> None:
+        if isinstance(frame_id, UUID) and self._slice_preview_picking:
+            self._set_slice_preview_reference(frame_id, manual=True)
+
     def _new_sprite_frame(self) -> None:
+        project = self._project_document()
+        if (
+            project is not None
+            and project.sprite_workspace.frames
+            and not self._slice_preview_manual_reference
+        ):
+            self._set_slice_preview_reference(
+                project.sprite_workspace.frames[-1].id,
+                manual=False,
+            )
         self._sprite_editing_frame_id = None
         self.sprite_frame_panel.select_frame(None)
         self.sprite_properties.set_frame(None)
         if self.tool_controller.active_tool is not self._tools["sprite_slice"]:
             self.tool_actions["sprite_slice"].setChecked(True)
             self._activate_tool("sprite_slice")
+        self._refresh_slice_preview_reference()
+
+    def _set_slice_preview_enabled(self, enabled: bool) -> None:
+        self._slice_preview_enabled = enabled
+        self.settings.set_sprite_slice_preview_enabled(enabled)
+        self._refresh_slice_preview_reference()
+
+    def _set_slice_preview_opacity(self, opacity: int) -> None:
+        self._slice_preview_opacity = min(max(int(opacity), 0), 100)
+        tool = self._tools.get("sprite_slice")
+        if isinstance(tool, SpriteSliceTool):
+            tool.set_reference_opacity(self._slice_preview_opacity / 100.0)
+
+    def _resolved_sprite_pivot_marker_radius(self) -> int:
+        project = self._project_document()
+        if project is None:
+            return max(1, self._sprite_pivot_marker_radius)
+        size = project.sprite_workspace.cell_size
+        return min(
+            max(1, self._sprite_pivot_marker_radius),
+            max(1, min(size.width, size.height)),
+        )
+
+    def _set_sprite_pivot_marker_radius(self, radius: int) -> None:
+        self._sprite_pivot_marker_radius = max(1, int(radius))
+        resolved = self._resolved_sprite_pivot_marker_radius()
+        self.sprite_properties.set_pivot_marker_radius(resolved)
+        if self._slice_preview_reference_id is not None:
+            self._refresh_slice_preview_reference()
+        if self._active_sprite_animation() is not None:
+            self._render_active_animation_frame()
+
+    def _start_slice_preview_pick(self) -> None:
+        self._slice_preview_picking = not self._slice_preview_picking
+        self._refresh_slice_preview_reference()
+        if self._slice_preview_picking:
+            self._show_operation_status("请在当前动画中点击一个精灵帧作为参考")
+
+    def _set_slice_preview_reference(self, frame_id: UUID, *, manual: bool) -> None:
+        project = self._project_document()
+        if project is None:
+            return
+        try:
+            project.sprite_workspace.frame_by_id(frame_id)
+        except ValueError:
+            return
+        self._slice_preview_reference_id = frame_id
+        self._slice_preview_project_id = project.id
+        self._slice_preview_manual_reference = manual
+        self._slice_preview_picking = False
+        if manual and not self._slice_preview_enabled:
+            self._slice_preview_enabled = True
+            self.settings.set_sprite_slice_preview_enabled(True)
+        self._refresh_slice_preview_reference()
+
+    def _clear_slice_preview_reference(self) -> None:
+        self._slice_preview_reference_id = None
+        self._slice_preview_project_id = None
+        self._slice_preview_picking = False
+        self._slice_preview_manual_reference = False
+        self.sprite_properties.set_slice_preview_reference(
+            None,
+            enabled=self._slice_preview_enabled,
+            opacity=self._slice_preview_opacity,
+        )
+        tool = self._tools.get("sprite_slice")
+        if isinstance(tool, SpriteSliceTool):
+            tool.set_reference_preview(None, self._slice_preview_opacity / 100.0)
+
+    def _refresh_slice_preview_reference(self) -> None:
+        project = self._project_document()
+        frame_id = self._slice_preview_reference_id
+        tool = self._tools.get("sprite_slice")
+        if not isinstance(tool, SpriteSliceTool):
+            return
+        if project is None or frame_id is None:
+            tool.set_reference_preview(None, self._slice_preview_opacity / 100.0)
+            self.sprite_properties.set_slice_preview_reference(
+                None,
+                enabled=self._slice_preview_enabled,
+                opacity=self._slice_preview_opacity,
+                picking=self._slice_preview_picking,
+            )
+            return
+        try:
+            frame = project.sprite_workspace.frame_by_id(frame_id)
+        except ValueError:
+            self._clear_slice_preview_reference()
+            return
+        self.sprite_properties.set_slice_preview_reference(
+            frame.name,
+            enabled=self._slice_preview_enabled,
+            opacity=self._slice_preview_opacity,
+            picking=self._slice_preview_picking,
+        )
+        if not self._slice_preview_enabled:
+            tool.set_reference_preview(None, self._slice_preview_opacity / 100.0)
+            return
+        pixels = render_frame_reference_preview(
+            DocumentSnapshot.capture(project),
+            frame.id,
+            CancellationToken(),
+            lambda _done, _total, _label: None,
+            pivot_radius=self._resolved_sprite_pivot_marker_radius(),
+        )
+        image = QImage(
+            pixels.data,
+            pixels.shape[1],
+            pixels.shape[0],
+            pixels.strides[0],
+            QImage.Format.Format_RGBA8888,
+        ).copy()
+        tool.set_reference_preview(image, self._slice_preview_opacity / 100.0)
 
     def _delete_sprite_frame(self, frame_id: object) -> None:
         frame_ids = (
@@ -1628,6 +1892,16 @@ class MainWindow(QMainWindow):
         if not frame_ids:
             return
         if self.controller.commands.delete_sprite_frames(frame_ids):
+            if self._slice_preview_reference_id in frame_ids:
+                project = self._project_document()
+                fallback = (
+                    project.sprite_workspace.frames[-1].id
+                    if project is not None and project.sprite_workspace.frames
+                    else None
+                )
+                self._clear_slice_preview_reference()
+                if fallback is not None:
+                    self._set_slice_preview_reference(fallback, manual=False)
             self._sprite_editing_frame_id = None
             self.sprite_properties.set_frame(None)
 
@@ -1639,7 +1913,7 @@ class MainWindow(QMainWindow):
         if isinstance(frame_id, UUID):
             group_id = self.sprite_frame_panel.active_group_id
             if isinstance(group_id, UUID) or group_id is None:
-                self.controller.commands.move_sprite_frame_to_group(
+                self.controller.commands.move_sprite_frame_to_animation(
                     frame_id,
                     group_id,
                     target_index,
@@ -1658,6 +1932,217 @@ class MainWindow(QMainWindow):
         except ValueError:
             return
         self.controller.open_frame_surface(frame_id)
+
+    def _open_sprite_animation_surface(self, animation_id: object) -> None:
+        if not isinstance(animation_id, UUID):
+            return
+        if self.controller.open_animation_surface(animation_id):
+            self._configure_animation_surface()
+
+    def _active_sprite_animation(self) -> SpriteAnimation | None:
+        session = getattr(self.controller, "active_session", None)
+        if (
+            session is None
+            or session.active_surface.kind != "animation"
+            or session.active_surface.animation_id is None
+        ):
+            return None
+        try:
+            animation = session.document.sprite_workspace.animation_by_id(
+                session.active_surface.animation_id
+            )
+        except ValueError:
+            return None
+        return animation if isinstance(animation, SpriteAnimation) else None
+
+    def _configure_animation_surface(self) -> None:
+        animation = self._active_sprite_animation()
+        session = getattr(self.controller, "active_session", None)
+        if animation is None or session is None:
+            self._animation_timer.stop()
+            self._animation_cursor = None
+            self._animation_id = None
+            self.animation_toolbar.hide()
+            return
+        frames = {
+            frame.id: frame for frame in session.document.sprite_workspace.frames
+        }
+        previous = self._animation_cursor
+        index = session.animation_surface_indices.get(animation.id, 0)
+        direction = 1
+        playing = False
+        if previous is not None and self._animation_id == animation.id:
+            index = min(previous.index, max(len(animation.frame_ids) - 1, 0))
+            direction = previous.direction
+            playing = previous.playing
+        self._animation_cursor = SpritePlaybackCursor(
+            animation,
+            frames,
+            index=index,
+            direction=direction,
+        )
+        self._animation_id = animation.id
+        if playing:
+            self._animation_cursor.play(time.monotonic())
+            self._animation_timer.start()
+        else:
+            self._animation_timer.stop()
+        self.animation_toolbar.show()
+        if hasattr(self, "properties_stack"):
+            self.properties_stack.setCurrentWidget(self.sprite_properties)
+            self.properties_dock.show()
+        self._update_animation_toolbar()
+        self._render_active_animation_frame()
+
+    def _update_animation_toolbar(self) -> None:
+        cursor = self._animation_cursor
+        session = getattr(self.controller, "active_session", None)
+        if cursor is None or session is None:
+            return
+        animation = self._active_sprite_animation()
+        if animation is not None and animation.id == cursor.animation.id:
+            cursor.animation = animation
+        frames = {
+            frame.id: frame for frame in session.document.sprite_workspace.frames
+        }
+        cursor.frames = frames
+        self.animation_toolbar.set_animation(
+            cursor.animation,
+            frames,
+            cursor.index,
+            playing=cursor.playing,
+        )
+
+    def _render_active_animation_frame(self) -> None:
+        cursor = self._animation_cursor
+        session = getattr(self.controller, "active_session", None)
+        if cursor is None or session is None or cursor.frame_id is None:
+            return
+        animation = self._active_sprite_animation()
+        if animation is not None and animation.id == cursor.animation.id:
+            cursor.animation = animation
+            cursor.frames = {
+                frame.id: frame
+                for frame in session.document.sprite_workspace.frames
+            }
+        onion = self.settings.onion_skin_settings()
+        previous_color = self._qcolor_rgba(onion.previous_color)
+        next_color = self._qcolor_rgba(onion.next_color)
+        pixels = render_animation_preview(
+            DocumentSnapshot.capture(session.document),
+            cursor.animation.id,
+            cursor.index,
+            cursor.direction,
+            CancellationToken(),
+            lambda _done, _total, _label: None,
+            previous_count=onion.previous_count if onion.enabled else 0,
+            next_count=onion.next_count if onion.enabled else 0,
+            opacity=onion.opacity_percent / 100.0,
+            falloff=onion.falloff_percent / 100.0,
+            previous_color=previous_color,
+            next_color=next_color,
+            pivot_radius=self._resolved_sprite_pivot_marker_radius(),
+        )
+        self.controller.update_animation_surface(
+            cursor.animation.id,
+            cursor.index,
+            pixels,
+        )
+        self._update_animation_toolbar()
+
+    @staticmethod
+    def _qcolor_rgba(color: QColor) -> tuple[int, int, int, int]:
+        return (color.red(), color.green(), color.blue(), color.alpha())
+
+    def _on_animation_surface_changed(self, document: object) -> None:
+        if not isinstance(document, Document) or self._active_sprite_animation() is None:
+            return
+        self.canvas_view.set_document(document, preserve_view=True)
+        self.document_size_label.setText(f"{document.width} × {document.height} px")
+
+    def _animation_tick(self) -> None:
+        cursor = self._animation_cursor
+        if cursor is None:
+            self._animation_timer.stop()
+            return
+        if cursor.advance(time.monotonic()):
+            self._render_active_animation_frame()
+        elif not cursor.playing:
+            self._animation_timer.stop()
+            self._update_animation_toolbar()
+
+    def _toggle_animation_playback(self, playing: bool) -> None:
+        cursor = self._animation_cursor
+        if cursor is None:
+            return
+        animation = self._active_sprite_animation()
+        session = getattr(self.controller, "active_session", None)
+        if animation is not None and animation.id == cursor.animation.id:
+            cursor.animation = animation
+            if session is not None:
+                cursor.frames = {
+                    frame.id: frame
+                    for frame in session.document.sprite_workspace.frames
+                }
+        if playing:
+            cursor.play(time.monotonic())
+            self._animation_timer.start()
+        else:
+            cursor.pause()
+            self._animation_timer.stop()
+        self._update_animation_toolbar()
+
+    def _seek_animation(self, operation: str) -> None:
+        cursor = self._animation_cursor
+        if cursor is None or not cursor.animation.frame_ids:
+            return
+        now = time.monotonic()
+        if operation == "first":
+            cursor.set_index(0, now)
+        elif operation == "last":
+            cursor.set_index(len(cursor.animation.frame_ids) - 1, now)
+        elif operation == "previous":
+            cursor.step(-1, now)
+        elif operation == "next":
+            cursor.step(1, now)
+        else:
+            return
+        self._render_active_animation_frame()
+
+    def _set_active_animation_fps(self, fps: int) -> None:
+        animation = self._active_sprite_animation()
+        if animation is not None:
+            self._set_sprite_animation_fps(animation.id, fps)
+
+    def _set_active_animation_mode(self, mode: object) -> None:
+        animation = self._active_sprite_animation()
+        if animation is not None:
+            self._set_sprite_animation_mode(animation.id, mode)
+
+    def _set_sprite_animation_fps(self, animation_id: object, fps: int) -> None:
+        if isinstance(animation_id, UUID):
+            self.controller.commands.set_sprite_animation_fps(animation_id, fps)
+
+    def _set_sprite_animation_mode(
+        self,
+        animation_id: object,
+        mode: object,
+    ) -> None:
+        if isinstance(animation_id, UUID) and isinstance(mode, SpritePlaybackMode):
+            self.controller.commands.set_sprite_animation_playback_mode(
+                animation_id,
+                mode,
+            )
+
+    def _set_selected_sprite_frame_duration(self, duration_ticks: int) -> None:
+        frame_ids = self.sprite_frame_panel.selected_frame_ids
+        if not frame_ids and self._sprite_editing_frame_id is not None:
+            frame_ids = (self._sprite_editing_frame_id,)
+        if frame_ids:
+            self.controller.commands.set_sprite_frame_duration_ticks(
+                frame_ids,
+                duration_ticks,
+            )
 
     def _detach_sprite_frame(self, frame_id: object) -> None:
         if isinstance(frame_id, UUID) and self.controller.commands.detach_sprite_frame(frame_id):
@@ -1680,18 +2165,20 @@ class MainWindow(QMainWindow):
     def _sprite_group_selected(self, group_id: object) -> None:
         session = getattr(self.controller, "active_session", None)
         if session is not None:
-            session.active_frame_group_id = group_id if isinstance(group_id, UUID) else None
+            session.active_sprite_animation_id = (
+                group_id if isinstance(group_id, UUID) else None
+            )
 
     def _create_sprite_group(self, name: str) -> None:
-        self.controller.commands.create_sprite_frame_group(name)
+        self.controller.commands.create_sprite_animation(name)
 
     def _rename_sprite_group(self, group_id: object, name: str) -> None:
         if isinstance(group_id, UUID):
-            self.controller.commands.rename_sprite_frame_group(group_id, name)
+            self.controller.commands.rename_sprite_animation(group_id, name)
 
     def _move_sprite_group(self, group_id: object, target_index: int) -> None:
         if isinstance(group_id, UUID):
-            self.controller.commands.move_sprite_frame_group(group_id, target_index)
+            self.controller.commands.move_sprite_animation(group_id, target_index)
 
     def _move_sprite_frame_to_group(
         self,
@@ -1706,7 +2193,7 @@ class MainWindow(QMainWindow):
             else (frame_id,) if isinstance(frame_id, UUID) else ()
         )
         if frame_ids and (group_id is None or isinstance(group_id, UUID)):
-            self.controller.commands.move_sprite_frames_to_group(
+            self.controller.commands.move_sprite_frames_to_animation(
                 frame_ids,
                 group_id,
                 target_index,
@@ -1719,29 +2206,29 @@ class MainWindow(QMainWindow):
         if project is None:
             return
         try:
-            group = project.sprite_workspace.group_by_id(group_id)
+            group = project.sprite_workspace.animation_by_id(group_id)
         except ValueError:
             return
         if not group.frame_ids:
-            self.controller.commands.delete_sprite_frame_group(
+            self.controller.commands.delete_sprite_animation(
                 group_id,
-                GroupDeleteMode.MOVE_TO_UNGROUPED,
+                AnimationDeleteMode.MOVE_TO_UNGROUPED,
             )
             return
         box = QMessageBox(self)
-        box.setWindowTitle("删除帧分组")
-        box.setText("此分组包含精灵帧。")
+        box.setWindowTitle("删除动画")
+        box.setText("此动画包含精灵帧。")
         move_button = box.addButton("移到未分组", QMessageBox.ButtonRole.AcceptRole)
         delete_button = box.addButton("同时删除帧", QMessageBox.ButtonRole.DestructiveRole)
         box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
         box.exec()
         if box.clickedButton() is move_button:
-            mode = GroupDeleteMode.MOVE_TO_UNGROUPED
+            mode = AnimationDeleteMode.MOVE_TO_UNGROUPED
         elif box.clickedButton() is delete_button:
-            mode = GroupDeleteMode.DELETE_FRAMES
+            mode = AnimationDeleteMode.DELETE_FRAMES
         else:
             return
-        self.controller.commands.delete_sprite_frame_group(group_id, mode)
+        self.controller.commands.delete_sprite_animation(group_id, mode)
 
     def _reorder_sprite_frames(self, frame_ids: object, label: str) -> None:
         if isinstance(frame_ids, tuple) and all(
@@ -1749,7 +2236,7 @@ class MainWindow(QMainWindow):
         ):
             group_id = self.sprite_frame_panel.active_group_id
             if isinstance(group_id, UUID):
-                self.controller.commands.reorder_sprite_frame_group(
+                self.controller.commands.reorder_sprite_animation_frames(
                     group_id,
                     frame_ids,
                     label=label,
@@ -1833,7 +2320,7 @@ class MainWindow(QMainWindow):
         self.controller.export_sprite_atlas_to(
             self,
             spec.path,
-            included_group_ids=spec.included_group_ids,
+            included_animation_ids=spec.included_animation_ids,
             include_ungrouped=spec.include_ungrouped,
             horizontal_spacing=spec.horizontal_spacing,
             vertical_spacing=spec.vertical_spacing,
@@ -2220,7 +2707,7 @@ class MainWindow(QMainWindow):
         }
         for name, action in self.tool_actions.items():
             enabled = has_document and not self._editing_busy
-            if self._active_surface_is_linked() and name != "eyedropper":
+            if self._active_surface_is_read_only() and name != "eyedropper":
                 enabled = False
             if self._selected_vector_object and name in raster_tools:
                 enabled = False
@@ -2232,9 +2719,9 @@ class MainWindow(QMainWindow):
                 enabled = False
             action.setEnabled(enabled)
 
-    def _active_surface_is_linked(self) -> bool:
+    def _active_surface_is_read_only(self) -> bool:
         session = getattr(self.controller, "active_session", None)
-        return bool(session is not None and session.active_surface_is_linked)
+        return bool(session is not None and session.active_surface_is_read_only)
 
     def _cancel_color_adjustment_for_lifecycle(self) -> None:
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
@@ -2427,7 +2914,7 @@ class MainWindow(QMainWindow):
     def _set_editing_busy(self, busy: bool) -> None:
         self._editing_busy = busy
         has_document = self.controller.document is not None
-        linked_read_only = self._active_surface_is_linked()
+        linked_read_only = self._active_surface_is_read_only()
         self._refresh_tool_actions(has_document)
         self.tool_options_panel.setEnabled(has_document and not linked_read_only and not busy)
         self.layer_panel.setEnabled(not linked_read_only and not busy)
@@ -2487,6 +2974,9 @@ class MainWindow(QMainWindow):
             if isinstance(event, SpriteWorkspaceChanged):
                 selected = self._sprite_editing_frame_id
                 self.sprite_properties.set_document(project_document)
+                self.sprite_properties.set_pivot_marker_radius(
+                    self._resolved_sprite_pivot_marker_radius()
+                )
                 if project_document is not None:
                     self.sprite_frame_panel.handle_workspace_change(event)
                 if selected is not None and project_document is not None:
@@ -2513,6 +3003,13 @@ class MainWindow(QMainWindow):
         self._update_window_title()
         self._refresh_workspace_tabs()
         self._update_selection_actions()
+        if (
+            self._slice_preview_reference_id is not None
+            and self.tool_controller.active_tool is self._tools.get("sprite_slice")
+        ):
+            QTimer.singleShot(0, self._refresh_slice_preview_reference)
+        if self._active_sprite_animation() is not None:
+            QTimer.singleShot(0, self._configure_animation_surface)
 
     def _select_all(self) -> None:
         document = self.controller.document
@@ -2688,7 +3185,7 @@ class MainWindow(QMainWindow):
     def _update_selection_actions(self) -> None:
         document = self.controller.document
         has_document = document is not None
-        writable = has_document and not self._active_surface_is_linked()
+        writable = has_document and not self._active_surface_is_read_only()
         active = has_document and document.selection.is_active if document is not None else False
         self.select_all_action.setEnabled(writable and not self._editing_busy)
         self.crop_to_selection_action.setEnabled(writable and active and not self._editing_busy)

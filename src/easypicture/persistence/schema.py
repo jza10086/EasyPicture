@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-PROJECT_SCHEMA_VERSION = 3
+PROJECT_SCHEMA_VERSION = 4
 
 
 def require_current_schema(manifest: dict[str, Any]) -> None:
@@ -18,13 +18,13 @@ def require_current_schema(manifest: dict[str, Any]) -> None:
 
 
 def migrate_to_current_schema(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Migrate released schema v1/v2 projects to the current schema."""
+    """Migrate released schema v1/v2/v3 projects to the current schema."""
     version = manifest.get("schema_version")
     if not isinstance(version, int) or isinstance(version, bool):
         raise ValueError("manifest schema_version must be an integer")
     if version == PROJECT_SCHEMA_VERSION:
         return manifest
-    if version not in {1, 2}:
+    if version not in {1, 2, 3}:
         raise ValueError("project schema version is unsupported")
     canvas = manifest.get("canvas")
     if not isinstance(canvas, dict):
@@ -58,7 +58,26 @@ def migrate_to_current_schema(manifest: dict[str, Any]) -> dict[str, Any]:
         frame.setdefault("content_mode", "linked")
         frame.setdefault("embedded_document_id", None)
         frame.setdefault("embedded_path", None)
-    workspace.setdefault("groups", [])
+        frame.setdefault("duration_ticks", 1)
+    if version <= 2:
+        workspace.setdefault("groups", [])
+    groups = workspace.pop("groups", None)
+    if groups is not None:
+        if not isinstance(groups, list):
+            raise ValueError("project sprite frame groups are invalid")
+        workspace["animations"] = [
+            {
+                **group,
+                "fps": 12,
+                "playback_mode": "loop",
+            }
+            for group in groups
+            if isinstance(group, dict)
+        ]
+        if len(workspace["animations"]) != len(groups):
+            raise ValueError("project sprite frame groups are invalid")
+    else:
+        workspace.setdefault("animations", [])
     migrated["document_kind"] = "project"
     migrated["schema_version"] = PROJECT_SCHEMA_VERSION
     return migrated

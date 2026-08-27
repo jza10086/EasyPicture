@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QItemSelectionModel, QPoint, QSize, Qt
+from PySide6.QtCore import QItemSelectionModel, QMimeData, QPoint, QPointF, QSize, Qt
+from PySide6.QtGui import QDragMoveEvent, QDropEvent
 from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QAbstractItemView
 
@@ -154,3 +155,47 @@ def test_refresh_keeps_existing_thumbnail_while_reordering(qtbot, tmp_path) -> N
         if panel.list.item(index).data(panel.FRAME_ID_ROLE) == frame_id
     )
     assert not item.icon().isNull()
+
+
+def test_dragging_frame_over_animation_does_not_activate_hovered_tab(
+    qtbot,
+    tmp_path,
+) -> None:
+    panel, document = _panel_with_frames(qtbot, tmp_path)
+    commands = DocumentCommandService()
+    commands.attach_document(document)
+    assert commands.create_sprite_animation("待机")
+    panel.set_document(document)
+    animation = document.sprite_workspace.animations[0]
+    target_index = next(
+        index
+        for index in range(panel.group_tabs.count())
+        if panel.group_tabs.tabData(index) == animation.id
+    )
+    panel.group_tabs.setCurrentIndex(0)
+    panel.list.setCurrentRow(0)
+    target_position = panel.group_tabs.tabRect(target_index).center()
+    drag_move = QDragMoveEvent(
+        target_position,
+        Qt.DropAction.MoveAction,
+        QMimeData(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+    assert panel.eventFilter(panel.group_tabs, drag_move)
+    qtbot.wait(400)
+
+    assert panel.group_tabs.currentIndex() == 0
+
+    move_spy = QSignalSpy(panel.frame_group_move_requested)
+    drop = QDropEvent(
+        QPointF(target_position),
+        Qt.DropAction.MoveAction,
+        QMimeData(),
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    assert panel.eventFilter(panel.group_tabs, drop)
+    assert move_spy.count() == 1
+    assert move_spy.at(0) == [panel.selected_frame_ids, animation.id, 0]

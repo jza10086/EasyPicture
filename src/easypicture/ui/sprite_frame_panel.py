@@ -46,14 +46,17 @@ from PySide6.QtWidgets import (
 
 from easypicture.domain import (
     Document,
+    SpriteAnimation,
     SpriteFrameContentMode,
     SpriteFrameDefinition,
+    SpritePlaybackMode,
     SpriteWorkspaceChanged,
 )
 from easypicture.jobs import CancellationToken
 from easypicture.persistence import DocumentSnapshot, render_snapshot_region
 from easypicture.pixels import Rect
 from easypicture.ui.blender_combo_box import BlenderComboBox
+from easypicture.ui.drag_value_spinbox import DragValueSpinBox
 from easypicture.ui.settings import SPRITE_THUMBNAIL_SIZES, AppSettings
 
 
@@ -149,6 +152,7 @@ class _SpriteFrameList(QListWidget):
 
 class SpriteFramePanel(QWidget):
     frame_selected = Signal(object)
+    frame_clicked = Signal(object)
     new_requested = Signal()
     delete_requested = Signal(object)
     rename_requested = Signal(object, str)
@@ -167,6 +171,9 @@ class SpriteFramePanel(QWidget):
     group_move_requested = Signal(object, int)
     group_delete_requested = Signal(object)
     frame_group_move_requested = Signal(object, object, int)
+    animation_open_requested = Signal(object)
+    animation_fps_requested = Signal(object, int)
+    animation_mode_requested = Signal(object, object)
 
     FRAME_ID_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -192,11 +199,44 @@ class SpriteFramePanel(QWidget):
         self.group_tabs.setMovable(True)
         self.group_tabs.setAcceptDrops(True)
         self.group_tabs.installEventFilter(self)
-        self._hover_group_index = -1
+        self._syncing_animation = False
         self.group_tabs.currentChanged.connect(self._group_tab_changed)
         self.group_tabs.tabMoved.connect(self._group_tab_moved)
         self.group_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.group_tabs.customContextMenuRequested.connect(self._show_group_context_menu)
+        self.animation_controls = QWidget(self)
+        animation_controls_layout = QHBoxLayout(self.animation_controls)
+        animation_controls_layout.setContentsMargins(0, 0, 0, 0)
+        animation_controls_layout.setSpacing(4)
+        self.animation_fps = DragValueSpinBox(
+            1,
+            60,
+            12,
+            manual_minimum=1,
+            manual_maximum=240,
+            suffix=" FPS",
+            parent=self.animation_controls,
+        )
+        self.animation_mode = BlenderComboBox(self.animation_controls)
+        for mode, label in (
+            (SpritePlaybackMode.ONCE, "单次"),
+            (SpritePlaybackMode.LOOP, "循环"),
+            (SpritePlaybackMode.PING_PONG, "往返"),
+        ):
+            self.animation_mode.addItem(label, mode)
+        self.animation_duration = QLabel("0.00 s", self.animation_controls)
+        self.open_animation_button = QPushButton("打开动画预览", self.animation_controls)
+        animation_controls_layout.addWidget(QLabel("FPS", self.animation_controls))
+        animation_controls_layout.addWidget(self.animation_fps)
+        animation_controls_layout.addWidget(QLabel("模式", self.animation_controls))
+        animation_controls_layout.addWidget(self.animation_mode)
+        animation_controls_layout.addWidget(QLabel("总时长", self.animation_controls))
+        animation_controls_layout.addWidget(self.animation_duration)
+        animation_controls_layout.addStretch(1)
+        animation_controls_layout.addWidget(self.open_animation_button)
+        self.animation_fps.editingFinished.connect(self._animation_fps_finished)
+        self.animation_mode.currentIndexChanged.connect(self._animation_mode_changed)
+        self.open_animation_button.clicked.connect(self._open_active_animation)
         self.list = _SpriteFrameList(self)
         self.list.setViewMode(QListWidget.ViewMode.IconMode)
         self.list.setFlow(QListWidget.Flow.LeftToRight)
@@ -221,6 +261,9 @@ class SpriteFramePanel(QWidget):
         self.list.setEditTriggers(QAbstractItemView.EditTrigger.EditKeyPressed)
         self.list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.list.currentItemChanged.connect(self._selection_changed)
+        self.list.itemClicked.connect(
+            lambda item: self.frame_clicked.emit(item.data(self.FRAME_ID_ROLE))
+        )
         self.list.itemDoubleClicked.connect(
             lambda item: self.frame_activated.emit(item.data(self.FRAME_ID_ROLE))
         )
@@ -282,12 +325,21 @@ class SpriteFramePanel(QWidget):
         layout.setSpacing(3)
         layout.addWidget(self.project_tabs)
         layout.addWidget(self.group_tabs)
+        layout.addWidget(self.animation_controls)
         layout.addWidget(self.list, 1)
         layout.addWidget(self.controls)
         self._apply_thumbnail_metrics()
         self.set_document(None)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if watched is self.group_tabs and event.type() is QEvent.Type.MouseButtonDblClick:
+            position_getter = getattr(event, "position", None)
+            if callable(position_getter):
+                index = self.group_tabs.tabAt(position_getter().toPoint())
+                animation_id = self.group_tabs.tabData(index)
+                if isinstance(animation_id, UUID):
+                    self.animation_open_requested.emit(animation_id)
+                    return True
         if watched is self.group_tabs and event.type() in {
             QEvent.Type.DragEnter,
             QEvent.Type.DragMove,
@@ -297,7 +349,6 @@ class SpriteFramePanel(QWidget):
             if self.list.currentRow() < 0:
                 return False
             if event.type() is QEvent.Type.DragLeave:
-                self._hover_group_index = -1
                 return True
             position_getter = getattr(event, "position", None)
             if not callable(position_getter):
@@ -307,28 +358,20 @@ class SpriteFramePanel(QWidget):
             if target == "create" or target == "all" or index < 0:
                 return False
             event.accept()
-            if event.type() is QEvent.Type.DragMove and index != self._hover_group_index:
-                self._hover_group_index = index
-                QTimer.singleShot(350, lambda tab=index: self._activate_hovered_group(tab))
-            elif event.type() is QEvent.Type.Drop:
+            if event.type() is QEvent.Type.Drop:
                 frame_ids = self.selected_frame_ids
                 if frame_ids:
                     insert_at = 0
                     if isinstance(target, UUID) and self._document is not None:
                         try:
                             insert_at = len(
-                                self._document.sprite_workspace.group_by_id(target).frame_ids
+                                self._document.sprite_workspace.animation_by_id(target).frame_ids
                             )
                         except ValueError:
                             return True
                     self.frame_group_move_requested.emit(frame_ids, target, insert_at)
-                self._hover_group_index = -1
             return True
         return super().eventFilter(watched, event)
-
-    def _activate_hovered_group(self, index: int) -> None:
-        if index == self._hover_group_index and 0 <= index < self.group_tabs.count():
-            self.group_tabs.setCurrentIndex(index)
 
     @property
     def selected_frame_id(self) -> UUID | None:
@@ -371,6 +414,7 @@ class SpriteFramePanel(QWidget):
             "detached",
             "reset_to_source",
             "duplicated",
+            "frame_duration",
         }:
             self.invalidate_thumbnails(event.frame_ids)
 
@@ -407,7 +451,7 @@ class SpriteFramePanel(QWidget):
             index = self.group_tabs.addTab("未分组")
             self.group_tabs.setTabData(index, None)
             if self._document is not None:
-                for group in self._document.sprite_workspace.groups:
+                for group in self._document.sprite_workspace.animations:
                     index = self.group_tabs.addTab(group.name)
                     self.group_tabs.setTabData(index, group.id)
             index = self.group_tabs.addTab("+")
@@ -424,17 +468,19 @@ class SpriteFramePanel(QWidget):
             self._active_group_id = self.group_tabs.tabData(target)
         finally:
             self.group_tabs.blockSignals(False)
+        self._refresh_animation_controls()
 
     def _group_tab_changed(self, index: int) -> None:
         value = self.group_tabs.tabData(index)
         if value == "create":
-            name, accepted = QInputDialog.getText(self, "新建帧分组", "名称")
+            name, accepted = QInputDialog.getText(self, "新建动画", "名称")
             if accepted and name.strip():
                 self.group_create_requested.emit(name.strip())
             self.set_active_group(self._active_group_id)
             return
         self._active_group_id = value
         self.group_selected.emit(value)
+        self._refresh_animation_controls()
         self.refresh()
 
     def _group_tab_moved(self, _source: int, target: int) -> None:
@@ -448,13 +494,17 @@ class SpriteFramePanel(QWidget):
         if not isinstance(group_id, UUID):
             return
         menu = QMenu(self)
+        open_preview = menu.addAction("打开动画预览")
+        menu.addSeparator()
         rename = menu.addAction("重命名")
         delete = menu.addAction("删除")
         chosen = menu.exec(self.group_tabs.mapToGlobal(position))
-        if chosen is rename:
+        if chosen is open_preview:
+            self.animation_open_requested.emit(group_id)
+        elif chosen is rename:
             name, accepted = QInputDialog.getText(
                 self,
-                "重命名帧分组",
+                "重命名动画",
                 "名称",
                 text=self.group_tabs.tabText(index),
             )
@@ -462,6 +512,58 @@ class SpriteFramePanel(QWidget):
                 self.group_rename_requested.emit(group_id, name.strip())
         elif chosen is delete:
             self.group_delete_requested.emit(group_id)
+
+    def _active_animation(self) -> SpriteAnimation | None:
+        if self._document is None or not isinstance(self._active_group_id, UUID):
+            return None
+        try:
+            return self._document.sprite_workspace.animation_by_id(
+                self._active_group_id
+            )
+        except ValueError:
+            return None
+
+    def _refresh_animation_controls(self) -> None:
+        animation = self._active_animation()
+        self.animation_controls.setVisible(animation is not None)
+        if animation is None or self._document is None:
+            return
+        self._syncing_animation = True
+        try:
+            self.animation_fps.syncValue(animation.fps)
+            index = self.animation_mode.findData(animation.playback_mode)
+            if index >= 0:
+                self.animation_mode.setCurrentIndex(index)
+            by_id = {
+                frame.id: frame
+                for frame in self._document.sprite_workspace.frames
+            }
+            ticks = sum(by_id[frame_id].duration_ticks for frame_id in animation.frame_ids)
+            self.animation_duration.setText(f"{ticks / animation.fps:.2f} s")
+            self.open_animation_button.setEnabled(bool(animation.frame_ids))
+        finally:
+            self._syncing_animation = False
+
+    def _animation_fps_finished(self) -> None:
+        animation = self._active_animation()
+        if animation is not None and not self._syncing_animation:
+            self.animation_fps_requested.emit(animation.id, self.animation_fps.value())
+
+    def _animation_mode_changed(self, index: int) -> None:
+        animation = self._active_animation()
+        mode = self.animation_mode.itemData(index)
+        if animation is None or self._syncing_animation:
+            return
+        try:
+            resolved = SpritePlaybackMode(str(mode))
+        except ValueError:
+            return
+        self.animation_mode_requested.emit(animation.id, resolved)
+
+    def _open_active_animation(self) -> None:
+        animation = self._active_animation()
+        if animation is not None:
+            self.animation_open_requested.emit(animation.id)
 
     def refresh(self, *, preserve_selection: bool = True) -> None:
         selected_ids = set(self.selected_frame_ids) if preserve_selection else set()
@@ -481,7 +583,7 @@ class SpriteFramePanel(QWidget):
                 frames = [frame for frame in workspace.frames if frame.id in ungrouped]
             elif isinstance(self._active_group_id, UUID):
                 try:
-                    group = workspace.group_by_id(self._active_group_id)
+                    group = workspace.animation_by_id(self._active_group_id)
                 except ValueError:
                     frames = []
                 else:
@@ -528,6 +630,7 @@ class SpriteFramePanel(QWidget):
             self._pending_thumbnail_ids.intersection_update(valid_ids)
         self.list.blockSignals(False)
         self._update_actions()
+        self._refresh_animation_controls()
         self._schedule_visible_thumbnails()
 
     def select_frame(self, frame_id: UUID | None) -> None:
@@ -624,6 +727,24 @@ class SpriteFramePanel(QWidget):
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.FastTransformation,
             )
+            if frame.duration_ticks > 1:
+                badge = QPixmap(pixmap)
+                painter = QPainter(badge)
+                painter.setPen(QColor("#ffffff"))
+                painter.fillRect(
+                    max(0, badge.width() - 29),
+                    0,
+                    29,
+                    17,
+                    QColor(0, 0, 0, 180),
+                )
+                painter.drawText(
+                    badge.rect().adjusted(0, 1, -3, 0),
+                    Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight,
+                    f"×{frame.duration_ticks}",
+                )
+                painter.end()
+                pixmap = badge
             self._thumbnail_cache[frame.id] = pixmap
             self._pending_thumbnail_ids.discard(frame.id)
             item.setIcon(pixmap)

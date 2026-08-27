@@ -18,8 +18,8 @@ from easypicture.domain import (
     RasterLayer,
     Selection,
     Size,
+    SpriteAnimation,
     SpriteFrameDefinition,
-    SpriteFrameGroup,
     SpriteWorkspace,
     SvgElementObject,
     TextHorizontalAlignment,
@@ -275,26 +275,30 @@ DocumentNodeSnapshot = RasterGroupSnapshot | VectorGroupSnapshot
 class SpriteWorkspaceSnapshot:
     cell_size: Size
     frames: tuple[SpriteFrameDefinition, ...]
-    groups: tuple[SpriteFrameGroup, ...] = ()
+    animations: tuple[SpriteAnimation, ...] = ()
 
     @property
     def ungrouped_frame_ids(self) -> tuple[UUID, ...]:
-        grouped = {frame_id for group in self.groups for frame_id in group.frame_ids}
-        return tuple(frame.id for frame in self.frames if frame.id not in grouped)
+        assigned = {
+            frame_id
+            for animation in self.animations
+            for frame_id in animation.frame_ids
+        }
+        return tuple(frame.id for frame in self.frames if frame.id not in assigned)
 
     @classmethod
     def capture(cls, workspace: SpriteWorkspace) -> SpriteWorkspaceSnapshot:
         return cls(
             workspace.cell_size,
             tuple(workspace.frames),
-            tuple(workspace.groups),
+            tuple(workspace.animations),
         )
 
     def to_workspace(self) -> SpriteWorkspace:
         return SpriteWorkspace(
             self.cell_size,
             list(self.frames),
-            list(self.groups),
+            list(self.animations),
         )
 
 @dataclass(frozen=True, slots=True)

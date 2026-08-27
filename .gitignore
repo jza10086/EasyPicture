@@ -25,3 +25,6 @@ htmlcov/
 *.log
 Thumbs.db
 .DS_Store
+
+# Local manual-test inputs and generated projects
+/test-assets/

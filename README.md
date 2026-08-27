@@ -2,9 +2,16 @@
 
 EasyPicture 是一款面向 Windows 的本地离线轻量图像编辑器，适合个人日常图片处理。项目以 Python 3.14、PySide6、NumPy 和 Pillow 为基础，权威像素采用 256 px Tile 存储，画布提供 OpenGL 3.3 与软件双渲染后端。
 
-当前版本支持两级栅格/矢量图层组、画笔与常用像素工具、统一选区、自由变换、基础图形、可编辑文字、静态 SVG、非破坏性颜色调整、像素精确工作区、手动精灵帧切分、多工程标签、独立帧编辑、帧分组与 Atlas 导出、`.limg` 工程保存和七种常用图片格式导出。EasyPicture 目前仅面向本机单用户使用，不以跨平台发布、多人协作或超大画布为主要目标。
+当前版本支持两级栅格/矢量图层组、画笔与常用像素工具、统一选区、自由变换、基础图形、可编辑文字、静态 SVG、非破坏性颜色调整、像素精确工作区、手动精灵帧切分、多工程标签、独立帧编辑、精灵动画与洋葱皮、Atlas 导出、`.limg` 工程保存和七种常用图片格式导出。EasyPicture 目前仅面向本机单用户使用，不以跨平台发布、多人协作或超大画布为主要目标。
 
 ## 版本记录
+
+### 0.5.0 — 2026-08-27
+
+- 将精灵帧分组升级为动画，每个动画保存独立 FPS、播放模式；每帧使用整数保持拍数控制时长。
+- 增加动画只读画布标签、第一帧/逐帧/播放控制和单次、循环、往返三种调度模式。
+- 增加可调前后帧动画洋葱皮；精灵切片使用保留原色的半透明参考帧，支持自动跟随最近创建帧和手动拾取。锚点改为带可调半径的红色视觉标记，不再改变动画帧的对齐位置；这些预览均不进入像素、缩略图或导出。
+- `.limg` 升级为 schema v4；Atlas JSON 升级为 v2，并记录动画顺序、FPS、播放模式与帧保持拍数。
 
 ### 0.4.0 — 2026-08-19
 
@@ -29,7 +36,7 @@ EasyPicture 是一款面向 Windows 的本地离线轻量图像编辑器，适�
 
 ### 0.1.3 — 2026-08-02
 
-- 重整文件工作流：“打开”仅用于 `.limg` 工程，“导入”把图片初始化为新工程，“追加”把图片或其他工程作为新图层组加入当前工程。
+- 重整文件工作流：“打开”仅用于 `.limg` 工程，“导入”把图片立即保存为新的 `.limg` 工程，“追加”把图片或其他工程作为新图层组加入当前工程。
 - 追加操作保留当前工程身份，自动处理 UUID 与重名，并以一次命令完成撤销；不同画布尺寸按左上角对齐和裁切。
 - 预发布兼容层已清理，`.limg` 以当前两级图层树重新建立 schema v1 基线。
 
@@ -53,7 +60,7 @@ EasyPicture 是一款面向 Windows 的本地离线轻量图像编辑器，适�
 
 ## 当前格式边界
 
-- `.limg` 是唯一保存 EasyPicture 图层树、对象属性、精灵帧定义和工程身份的格式，当前 schema 为 v2。
+- `.limg` 是唯一保存 EasyPicture 图层树、对象属性、精灵帧、动画和工程身份的格式，当前 schema 为 v4。
 - 普通图片和 SVG 是中立交换格式，不写入 EasyPicture 内部 UUID、图层树或应用元数据。
 - SVG 仅支持静态安全子集；动画、脚本、外部资源、滤镜和任意深度子图层不在当前范围内。
 - 栅格层始终与画布同尺寸且 origin 为零；裁切或缩小后，画布外像素只能通过撤销恢复。
@@ -91,4 +98,4 @@ uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\
 uv run python -m easypicture --svg-smoke-test .cache\svg-smoke
 ```
 
-总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p10a_acceptance.md`](docs/p10a_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。
+总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p10c_acceptance.md`](docs/p10c_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。

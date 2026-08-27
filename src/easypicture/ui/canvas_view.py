@@ -307,7 +307,16 @@ class CanvasView(QGraphicsView):
         self._interaction_scene_bounds = None if bounds is None else QRectF(bounds)
         self._update_pan_bounds()
 
-    def set_document(self, document: Document | None) -> None:
+    def set_document(
+        self,
+        document: Document | None,
+        *,
+        preserve_view: bool = False,
+    ) -> None:
+        previous_zoom = self._zoom
+        previous_transform = QTransform(self.transform())
+        previous_horizontal_scroll = self.horizontalScrollBar().value()
+        previous_vertical_scroll = self.verticalScrollBar().value()
         self._interaction_scene_bounds = None
         if self._document_unsubscribe is not None:
             self._document_unsubscribe()
@@ -348,8 +357,22 @@ class CanvasView(QGraphicsView):
             cell_grid=self._sprite_grid_visible,
         )
         self.scene().addItem(self._sprite_grid_overlay)
-        self.set_zoom(1.0)
-        self.centerOn(self._canvas_item)
+        if preserve_view:
+            # Animation playback replaces the preview Document on every frame.
+            # Re-centering through scene coordinates quantizes the center to the
+            # integer scroll-bar grid and accumulates a small positional error on
+            # every replacement.  Restore the exact view transform and scroll-bar
+            # state instead so identical-size preview surfaces remain stationary.
+            self._zoom = previous_zoom
+            self.setTransform(previous_transform)
+            self._update_pan_bounds()
+            self.horizontalScrollBar().setValue(previous_horizontal_scroll)
+            self.verticalScrollBar().setValue(previous_vertical_scroll)
+            self.zoom_changed.emit(self._zoom)
+            self.viewport().update()
+        else:
+            self.set_zoom(1.0)
+            self.centerOn(self._canvas_item)
 
     def set_zoom(self, zoom: float, anchor: QPoint | None = None) -> None:
         self._fit_request_id += 1

@@ -113,7 +113,7 @@ def test_failed_atomic_replace_preserves_existing_project(
     assert not list(tmp_path.glob(".existing.limg.*.tmp"))
 
 
-@pytest.mark.parametrize("schema_version", [4, 5, 999])
+@pytest.mark.parametrize("schema_version", [5, 6, 999])
 def test_non_current_schema_is_rejected(
     tmp_path: Path,
     schema_version: int,

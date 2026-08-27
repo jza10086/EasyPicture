@@ -8,8 +8,8 @@ from PIL import Image
 
 from easypicture.commands import DocumentCommandService
 from easypicture.domain import (
+    AnimationDeleteMode,
     Document,
-    GroupDeleteMode,
     SpriteFrameContentMode,
 )
 from easypicture.jobs import CancellationToken
@@ -61,40 +61,45 @@ def test_detached_frame_is_embedded_and_undoable() -> None:
     assert document.embedded_document_for_frame(frame.id) is embedded
 
 
-def test_groups_are_single_membership_and_delete_modes() -> None:
+def test_animations_are_single_membership_and_delete_modes() -> None:
     document, service = _project_with_two_frames()
     first, second = document.sprite_workspace.frames
-    assert service.create_sprite_frame_group("待机")
-    group = document.sprite_workspace.groups[0]
-    assert service.move_sprite_frame_to_group(first.id, group.id, 0)
-    assert service.move_sprite_frame_to_group(second.id, group.id, 1)
-    assert document.sprite_workspace.group_by_id(group.id).frame_ids == (first.id, second.id)
-    assert service.delete_sprite_frame_group(group.id, GroupDeleteMode.MOVE_TO_UNGROUPED)
+    assert service.create_sprite_animation("待机")
+    animation = document.sprite_workspace.animations[0]
+    assert service.move_sprite_frame_to_animation(first.id, animation.id, 0)
+    assert service.move_sprite_frame_to_animation(second.id, animation.id, 1)
+    assert document.sprite_workspace.animation_by_id(animation.id).frame_ids == (
+        first.id,
+        second.id,
+    )
+    assert service.delete_sprite_animation(
+        animation.id, AnimationDeleteMode.MOVE_TO_UNGROUPED
+    )
     assert document.sprite_workspace.ungrouped_frame_ids == (first.id, second.id)
 
 
-def test_schema_v3_round_trip_with_detached_frame(tmp_path: Path) -> None:
+def test_schema_v4_round_trip_with_detached_frame(tmp_path: Path) -> None:
     document, service = _project_with_two_frames()
     frame = document.sprite_workspace.frames[0]
     assert service.detach_sprite_frame(frame.id)
-    assert service.create_sprite_frame_group("攻击")
-    group = document.sprite_workspace.groups[0]
-    assert service.move_sprite_frame_to_group(frame.id, group.id, 0)
+    assert service.create_sprite_animation("攻击")
+    animation = document.sprite_workspace.animations[0]
+    assert service.move_sprite_frame_to_animation(frame.id, animation.id, 0)
     path = tmp_path / "project.limg"
     save_project(DocumentSnapshot.capture(document), path, CancellationToken(), _progress)
     loaded = load_project(path, CancellationToken(), _progress).snapshot.to_document()
     loaded_frame = loaded.sprite_workspace.frame_by_id(frame.id)
     assert loaded_frame.content_mode is SpriteFrameContentMode.DETACHED
-    assert loaded.sprite_workspace.groups[0].frame_ids == (frame.id,)
+    assert loaded.sprite_workspace.animations[0].frame_ids == (frame.id,)
     assert loaded.embedded_document_for_frame(frame.id).size.width == 16
 
 
 def test_grouped_atlas_exports_png_and_json(tmp_path: Path) -> None:
     document, service = _project_with_two_frames()
     first = document.sprite_workspace.frames[0]
-    assert service.create_sprite_frame_group("待机")
-    group = document.sprite_workspace.groups[0]
-    assert service.move_sprite_frame_to_group(first.id, group.id, 0)
+    assert service.create_sprite_animation("待机")
+    animation = document.sprite_workspace.animations[0]
+    assert service.move_sprite_frame_to_animation(first.id, animation.id, 0)
     receipt = export_sprite_atlas(
         SpriteAtlasExportRequest(
             DocumentSnapshot.capture(document),
@@ -109,8 +114,8 @@ def test_grouped_atlas_exports_png_and_json(tmp_path: Path) -> None:
     with Image.open(receipt.png_path) as image:
         assert image.size == (18, 36)
     manifest = json.loads(receipt.json_path.read_text(encoding="utf-8"))
-    assert manifest["schema_version"] == 1
-    assert [group["name"] for group in manifest["groups"]] == ["待机", "未分组"]
+    assert manifest["schema_version"] == 2
+    assert [item["name"] for item in manifest["animations"]] == ["待机"]
     assert len(manifest["frames"]) == 2
 
 
@@ -131,14 +136,16 @@ def test_child_edit_marks_parent_modified() -> None:
     assert document.modified
 
 
-def test_multi_frame_delete_and_group_move_are_atomic() -> None:
+def test_multi_frame_delete_and_animation_move_are_atomic() -> None:
     document, service = _project_with_two_frames()
     first, second = document.sprite_workspace.frames
-    assert service.create_sprite_frame_group("攻击")
-    group = document.sprite_workspace.groups[0]
+    assert service.create_sprite_animation("攻击")
+    animation = document.sprite_workspace.animations[0]
 
-    assert service.move_sprite_frames_to_group((first.id, second.id), group.id, 0)
-    assert document.sprite_workspace.group_by_id(group.id).frame_ids == (
+    assert service.move_sprite_frames_to_animation(
+        (first.id, second.id), animation.id, 0
+    )
+    assert document.sprite_workspace.animation_by_id(animation.id).frame_ids == (
         first.id,
         second.id,
     )

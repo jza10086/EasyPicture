@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID
 
@@ -42,6 +43,17 @@ MAX_NUMERIC_DRAG_SENSITIVITY = 0.1
 MAX_RECENT_FILES = 10
 SPRITE_THUMBNAIL_SIZES = (48, 64, 96)
 WINDOW_STATE_VERSION = 2
+
+
+@dataclass(frozen=True, slots=True)
+class OnionSkinSettings:
+    previous_count: int = 1
+    next_count: int = 1
+    opacity_percent: int = 35
+    falloff_percent: int = 60
+    previous_color: QColor = field(default_factory=lambda: QColor("#ff4040"))
+    next_color: QColor = field(default_factory=lambda: QColor("#4080ff"))
+    enabled: bool = False
 
 
 class AppSettings:
@@ -182,6 +194,8 @@ class AppSettings:
         seen: set[str] = set()
         for value in values:
             path = normalize_recent_path(Path(str(value)))
+            if path.suffix.casefold() != ".limg":
+                continue
             key = os.path.normcase(str(path))
             if key in seen:
                 continue
@@ -193,6 +207,10 @@ class AppSettings:
 
     def add_recent_file(self, path: Path) -> tuple[Path, ...]:
         candidate = normalize_recent_path(path)
+        if candidate.suffix.casefold() != ".limg":
+            paths = list(self.recent_files())
+            self._set_recent_files(paths)
+            return tuple(paths)
         candidate_key = os.path.normcase(str(candidate))
         paths = [
             existing
@@ -273,6 +291,66 @@ class AppSettings:
     def set_sprite_thumbnail_size(self, size: int) -> None:
         resolved = size if size in SPRITE_THUMBNAIL_SIZES else 64
         self._settings.setValue("sprite/thumbnail_size", resolved)
+
+    def onion_skin_settings(self) -> OnionSkinSettings:
+        return OnionSkinSettings(
+            previous_count=self._bounded_int("sprite/onion/previous_count", 1, 0, 3),
+            next_count=self._bounded_int("sprite/onion/next_count", 1, 0, 3),
+            opacity_percent=self._bounded_int("sprite/onion/opacity", 35, 0, 100),
+            falloff_percent=self._bounded_int("sprite/onion/falloff", 60, 0, 100),
+            previous_color=self._color_value(
+                "sprite/onion/previous_color", QColor("#ff4040")
+            ),
+            next_color=self._color_value(
+                "sprite/onion/next_color", QColor("#4080ff")
+            ),
+            enabled=self._bool_value("sprite/onion/enabled", False),
+        )
+
+    def set_onion_skin_settings(self, settings: OnionSkinSettings) -> None:
+        self._settings.setValue(
+            "sprite/onion/previous_count", settings.previous_count
+        )
+        self._settings.setValue("sprite/onion/next_count", settings.next_count)
+        self._settings.setValue("sprite/onion/opacity", settings.opacity_percent)
+        self._settings.setValue("sprite/onion/falloff", settings.falloff_percent)
+        self._settings.setValue(
+            "sprite/onion/previous_color",
+            settings.previous_color.name(QColor.NameFormat.HexArgb),
+        )
+        self._settings.setValue(
+            "sprite/onion/next_color",
+            settings.next_color.name(QColor.NameFormat.HexArgb),
+        )
+        self._settings.setValue("sprite/onion/enabled", settings.enabled)
+        self._settings.sync()
+
+    def sprite_slice_preview_enabled(self) -> bool:
+        return self._bool_value("sprite/slice_preview/enabled", True)
+
+    def set_sprite_slice_preview_enabled(self, enabled: bool) -> None:
+        self._settings.setValue("sprite/slice_preview/enabled", enabled)
+        self._settings.sync()
+
+    def sprite_slice_preview_opacity(self) -> int:
+        return self._bounded_int("sprite/slice_preview/opacity", 50, 0, 100)
+
+    def set_sprite_slice_preview_opacity(self, opacity: int) -> None:
+        self._settings.setValue(
+            "sprite/slice_preview/opacity",
+            min(max(int(opacity), 0), 100),
+        )
+        self._settings.sync()
+
+    def sprite_pivot_marker_radius(self) -> int:
+        return self._bounded_int("sprite/pivot_marker_radius", 3, 1, 8192)
+
+    def set_sprite_pivot_marker_radius(self, radius: int) -> None:
+        self._settings.setValue(
+            "sprite/pivot_marker_radius",
+            min(max(int(radius), 1), 8192),
+        )
+        self._settings.sync()
 
     def brush_settings(self) -> BrushSettings:
         return BrushSettings(

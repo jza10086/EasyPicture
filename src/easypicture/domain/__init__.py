@@ -1,5 +1,6 @@
 """Qt-free EasyPicture document domain."""
 
+from easypicture.domain.animation import SpritePlaybackCursor, onion_neighbor_indices
 from easypicture.domain.document import Document
 from easypicture.domain.effective import EffectiveLeaf, iter_effective_leaves
 from easypicture.domain.events import (
@@ -32,13 +33,14 @@ from easypicture.domain.geometry import (
 from easypicture.domain.layer import RasterLayer
 from easypicture.domain.selection import Selection
 from easypicture.domain.sprite import (
-    MAX_SPRITE_FRAME_GROUPS,
+    MAX_SPRITE_ANIMATIONS,
     MAX_SPRITE_FRAMES,
+    AnimationDeleteMode,
     DocumentKind,
-    GroupDeleteMode,
+    SpriteAnimation,
     SpriteFrameContentMode,
     SpriteFrameDefinition,
-    SpriteFrameGroup,
+    SpritePlaybackMode,
     SpriteWorkspace,
 )
 from easypicture.domain.svg_primitives import (
@@ -112,12 +114,15 @@ __all__ = [
     "VectorObjectKind",
     "Selection",
     "MAX_SPRITE_FRAMES",
-    "MAX_SPRITE_FRAME_GROUPS",
+    "MAX_SPRITE_ANIMATIONS",
     "DocumentKind",
-    "GroupDeleteMode",
+    "AnimationDeleteMode",
     "SpriteFrameContentMode",
+    "SpriteAnimation",
     "SpriteFrameDefinition",
-    "SpriteFrameGroup",
+    "SpritePlaybackMode",
+    "SpritePlaybackCursor",
+    "onion_neighbor_indices",
     "SpriteWorkspace",
     "EditableSvgPrimitive",
     "SvgCircleGeometry",

@@ -12,17 +12,18 @@ from PySide6.QtGui import QUndoCommand, QUndoStack
 
 from easypicture.commands.patch_store import PatchHandle, UndoPatchStore
 from easypicture.domain import (
+    AnimationDeleteMode,
     Document,
     FloatRect,
-    GroupDeleteMode,
     LayerGroup,
     PixelPoint,
     RasterGroupLayer,
     RasterLayer,
     Size,
+    SpriteAnimation,
     SpriteFrameContentMode,
     SpriteFrameDefinition,
-    SpriteFrameGroup,
+    SpritePlaybackMode,
     SpriteWorkspace,
     SvgElementObject,
     TextObject,
@@ -946,11 +947,13 @@ class DocumentCommandService:
             return False
         after = workspace.clone()
         after.frames = [frame for frame in after.frames if frame.id not in removed_ids]
-        after.groups = [
-            group.with_changes(
-                frame_ids=tuple(item for item in group.frame_ids if item not in removed_ids)
+        after.animations = [
+            animation.with_changes(
+                frame_ids=tuple(
+                    item for item in animation.frame_ids if item not in removed_ids
+                )
             )
-            for group in after.groups
+            for animation in after.animations
         ]
         after_embedded = dict(document.embedded_documents)
         for frame_id in unique_ids:
@@ -1033,7 +1036,10 @@ class DocumentCommandService:
         after.cell_size = size
         if clear_frames:
             after.frames.clear()
-            after.groups = [group.with_changes(frame_ids=()) for group in after.groups]
+            after.animations = [
+                animation.with_changes(frame_ids=())
+                for animation in after.animations
+            ]
         return self._push(
             _SpriteWorkspaceCommand(
                 document,
@@ -1143,15 +1149,18 @@ class DocumentCommandService:
             pivot=frame.pivot,
             content_mode=frame.content_mode,
             embedded_document_id=embedded_id,
+            duration_ticks=frame.duration_ticks,
         )
         after = workspace.clone()
         source_index = after.frames.index(frame)
         after.frames.insert(source_index + 1, copied)
-        group = after.group_for_frame(frame_id)
-        if group is not None:
-            ids = list(group.frame_ids)
+        animation = after.animation_for_frame(frame_id)
+        if animation is not None:
+            ids = list(animation.frame_ids)
             ids.insert(ids.index(frame_id) + 1, new_frame_id)
-            after.groups[after.groups.index(group)] = group.with_changes(frame_ids=tuple(ids))
+            after.animations[after.animations.index(animation)] = animation.with_changes(
+                frame_ids=tuple(ids)
+            )
         return self._push(
             _SpriteWorkspaceCommand(
                 project,
@@ -1164,30 +1173,32 @@ class DocumentCommandService:
             )
         )
 
-    def create_sprite_frame_group(self, name: str = "帧分组") -> bool:
+    def create_sprite_animation(self, name: str = "动画") -> bool:
         project = self._require_project_document()
         workspace = project.sprite_workspace
-        if len(workspace.groups) >= 128:
+        if len(workspace.animations) >= 128:
             return False
-        resolved = _unique_name(name, {group.name for group in workspace.groups})
-        group = SpriteFrameGroup.create(resolved)
+        resolved = _unique_name(
+            name, {animation.name for animation in workspace.animations}
+        )
+        animation = SpriteAnimation.create(resolved)
         after = workspace.clone()
-        after.groups.append(group)
+        after.animations.append(animation)
         return self._push(
             _SpriteWorkspaceCommand(
                 project,
                 workspace,
                 after,
-                "新建帧分组",
-                change="group_created",
+                "新建动画",
+                change="animation_created",
             )
         )
 
-    def rename_sprite_frame_group(self, group_id: UUID, name: str) -> bool:
+    def rename_sprite_animation(self, animation_id: UUID, name: str) -> bool:
         project = self._require_project_document()
         workspace = project.sprite_workspace
         try:
-            group = workspace.group_by_id(group_id)
+            animation = workspace.animation_by_id(animation_id)
         except ValueError:
             return False
         normalized = name.strip()
@@ -1195,62 +1206,156 @@ class DocumentCommandService:
             return False
         normalized = _unique_name(
             normalized,
-            {item.name for item in workspace.groups if item.id != group_id},
+            {
+                item.name
+                for item in workspace.animations
+                if item.id != animation_id
+            },
         )
-        updated = group.with_changes(name=normalized)
-        if updated == group:
+        updated = animation.with_changes(name=normalized)
+        if updated == animation:
             return False
         after = workspace.clone()
-        after.groups[after.groups.index(group)] = updated
+        after.animations[after.animations.index(animation)] = updated
         return self._push(
             _SpriteWorkspaceCommand(
                 project,
                 workspace,
                 after,
-                "重命名帧分组",
-                change="group_renamed",
+                "重命名动画",
+                change="animation_renamed",
             )
         )
 
-    def move_sprite_frame_group(self, group_id: UUID, target_index: int) -> bool:
+    def set_sprite_animation_fps(self, animation_id: UUID, fps: int) -> bool:
         project = self._require_project_document()
         workspace = project.sprite_workspace
         try:
-            group = workspace.group_by_id(group_id)
-            source_index = workspace.groups.index(group)
+            animation = workspace.animation_by_id(animation_id)
+            updated = animation.with_changes(fps=fps)
         except ValueError:
             return False
-        if not 0 <= target_index < len(workspace.groups) or source_index == target_index:
+        if updated == animation:
             return False
         after = workspace.clone()
-        after.groups.insert(target_index, after.groups.pop(source_index))
+        after.animations[after.animations.index(animation)] = updated
         return self._push(
             _SpriteWorkspaceCommand(
                 project,
                 workspace,
                 after,
-                "移动帧分组",
-                change="group_reordered",
+                "更改动画 FPS",
+                change="animation_fps",
+                frame_ids=animation.frame_ids,
             )
         )
 
-    def delete_sprite_frame_group(
+    def set_sprite_animation_playback_mode(
         self,
-        group_id: UUID,
-        mode: GroupDeleteMode,
+        animation_id: UUID,
+        playback_mode: SpritePlaybackMode,
     ) -> bool:
         project = self._require_project_document()
         workspace = project.sprite_workspace
         try:
-            group = workspace.group_by_id(group_id)
+            animation = workspace.animation_by_id(animation_id)
+        except ValueError:
+            return False
+        updated = animation.with_changes(playback_mode=playback_mode)
+        if updated == animation:
+            return False
+        after = workspace.clone()
+        after.animations[after.animations.index(animation)] = updated
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "更改动画播放模式",
+                change="animation_playback_mode",
+                frame_ids=animation.frame_ids,
+            )
+        )
+
+    def set_sprite_frame_duration_ticks(
+        self,
+        frame_ids: tuple[UUID, ...],
+        duration_ticks: int,
+    ) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        unique_ids = tuple(dict.fromkeys(frame_ids))
+        if not unique_ids or not 1 <= duration_ticks <= 999:
+            return False
+        frames_by_id = {frame.id: frame for frame in workspace.frames}
+        if any(frame_id not in frames_by_id for frame_id in unique_ids):
+            return False
+        if all(
+            frames_by_id[frame_id].duration_ticks == duration_ticks
+            for frame_id in unique_ids
+        ):
+            return False
+        changed = set(unique_ids)
+        after = workspace.clone()
+        after.frames = [
+            frame.with_changes(duration_ticks=duration_ticks)
+            if frame.id in changed
+            else frame
+            for frame in after.frames
+        ]
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "更改帧保持拍数",
+                change="frame_duration",
+                frame_ids=unique_ids,
+            )
+        )
+
+    def move_sprite_animation(self, animation_id: UUID, target_index: int) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            animation = workspace.animation_by_id(animation_id)
+            source_index = workspace.animations.index(animation)
+        except ValueError:
+            return False
+        if (
+            not 0 <= target_index < len(workspace.animations)
+            or source_index == target_index
+        ):
+            return False
+        after = workspace.clone()
+        after.animations.insert(target_index, after.animations.pop(source_index))
+        return self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "移动动画",
+                change="animation_reordered",
+            )
+        )
+
+    def delete_sprite_animation(
+        self,
+        animation_id: UUID,
+        mode: AnimationDeleteMode,
+    ) -> bool:
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        try:
+            animation = workspace.animation_by_id(animation_id)
         except ValueError:
             return False
         after = workspace.clone()
-        after.groups.remove(group)
+        after.animations.remove(animation)
         after_embedded = dict(project.embedded_documents)
-        changed_ids = group.frame_ids
-        if mode is GroupDeleteMode.DELETE_FRAMES:
-            removed = set(group.frame_ids)
+        changed_ids = animation.frame_ids
+        if mode is AnimationDeleteMode.DELETE_FRAMES:
+            removed = set(animation.frame_ids)
             for frame in tuple(after.frames):
                 if frame.id not in removed:
                     continue
@@ -1262,17 +1367,17 @@ class DocumentCommandService:
                 project,
                 workspace,
                 after,
-                "删除帧分组",
-                change="group_deleted",
+                "删除动画",
+                change="animation_deleted",
                 frame_ids=changed_ids,
                 after_embedded=after_embedded,
             )
         )
 
-    def move_sprite_frame_to_group(
+    def move_sprite_frame_to_animation(
         self,
         frame_id: UUID,
-        group_id: UUID | None,
+        animation_id: UUID | None,
         target_index: int,
     ) -> bool:
         project = self._require_project_document()
@@ -1282,20 +1387,24 @@ class DocumentCommandService:
         except ValueError:
             return False
         after = workspace.clone()
-        for index, group in enumerate(after.groups):
-            if frame_id in group.frame_ids:
-                after.groups[index] = group.with_changes(
-                    frame_ids=tuple(item for item in group.frame_ids if item != frame_id)
+        for index, animation in enumerate(after.animations):
+            if frame_id in animation.frame_ids:
+                after.animations[index] = animation.with_changes(
+                    frame_ids=tuple(
+                        item for item in animation.frame_ids if item != frame_id
+                    )
                 )
-        if group_id is not None:
+        if animation_id is not None:
             try:
-                target = after.group_by_id(group_id)
+                target = after.animation_by_id(animation_id)
             except ValueError:
                 return False
             ids = list(target.frame_ids)
             insert_at = min(max(target_index, 0), len(ids))
             ids.insert(insert_at, frame_id)
-            after.groups[after.groups.index(target)] = target.with_changes(frame_ids=tuple(ids))
+            after.animations[after.animations.index(target)] = target.with_changes(
+                frame_ids=tuple(ids)
+            )
         if after == workspace:
             return False
         return self._push(
@@ -1303,16 +1412,16 @@ class DocumentCommandService:
                 project,
                 workspace,
                 after,
-                "移动精灵帧到分组",
-                change="frame_group_changed",
+                "移动精灵帧到动画",
+                change="frame_animation_changed",
                 frame_ids=(frame_id,),
             )
         )
 
-    def move_sprite_frames_to_group(
+    def move_sprite_frames_to_animation(
         self,
         frame_ids: tuple[UUID, ...],
-        group_id: UUID | None,
+        animation_id: UUID | None,
         target_index: int,
     ) -> bool:
         project = self._require_project_document()
@@ -1325,31 +1434,31 @@ class DocumentCommandService:
             return False
         moved_ids = set(unique_ids)
         after = workspace.clone()
-        for index, group in enumerate(after.groups):
-            if moved_ids.intersection(group.frame_ids):
-                after.groups[index] = group.with_changes(
+        for index, animation in enumerate(after.animations):
+            if moved_ids.intersection(animation.frame_ids):
+                after.animations[index] = animation.with_changes(
                     frame_ids=tuple(
                         frame_id
-                        for frame_id in group.frame_ids
+                        for frame_id in animation.frame_ids
                         if frame_id not in moved_ids
                     )
                 )
-        if group_id is not None:
+        if animation_id is not None:
             try:
-                target = after.group_by_id(group_id)
+                target = after.animation_by_id(animation_id)
             except ValueError:
                 return False
             ids = list(target.frame_ids)
             insert_at = min(max(target_index, 0), len(ids))
             ids[insert_at:insert_at] = unique_ids
-            after.groups[after.groups.index(target)] = target.with_changes(
+            after.animations[after.animations.index(target)] = target.with_changes(
                 frame_ids=tuple(ids)
             )
         else:
             grouped = {
                 frame_id
-                for group in after.groups
-                for frame_id in group.frame_ids
+                for animation in after.animations
+                for frame_id in animation.frame_ids
             }
             current = [
                 frame.id
@@ -1376,40 +1485,42 @@ class DocumentCommandService:
                 project,
                 workspace,
                 after,
-                "移动精灵帧到分组",
-                change="frame_group_changed",
+                "移动精灵帧到动画",
+                change="frame_animation_changed",
                 frame_ids=unique_ids,
             )
         )
 
-    def reorder_sprite_frame_group(
+    def reorder_sprite_animation_frames(
         self,
-        group_id: UUID,
+        animation_id: UUID,
         frame_ids: tuple[UUID, ...],
         *,
-        label: str = "排序帧分组",
+        label: str = "排序动画帧",
     ) -> bool:
         project = self._require_project_document()
         workspace = project.sprite_workspace
         try:
-            group = workspace.group_by_id(group_id)
+            animation = workspace.animation_by_id(animation_id)
         except ValueError:
             return False
         if (
-            frame_ids == group.frame_ids
-            or len(frame_ids) != len(group.frame_ids)
-            or set(frame_ids) != set(group.frame_ids)
+            frame_ids == animation.frame_ids
+            or len(frame_ids) != len(animation.frame_ids)
+            or set(frame_ids) != set(animation.frame_ids)
         ):
             return False
         after = workspace.clone()
-        after.groups[after.groups.index(group)] = group.with_changes(frame_ids=frame_ids)
+        after.animations[after.animations.index(animation)] = animation.with_changes(
+            frame_ids=frame_ids
+        )
         return self._push(
             _SpriteWorkspaceCommand(
                 project,
                 workspace,
                 after,
                 label,
-                change="group_frames_reordered",
+                change="animation_frames_reordered",
                 frame_ids=frame_ids,
             )
         )

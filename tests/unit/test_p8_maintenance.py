@@ -127,6 +127,17 @@ def test_recent_files_are_mru_deduplicated_and_bounded(tmp_path) -> None:
     assert settings.recent_files() == ()
 
 
+def test_recent_files_only_store_limg_projects(tmp_path) -> None:
+    settings = make_settings(str(tmp_path / "settings.ini"))
+    project = tmp_path / "project.LIMG"
+    image = tmp_path / "image.png"
+
+    settings.add_recent_file(image)
+    settings.add_recent_file(project)
+
+    assert settings.recent_files() == (project,)
+
+
 def test_about_report_contains_version_backend_and_local_paths(tmp_path) -> None:
     paths = _runtime_paths(tmp_path)
     diagnostics = CanvasRenderDiagnostics(

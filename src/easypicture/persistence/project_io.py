@@ -27,9 +27,10 @@ from easypicture.domain import (
     PixelPoint,
     Point,
     Size,
+    SpriteAnimation,
     SpriteFrameContentMode,
     SpriteFrameDefinition,
-    SpriteFrameGroup,
+    SpritePlaybackMode,
     SpriteWorkspace,
     SvgElementObject,
     TextHorizontalAlignment,
@@ -752,16 +753,19 @@ def _sprite_workspace_manifest(
                     if frame.content_mode is SpriteFrameContentMode.DETACHED
                     else None
                 ),
+                "duration_ticks": frame.duration_ticks,
             }
             for frame in workspace.frames
         ],
-        "groups": [
+        "animations": [
             {
-                "id": str(group.id),
-                "name": group.name,
-                "frame_ids": [str(frame_id) for frame_id in group.frame_ids],
+                "id": str(animation.id),
+                "name": animation.name,
+                "frame_ids": [str(frame_id) for frame_id in animation.frame_ids],
+                "fps": animation.fps,
+                "playback_mode": animation.playback_mode.value,
             }
-            for group in workspace.groups
+            for animation in workspace.animations
         ],
     }
 
@@ -854,40 +858,52 @@ def _parse_sprite_workspace(
                     PixelPoint(pivot_value[0], pivot_value[1]),
                     content_mode,
                     embedded_id,
+                    _bounded_int(frame_value, "duration_ticks", 1, 999),
                 )
             )
         except ValueError as error:
             raise ProjectFormatError("sprite frame values are invalid") from error
-    groups_value = value.get("groups")
-    if not isinstance(groups_value, list) or len(groups_value) > 128:
-        raise ProjectFormatError("sprite frame group count is invalid")
-    groups: list[SpriteFrameGroup] = []
-    for group_value in groups_value:
-        if not isinstance(group_value, dict):
-            raise ProjectFormatError("sprite frame group entry is invalid")
-        group_id = _uuid_field(group_value, "id")
-        name = group_value.get("name")
-        frame_ids_value = group_value.get("frame_ids")
+    animations_value = value.get("animations")
+    if not isinstance(animations_value, list) or len(animations_value) > 128:
+        raise ProjectFormatError("sprite animation count is invalid")
+    animations: list[SpriteAnimation] = []
+    for animation_value in animations_value:
+        if not isinstance(animation_value, dict):
+            raise ProjectFormatError("sprite animation entry is invalid")
+        animation_id = _uuid_field(animation_value, "id")
+        name = animation_value.get("name")
+        frame_ids_value = animation_value.get("frame_ids")
         if (
             not isinstance(name, str)
             or not name.strip()
             or len(name) > 1024
             or not isinstance(frame_ids_value, list)
         ):
-            raise ProjectFormatError("sprite frame group values are invalid")
+            raise ProjectFormatError("sprite animation values are invalid")
         try:
             frame_ids = tuple(UUID(value) for value in frame_ids_value)
         except (TypeError, ValueError) as error:
-            raise ProjectFormatError("sprite frame group member is invalid") from error
+            raise ProjectFormatError("sprite animation member is invalid") from error
         try:
-            groups.append(SpriteFrameGroup(group_id, name.strip(), frame_ids))
+            mode_value = animation_value.get("playback_mode")
+            if not isinstance(mode_value, str):
+                raise ValueError("missing playback mode")
+            animations.append(
+                SpriteAnimation(
+                    animation_id,
+                    name.strip(),
+                    frame_ids,
+                    _bounded_int(animation_value, "fps", 1, 240),
+                    SpritePlaybackMode(mode_value),
+                )
+            )
         except ValueError as error:
-            raise ProjectFormatError("sprite frame group values are invalid") from error
+            raise ProjectFormatError("sprite animation values are invalid") from error
     try:
         workspace = SpriteWorkspace(
             cell_size,
             frames,
-            groups,
+            animations,
         )
         workspace.validate_for_canvas(canvas_size)
     except ValueError as error:

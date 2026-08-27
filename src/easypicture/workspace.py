@@ -16,8 +16,12 @@ from easypicture.controller import ApplicationController
 from easypicture.domain import Document, DocumentKind, SpriteFrameContentMode
 from easypicture.domain.document import Unsubscribe
 from easypicture.jobs import CancellationToken, JobRunner
-from easypicture.persistence import DocumentSnapshot, render_snapshot_region
-from easypicture.pixels import Rect
+from easypicture.persistence import (
+    DocumentSnapshot,
+    render_animation_preview,
+    render_snapshot_region,
+)
+from easypicture.pixels import Rect, RGBAArray
 from easypicture.ui.dialogs import DialogService
 from easypicture.ui.notifications import NotificationService
 from easypicture.ui.settings import AppSettings
@@ -25,12 +29,19 @@ from easypicture.ui.settings import AppSettings
 
 @dataclass(frozen=True, slots=True)
 class EditingSurfaceRef:
-    kind: Literal["source", "frame"]
+    kind: Literal["source", "frame", "animation"]
     frame_id: UUID | None = None
+    animation_id: UUID | None = None
 
     def __post_init__(self) -> None:
-        if (self.kind == "source") != (self.frame_id is None):
-            raise ValueError("source surfaces cannot reference a frame")
+        if self.kind == "source":
+            if self.frame_id is not None or self.animation_id is not None:
+                raise ValueError("source surfaces cannot reference content")
+        elif self.kind == "frame":
+            if self.frame_id is None or self.animation_id is not None:
+                raise ValueError("frame surfaces require exactly one frame")
+        elif self.animation_id is None or self.frame_id is not None:
+            raise ValueError("animation surfaces require exactly one animation")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,11 +61,15 @@ class ProjectSession:
         default_factory=lambda: [EditingSurfaceRef("source")]
     )
     active_surface: EditingSurfaceRef = EditingSurfaceRef("source")
-    active_frame_group_id: UUID | None = None
+    active_sprite_animation_id: UUID | None = None
     canvas_states: dict[EditingSurfaceRef, CanvasViewState] = field(default_factory=dict)
     linked_surface_documents: dict[UUID, tuple[int, Document]] = field(
         default_factory=dict
     )
+    animation_surface_documents: dict[UUID, tuple[int, Document]] = field(
+        default_factory=dict
+    )
+    animation_surface_indices: dict[UUID, int] = field(default_factory=dict)
 
     @property
     def document(self) -> Document:
@@ -67,6 +82,37 @@ class ProjectSession:
     def edit_document(self) -> Document:
         if self.active_surface.kind == "source":
             return self.document
+        if self.active_surface.kind == "animation":
+            assert self.active_surface.animation_id is not None
+            animation_id = self.active_surface.animation_id
+            cached = self.animation_surface_documents.get(animation_id)
+            if cached is not None and cached[0] == self.document.revision:
+                return cached[1]
+            animation = self.document.sprite_workspace.animation_by_id(animation_id)
+            if not animation.frame_ids:
+                preview = Document.create_sprite_frame(
+                    self.document.sprite_workspace.cell_size
+                )
+            else:
+                index = min(
+                    max(self.animation_surface_indices.get(animation_id, 0), 0),
+                    len(animation.frame_ids) - 1,
+                )
+                pixels = render_animation_preview(
+                    DocumentSnapshot.capture(self.document),
+                    animation_id,
+                    index,
+                    1,
+                    CancellationToken(),
+                    lambda _done, _total, _label: None,
+                )
+                preview = self._preview_document(pixels)
+            preview.mark_clean()
+            self.animation_surface_documents[animation_id] = (
+                self.document.revision,
+                preview,
+            )
+            return preview
         assert self.active_surface.frame_id is not None
         frame = self.document.sprite_workspace.frame_by_id(self.active_surface.frame_id)
         if frame.content_mode is SpriteFrameContentMode.DETACHED:
@@ -80,6 +126,12 @@ class ProjectSession:
             CancellationToken(),
             lambda _done, _total, _label: None,
         )
+        preview = self._preview_document(pixels)
+        preview.mark_clean()
+        self.linked_surface_documents[frame.id] = (self.document.revision, preview)
+        return preview
+
+    def _preview_document(self, pixels: RGBAArray) -> Document:
         preview = Document.create_sprite_frame(self.document.sprite_workspace.cell_size)
         preview.active_layer.pixels.write_region(
             Rect(0, 0, preview.width, preview.height),
@@ -87,7 +139,6 @@ class ProjectSession:
         )
         preview.active_layer.record_pixel_change()
         preview.mark_clean()
-        self.linked_surface_documents[frame.id] = (self.document.revision, preview)
         return preview
 
     @property
@@ -97,6 +148,10 @@ class ProjectSession:
         assert self.active_surface.frame_id is not None
         frame = self.document.sprite_workspace.frame_by_id(self.active_surface.frame_id)
         return frame.content_mode is SpriteFrameContentMode.LINKED
+
+    @property
+    def active_surface_is_read_only(self) -> bool:
+        return self.active_surface.kind == "animation" or self.active_surface_is_linked
 
 
 class WorkspaceCommandProxy(QObject):
@@ -138,13 +193,16 @@ class WorkspaceCommandProxy(QObject):
             "detach_sprite_frame",
             "reset_sprite_frame_to_source",
             "duplicate_sprite_frame",
-            "create_sprite_frame_group",
-            "rename_sprite_frame_group",
-            "move_sprite_frame_group",
-            "delete_sprite_frame_group",
-            "move_sprite_frame_to_group",
-            "move_sprite_frames_to_group",
-            "reorder_sprite_frame_group",
+            "create_sprite_animation",
+            "rename_sprite_animation",
+            "move_sprite_animation",
+            "delete_sprite_animation",
+            "move_sprite_frame_to_animation",
+            "move_sprite_frames_to_animation",
+            "reorder_sprite_animation_frames",
+            "set_sprite_animation_fps",
+            "set_sprite_animation_playback_mode",
+            "set_sprite_frame_duration_ticks",
             "reorder_ungrouped_sprite_frames",
         }
         if service is None or (self._read_only and name not in sprite_workspace_methods):
@@ -165,6 +223,7 @@ class WorkspaceController(QObject):
     sessions_changed = Signal()
     active_session_changed = Signal(int)
     surfaces_changed = Signal()
+    animation_surface_changed = Signal(object)
 
     def __init__(
         self,
@@ -301,11 +360,11 @@ class WorkspaceController(QObject):
         session = self._sessions[index]
         edit_document = session.edit_document
         session.controller.commands.set_edit_document(
-            session.document if session.active_surface_is_linked else edit_document
+            session.document if session.active_surface_is_read_only else edit_document
         )
         self._command_proxy.set_service(
             session.controller.commands,
-            read_only=session.active_surface_is_linked,
+            read_only=session.active_surface_is_read_only,
         )
         self._subscribe_surface(edit_document)
         self.active_session_changed.emit(index)
@@ -335,6 +394,45 @@ class WorkspaceController(QObject):
             session.open_surfaces.append(surface)
         return self.set_active_surface(surface)
 
+    def open_animation_surface(self, animation_id: UUID) -> bool:
+        session = self.active_session
+        if session is None:
+            return False
+        session.document.sprite_workspace.animation_by_id(animation_id)
+        surface = EditingSurfaceRef("animation", animation_id=animation_id)
+        if surface not in session.open_surfaces:
+            session.open_surfaces.append(surface)
+        return self.set_active_surface(surface)
+
+    def update_animation_surface(
+        self,
+        animation_id: UUID,
+        frame_index: int,
+        pixels: RGBAArray,
+    ) -> bool:
+        session = self.active_session
+        if session is None:
+            return False
+        animation = session.document.sprite_workspace.animation_by_id(animation_id)
+        if not animation.frame_ids:
+            return False
+        resolved = min(max(frame_index, 0), len(animation.frame_ids) - 1)
+        preview = session._preview_document(pixels)
+        session.animation_surface_indices[animation_id] = resolved
+        session.animation_surface_documents[animation_id] = (
+            session.document.revision,
+            preview,
+        )
+        surface = EditingSurfaceRef("animation", animation_id=animation_id)
+        if session.active_surface == surface:
+            session.controller.commands.set_edit_document(session.document)
+            self._command_proxy.set_service(
+                session.controller.commands,
+                read_only=True,
+            )
+            self.animation_surface_changed.emit(preview)
+        return True
+
     def set_active_surface(self, surface: EditingSurfaceRef) -> bool:
         session = self.active_session
         if session is None or surface not in session.open_surfaces:
@@ -345,11 +443,11 @@ class WorkspaceController(QObject):
         session.active_surface = surface
         edit_document = session.edit_document
         session.controller.commands.set_edit_document(
-            session.document if session.active_surface_is_linked else edit_document
+            session.document if session.active_surface_is_read_only else edit_document
         )
         self._command_proxy.set_service(
             session.controller.commands,
-            read_only=session.active_surface_is_linked,
+            read_only=session.active_surface_is_read_only,
         )
         self._subscribe_surface(edit_document)
         self.document_changed.emit(edit_document)
@@ -364,6 +462,20 @@ class WorkspaceController(QObject):
         if surface not in session.open_surfaces:
             return
         session.open_surfaces.remove(surface)
+        if session.active_surface == surface:
+            self.set_active_surface(EditingSurfaceRef("source"))
+        self.surfaces_changed.emit()
+
+    def close_animation_surface(self, animation_id: UUID) -> None:
+        session = self.active_session
+        if session is None:
+            return
+        surface = EditingSurfaceRef("animation", animation_id=animation_id)
+        if surface not in session.open_surfaces:
+            return
+        session.open_surfaces.remove(surface)
+        session.animation_surface_documents.pop(animation_id, None)
+        session.animation_surface_indices.pop(animation_id, None)
         if session.active_surface == surface:
             self.set_active_surface(EditingSurfaceRef("source"))
         self.surfaces_changed.emit()
@@ -446,7 +558,7 @@ class WorkspaceController(QObject):
         parent: QWidget,
         path: Path,
         *,
-        included_group_ids: tuple[UUID, ...] | None = None,
+        included_animation_ids: tuple[UUID, ...] | None = None,
         include_ungrouped: bool = True,
         horizontal_spacing: int = 0,
         vertical_spacing: int = 0,
@@ -456,7 +568,7 @@ class WorkspaceController(QObject):
         return False if session is None else session.controller.export_sprite_atlas_to(
             parent,
             path,
-            included_group_ids=included_group_ids,
+            included_animation_ids=included_animation_ids,
             include_ungrouped=include_ungrouped,
             horizontal_spacing=horizontal_spacing,
             vertical_spacing=vertical_spacing,
@@ -485,11 +597,20 @@ class WorkspaceController(QObject):
 
     def _on_project_event(self, session: ProjectSession, event: object) -> None:
         session.linked_surface_documents.clear()
+        session.animation_surface_documents.clear()
         valid_frames = {frame.id for frame in session.document.sprite_workspace.frames}
+        valid_animations = {
+            animation.id for animation in session.document.sprite_workspace.animations
+        }
         session.open_surfaces = [
             surface
             for surface in session.open_surfaces
-            if surface.kind == "source" or surface.frame_id in valid_frames
+            if surface.kind == "source"
+            or (surface.kind == "frame" and surface.frame_id in valid_frames)
+            or (
+                surface.kind == "animation"
+                and surface.animation_id in valid_animations
+            )
         ]
         if session.active_surface not in session.open_surfaces:
             session.active_surface = EditingSurfaceRef("source")
@@ -500,16 +621,16 @@ class WorkspaceController(QObject):
                 self.document_changed.emit(session.document)
                 self.surfaces_changed.emit()
         elif session is self.active_session and (
-            session.active_surface_is_linked or self._command_proxy.read_only
+            session.active_surface_is_read_only or self._command_proxy.read_only
         ):
             self._unsubscribe_surface()
             edit_document = session.edit_document
             session.controller.commands.set_edit_document(
-                session.document if session.active_surface_is_linked else edit_document
+                session.document if session.active_surface_is_read_only else edit_document
             )
             self._command_proxy.set_service(
                 session.controller.commands,
-                read_only=session.active_surface_is_linked,
+                read_only=session.active_surface_is_read_only,
             )
             self._subscribe_surface(edit_document)
             self.document_changed.emit(edit_document)

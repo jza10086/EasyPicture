@@ -186,9 +186,27 @@ class ApplicationController(QObject):
         if candidate is None or not self._resolve_unsaved(parent):
             return False
         document, notices = candidate
+        suggested_project_path = resolved_path.with_suffix(".limg")
+        project_path = self.dialogs.choose_project_save_file(
+            parent,
+            str(suggested_project_path),
+        )
+        if project_path is None:
+            return False
+        receipt = self._save_document_candidate(parent, document, project_path)
+        if receipt is None:
+            return False
+        document.set_project_path(receipt.path)
+        document.mark_clean()
         self._replace_document(document)
-        self._record_recent_file(resolved_path)
-        self._logger.info("imported %s as a new project", resolved_path)
+        self._clear_recovery()
+        self._record_recent_file(receipt.path)
+        self.status_message.emit(f"已导入并新建 {receipt.path.name}")
+        self._logger.info(
+            "imported %s as new project %s",
+            resolved_path,
+            receipt.path,
+        )
         self.dialogs.show_warnings(parent, "导入提示", notices)
         return True
 
@@ -238,6 +256,10 @@ class ApplicationController(QObject):
 
     def open_recent_path(self, parent: QWidget, path: Path) -> bool:
         candidate = Path(path)
+        if candidate.suffix.casefold() != ".limg":
+            self.settings.remove_recent_file(candidate)
+            self.recent_files_changed.emit(self.recent_files)
+            return False
         if not candidate.exists():
             self.settings.remove_recent_file(candidate)
             self.recent_files_changed.emit(self.recent_files)
@@ -247,9 +269,7 @@ class ApplicationController(QObject):
                 details=str(candidate),
             )
             return False
-        if candidate.suffix.lower() == ".limg":
-            return self.open_path(parent, candidate)
-        return self.import_path(parent, candidate)
+        return self.open_path(parent, candidate)
 
     def clear_recent_files(self) -> None:
         self.settings.clear_recent_files()
@@ -376,7 +396,7 @@ class ApplicationController(QObject):
         parent: QWidget,
         path: Path,
         *,
-        included_group_ids: tuple[UUID, ...] | None = None,
+        included_animation_ids: tuple[UUID, ...] | None = None,
         include_ungrouped: bool = True,
         horizontal_spacing: int = 0,
         vertical_spacing: int = 0,
@@ -388,7 +408,7 @@ class ApplicationController(QObject):
         request = SpriteAtlasExportRequest(
             snapshot=DocumentSnapshot.capture(document),
             path=path,
-            included_group_ids=included_group_ids,
+            included_animation_ids=included_animation_ids,
             include_ungrouped=include_ungrouped,
             horizontal_spacing=horizontal_spacing,
             vertical_spacing=vertical_spacing,
@@ -579,6 +599,28 @@ class ApplicationController(QObject):
         self._logger.info("saved project %s", receipt.path)
         return True
 
+    def _save_document_candidate(
+        self,
+        parent: QWidget,
+        document: Document,
+        path: Path,
+    ) -> SaveReceipt | None:
+        """Persist an imported candidate before exposing it as the active project."""
+
+        snapshot = DocumentSnapshot.capture(document)
+        outcome = self._run_foreground(
+            parent,
+            "新建导入项目",
+            lambda token, progress: save_project(snapshot, path, token, progress),
+        )
+        if outcome.status is not JobStatus.SUCCESS or not isinstance(
+            outcome.value,
+            SaveReceipt,
+        ):
+            self._report_job_failure(parent, "新建导入项目失败", outcome)
+            return None
+        return outcome.value
+
     def _resolve_unsaved(self, parent: QWidget) -> bool:
         document = self._document
         if document is None or not document.modified:
@@ -742,6 +784,7 @@ class ApplicationController(QObject):
         dialog.open()
         loop.exec()
         dialog.close()
+        self.jobs.wait_for_idle()
         outcome = (
             JobOutcome(handle.job_id, JobStatus.CANCELLED)
             if not outcome_box
@@ -779,6 +822,8 @@ class ApplicationController(QObject):
         self.dialogs.show_error(parent, title, message)
 
     def _record_recent_file(self, path: Path) -> None:
+        if path.suffix.casefold() != ".limg":
+            return
         recent = self.settings.add_recent_file(path)
         self.recent_files_changed.emit(recent)
 
