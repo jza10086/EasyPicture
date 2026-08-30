@@ -70,6 +70,7 @@ class Document:
 
     kind: DocumentKind
     size: Size
+    _maximum_dimension = MAX_DOCUMENT_DIMENSION
 
     def __init__(
         self,
@@ -94,9 +95,9 @@ class Document:
                 raise ValueError("document contains an invalid top-level node")
         if len(root_nodes) > MAX_DOCUMENT_LAYERS:
             raise ValueError(f"document cannot contain more than {MAX_DOCUMENT_LAYERS} root groups")
-        if not 1 <= size.width <= MAX_DOCUMENT_DIMENSION:
+        if not 1 <= size.width <= self._maximum_dimension:
             raise ValueError("document width is out of range")
-        if not 1 <= size.height <= MAX_DOCUMENT_DIMENSION:
+        if not 1 <= size.height <= self._maximum_dimension:
             raise ValueError("document height is out of range")
         if selection.size != size:
             raise ValueError("selection size must match the document")

@@ -60,6 +60,14 @@ class BrushOptionsWidget(QWidget):
         self.hardness_spin = self._spin(0, 100, round(settings.hardness * 100), "%")
         self.opacity_spin = self._spin(0, 100, round(settings.opacity * 100), "%")
         self.spacing_spin = self._spin(1, 200, round(settings.spacing * 100), "%")
+        defaults = BrushSettings()
+        for field, value in (
+            (self.size_spin, defaults.size),
+            (self.hardness_spin, round(defaults.hardness * 100)),
+            (self.opacity_spin, round(defaults.opacity * 100)),
+            (self.spacing_spin, round(defaults.spacing * 100)),
+        ):
+            field.setDefaultValue(value)
         self.antialias_check = QCheckBox("抗锯齿", self)
         self.antialias_check.setChecked(settings.antialias)
         self.mode_combo = _paint_mode_combo(settings.mode, self)
@@ -146,6 +154,7 @@ class BucketOptionsWidget(QWidget):
             0,
             255,
             settings.tolerance,
+            default_value=BucketSettings().tolerance,
             parent=self,
         )
         self.connectivity_combo = BlenderComboBox(self)
@@ -160,6 +169,7 @@ class BucketOptionsWidget(QWidget):
             0,
             8,
             settings.edge_expansion,
+            default_value=BucketSettings().edge_expansion,
             suffix=" px",
             parent=self,
         )
@@ -276,6 +286,7 @@ class MagicWandOptionsWidget(QWidget):
         self.mode_combo = BlenderComboBox(self)
         _add_selection_modes(self.mode_combo, settings.mode)
         self.tolerance_spin = DragValueSpinBox(0, 255, settings.tolerance, parent=self)
+        self.tolerance_spin.setDefaultValue(MagicWandSettings().tolerance)
         self.connectivity_combo = BlenderComboBox(self)
         self.connectivity_combo.addItem("4 邻域", 4)
         self.connectivity_combo.addItem("8 邻域", 8)
@@ -650,6 +661,7 @@ class ShapeOptionsWidget(QWidget):
         self.kind_combo.setCurrentIndex(
             max(0, self.kind_combo.findData(settings.shape_kind().value))
         )
+        self.kind_combo.setDefaultValue(ShapeKind.RECTANGLE.value)
         current = settings.shape_settings()
         self.output_combo = BlenderComboBox(self)
         self.output_combo.addItem("栅格", ShapeOutputTarget.RASTER.value)
@@ -668,10 +680,12 @@ class ShapeOptionsWidget(QWidget):
         ):
             self.style_combo.addItem(label, style.value)
         self.style_combo.setCurrentIndex(max(0, self.style_combo.findData(current.style.value)))
+        self.style_combo.setDefaultValue(ShapeSettings().style.value)
         self.stroke_width_spin = DragValueDoubleSpinBox(
             max(1.0, STROKE_WIDTH_RANGE.soft_minimum),
             STROKE_WIDTH_RANGE.soft_maximum,
             current.stroke_width,
+            default_value=ShapeSettings().stroke_width,
             manual_minimum=max(1.0, STROKE_WIDTH_RANGE.hard_minimum),
             manual_maximum=STROKE_WIDTH_RANGE.hard_maximum,
             suffix=" px",
@@ -681,6 +695,7 @@ class ShapeOptionsWidget(QWidget):
             0,
             100,
             round(current.opacity * 100),
+            default_value=round(ShapeSettings().opacity * 100),
             suffix="%",
             parent=self,
         )

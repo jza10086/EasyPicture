@@ -197,6 +197,7 @@ class ShapePropertiesPanel(QWidget):
             manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
             manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
             suffix=" px",
+            default_value=32.0 if label in {"W", "H", "X2", "Y2"} else 0.0,
             parent=self,
         )
         field.interactionStarted.connect(lambda label=label: self.edit_started.emit(label))

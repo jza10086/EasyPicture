@@ -174,6 +174,7 @@ class SpriteFramePanel(QWidget):
     animation_open_requested = Signal(object)
     animation_fps_requested = Signal(object, int)
     animation_mode_requested = Signal(object, object)
+    tile_inspect_requested = Signal(object)
 
     FRAME_ID_ROLE = int(Qt.ItemDataRole.UserRole)
 
@@ -224,6 +225,7 @@ class SpriteFramePanel(QWidget):
             (SpritePlaybackMode.PING_PONG, "往返"),
         ):
             self.animation_mode.addItem(label, mode)
+        self.animation_mode.setDefaultValue(SpritePlaybackMode.LOOP)
         self.animation_duration = QLabel("0.00 s", self.animation_controls)
         self.open_animation_button = QPushButton("打开动画预览", self.animation_controls)
         animation_controls_layout.addWidget(QLabel("FPS", self.animation_controls))
@@ -298,6 +300,7 @@ class SpriteFramePanel(QWidget):
         self.view_size_combo = BlenderComboBox(self)
         for size, label in zip(SPRITE_THUMBNAIL_SIZES, ("小", "中", "大"), strict=True):
             self.view_size_combo.addItem(label, size)
+        self.view_size_combo.setDefaultValue(64)
         self.view_size_combo.setCurrentIndex(
             self.view_size_combo.findData(self._thumbnail_size)
         )
@@ -837,6 +840,7 @@ class SpriteFramePanel(QWidget):
             if frame is not None and frame.content_mode is SpriteFrameContentMode.LINKED
             else "重置为源区域"
         )
+        tile_action = menu.addAction("在 Tile 工作区检查")
         menu.addSeparator()
         previous_action = menu.addAction("前移")
         next_action = menu.addAction("后移")
@@ -855,6 +859,8 @@ class SpriteFramePanel(QWidget):
         frame_id = item.data(self.FRAME_ID_ROLE)
         if chosen is duplicate_action:
             self.duplicate_requested.emit(frame_id)
+        elif chosen is tile_action:
+            self.tile_inspect_requested.emit(frame_id)
         elif chosen is content_action and frame is not None:
             if frame.content_mode is SpriteFrameContentMode.LINKED:
                 self.detach_requested.emit(frame_id)

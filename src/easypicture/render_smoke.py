@@ -11,6 +11,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 from PySide6.QtWidgets import QApplication
 
+from easypicture.commands import DocumentCommandService
 from easypicture.domain import (
     AffineTransform,
     Document,
@@ -21,11 +22,15 @@ from easypicture.domain import (
     SvgRectGeometry,
     create_svg_primitive,
 )
-from easypicture.imaging import TransformInterpolation
-from easypicture.pixels import DEFAULT_TILE_SIZE, TileCoord
+from easypicture.imaging import TilePreviewMode, TransformInterpolation
+from easypicture.jobs import CancellationToken
+from easypicture.persistence import DocumentSnapshot
+from easypicture.pixels import DEFAULT_TILE_SIZE, Rect, TileCoord
 from easypicture.render import RenderBackendKind
 from easypicture.runtime import package_versions
 from easypicture.ui.canvas_view import CanvasView
+from easypicture.ui.settings import TileWorkspaceSettings
+from easypicture.ui.tile_preview import TilePreviewRequest, calculate_tile_preview
 
 
 def run_render_smoke_test(
@@ -173,6 +178,7 @@ def run_render_smoke_test(
                 bottom_right.y(),
             ),
         )
+        tile_error, tile_overlay_error = _tile_surface_smoke(app, view, reference, directory)
         diagnostics = view.render_coordinator.diagnostics
         payload = {
             "dependencies": package_versions(),
@@ -188,6 +194,8 @@ def run_render_smoke_test(
             "maximum_preview_channel_error": preview_error,
             "maximum_replaced_preview_channel_error": replaced_preview_error,
             "maximum_transient_vector_preview_channel_error": transient_vector_error,
+            "maximum_tile_surface_channel_error": tile_error,
+            "maximum_tile_overlay_channel_error": tile_overlay_error,
             "maximum_channel_error_including_border": full_error,
             "border_comparison": "2 px document border excluded",
         }
@@ -204,6 +212,8 @@ def run_render_smoke_test(
             and preview_error <= 1
             and replaced_preview_error <= 1
             and transient_vector_error <= 1
+            and tile_error <= 1
+            and tile_overlay_error <= 1
             else 3
         )
     except Exception as error:
@@ -224,6 +234,63 @@ def run_render_smoke_test(
         view.close()
         reference.close()
         _process_frames(app, count=1)
+
+
+def _tile_surface_smoke(
+    app: QApplication, view: CanvasView, reference: CanvasView, directory: Path
+) -> tuple[int, int]:
+    project = _create_scene()
+    commands = DocumentCommandService()
+    commands.attach_document(project)
+    commands.set_sprite_cell_size(Size(128, 128), clear_frames=False)
+    commands.create_sprite_frame(Rect(128, 0, 128, 128))
+    commands.create_sprite_frame(Rect(256, 0, 128, 128))
+    first, second = project.sprite_workspace.frames
+    maximum = 0
+    overlay_maximum = 0
+    for mode in (TilePreviewMode.OFFSET, TilePreviewMode.TRANSITION, TilePreviewMode.OFFSET):
+        result = calculate_tile_preview(
+            TilePreviewRequest(
+                DocumentSnapshot.capture(project), first.id, second.id,
+                TileWorkspaceSettings(preview_mode=mode),
+            ), CancellationToken(), lambda _done, _total, _label: None,
+        )
+        for canvas in (view, reference):
+            canvas.set_document(result.document, preserve_view=True)
+        _process_frames(app)
+        for canvas in (view, reference):
+            canvas.set_zoom(1)
+            canvas.centerOn(192, 192)
+        _process_frames(app)
+        actual = _capture_frame(view, app).convertToFormat(QImage.Format.Format_RGBA8888)
+        expected = _capture_frame(reference, app).convertToFormat(QImage.Format.Format_RGBA8888)
+        actual.save(str(directory / f"tile-{mode.value}.png"))
+        expected.save(str(directory / f"tile-{mode.value}-reference.png"))
+        corner = view.mapFromScene(0, 0)
+        bottom = view.mapFromScene(result.document.width, result.document.height)
+        error, _ = _channel_errors(
+            actual, expected, (corner.x(), corner.y(), bottom.x(), bottom.y())
+        )
+        maximum = max(maximum, error)
+        # Native diagnostic captures deliberately precede scene overlays. For
+        # heatmaps compare completed Qt widget framebuffers on both backends.
+        for canvas in (view, reference):
+            canvas.set_tile_heatmap(result.segments)
+        _process_frames(app)
+        view.request_render_capture(include_overlays=True)
+        _process_frames(app)
+        completed = view.take_render_capture()
+        actual = (completed if completed is not None else _grab_framebuffer(view)).convertToFormat(
+            QImage.Format.Format_RGBA8888
+        )
+        expected = _grab_framebuffer(reference).convertToFormat(QImage.Format.Format_RGBA8888)
+        actual.save(str(directory / f"tile-{mode.value}-overlay.png"))
+        expected.save(str(directory / f"tile-{mode.value}-overlay-reference.png"))
+        overlay_error, _ = _channel_errors(
+            actual, expected, (corner.x(), corner.y(), bottom.x(), bottom.y())
+        )
+        overlay_maximum = max(overlay_maximum, overlay_error)
+    return maximum, overlay_maximum
 
 
 def _create_scene() -> Document:

@@ -22,6 +22,9 @@ from easypicture.imaging import (
     ShapeOutputTarget,
     ShapePaintStyle,
     ShapeSettings,
+    TileDirection,
+    TilePreviewMode,
+    TileTransitionMode,
     TransformInterpolation,
 )
 from easypicture.persistence import ExportFormat
@@ -54,6 +57,21 @@ class OnionSkinSettings:
     previous_color: QColor = field(default_factory=lambda: QColor("#ff4040"))
     next_color: QColor = field(default_factory=lambda: QColor("#4080ff"))
     enabled: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class TileWorkspaceSettings:
+    preview_mode: TilePreviewMode = TilePreviewMode.OFFSET
+    repeat_scale: int = 3
+    direction: TileDirection = TileDirection.LEFT_TO_RIGHT
+    tolerance: int = 0
+    include_alpha: bool = True
+    heatmap_visible: bool = True
+    offset_x: int = 0
+    offset_y: int = 0
+    transition_mode: TileTransitionMode = TileTransitionMode.ORDERED_DITHER
+    boundary_percent: int = 50
+    transition_width: int = 8
 
 
 class AppSettings:
@@ -350,6 +368,75 @@ class AppSettings:
             "sprite/pivot_marker_radius",
             min(max(int(radius), 1), 8192),
         )
+        self._settings.sync()
+
+    def tile_workspace_settings(self) -> TileWorkspaceSettings:
+        preview_raw = str(
+            self._settings.value(
+                "tile_workspace/preview_mode", TilePreviewMode.OFFSET.value
+            )
+        )
+        direction_raw = str(
+            self._settings.value(
+                "tile_workspace/direction", TileDirection.LEFT_TO_RIGHT.value
+            )
+        )
+        transition_raw = str(
+            self._settings.value(
+                "tile_workspace/transition_mode",
+                TileTransitionMode.ORDERED_DITHER.value,
+            )
+        )
+        try:
+            preview_mode = TilePreviewMode(preview_raw)
+        except ValueError:
+            preview_mode = TilePreviewMode.OFFSET
+        try:
+            direction = TileDirection(direction_raw)
+        except ValueError:
+            direction = TileDirection.LEFT_TO_RIGHT
+        try:
+            transition_mode = TileTransitionMode(transition_raw)
+        except ValueError:
+            transition_mode = TileTransitionMode.ORDERED_DITHER
+
+        return TileWorkspaceSettings(
+            preview_mode=preview_mode,
+            repeat_scale=(
+                5 if self._int_value("tile_workspace/repeat_scale", 3) == 5 else 3
+            ),
+            direction=direction,
+            tolerance=self._bounded_int("tile_workspace/tolerance", 0, 0, 255),
+            include_alpha=self._bool_value("tile_workspace/include_alpha", True),
+            heatmap_visible=self._bool_value("tile_workspace/heatmap", True),
+            offset_x=self._int_value("tile_workspace/offset_x", 0),
+            offset_y=self._int_value("tile_workspace/offset_y", 0),
+            transition_mode=transition_mode,
+            boundary_percent=self._bounded_int(
+                "tile_workspace/boundary_percent", 50, 0, 100
+            ),
+            transition_width=max(
+                1,
+                self._int_value("tile_workspace/transition_width", 8),
+            ),
+        )
+
+    def set_tile_workspace_settings(self, settings: TileWorkspaceSettings) -> None:
+        values = {
+            "preview_mode": settings.preview_mode.value,
+            "repeat_scale": settings.repeat_scale,
+            "direction": settings.direction.value,
+            "tolerance": settings.tolerance,
+            "include_alpha": settings.include_alpha,
+            "heatmap": settings.heatmap_visible,
+            "offset_x": settings.offset_x,
+            "offset_y": settings.offset_y,
+            "transition_mode": settings.transition_mode.value,
+            "boundary_percent": settings.boundary_percent,
+            "transition_width": settings.transition_width,
+        }
+        for name, value in values.items():
+            self._settings.setValue(f"tile_workspace/{name}", value)
         self._settings.sync()
 
     def brush_settings(self) -> BrushSettings:

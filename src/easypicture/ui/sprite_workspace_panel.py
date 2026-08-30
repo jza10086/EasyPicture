@@ -170,6 +170,8 @@ class SpriteWorkspacePanel(QWidget):
             )
             self.pivot_x.setPropertyRange(0, max(0, workspace.cell_size.width - 1))
             self.pivot_y.setPropertyRange(0, max(0, workspace.cell_size.height - 1))
+            self.pivot_x.setDefaultValue(workspace.cell_size.width // 2)
+            self.pivot_y.setDefaultValue(workspace.cell_size.height // 2)
             maximum_radius = max(
                 1,
                 min(workspace.cell_size.width, workspace.cell_size.height),

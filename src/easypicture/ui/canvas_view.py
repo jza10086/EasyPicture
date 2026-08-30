@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from uuid import UUID
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLineF, QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QColor,
     QContextMenuEvent,
@@ -136,6 +136,9 @@ class CanvasView(QGraphicsView):
         self._brush_cursor_suspended = False
         self._tool_controller: ToolController | None = None
         self._interaction_scene_bounds: QRectF | None = None
+        self._tile_heatmap_segments: tuple[tuple[QLineF, int], ...] = ()
+        self._capture_overlays_requested = False
+        self._captured_overlay_frame: QImage | None = None
         self._fit_request_id = 0
         self.scene().setSceneRect(QRectF(-100.0, -100.0, 200.0, 200.0))
 
@@ -289,12 +292,17 @@ class CanvasView(QGraphicsView):
             self._selection_overlay.setVisible(True)
         self._update_pan_bounds()
 
-    def request_render_capture(self) -> None:
-        if self._opengl_backend is not None:
+    def request_render_capture(self, *, include_overlays: bool = False) -> None:
+        self._captured_overlay_frame = None
+        self._capture_overlays_requested = include_overlays
+        if self._opengl_backend is not None and not include_overlays:
             self._opengl_backend.request_capture()
         self.viewport().update()
 
     def take_render_capture(self) -> QImage | None:
+        if self._captured_overlay_frame is not None:
+            image, self._captured_overlay_frame = self._captured_overlay_frame, None
+            return image
         if self._opengl_backend is None:
             return None
         return self._opengl_backend.take_capture()
@@ -307,6 +315,22 @@ class CanvasView(QGraphicsView):
         self._interaction_scene_bounds = None if bounds is None else QRectF(bounds)
         self._update_pan_bounds()
 
+    def set_tile_heatmap(
+        self,
+        segments: tuple[tuple[float, float, float, float, int], ...],
+    ) -> None:
+        self._tile_heatmap_segments = tuple(
+            (QLineF(x1, y1, x2, y2), min(255, max(0, int(difference))))
+            for x1, y1, x2, y2, difference in segments
+        )
+        self.viewport().update()
+
+    def clear_tile_heatmap(self) -> None:
+        if not self._tile_heatmap_segments:
+            return
+        self._tile_heatmap_segments = ()
+        self.viewport().update()
+
     def set_document(
         self,
         document: Document | None,
@@ -317,6 +341,7 @@ class CanvasView(QGraphicsView):
         previous_transform = QTransform(self.transform())
         previous_horizontal_scroll = self.horizontalScrollBar().value()
         previous_vertical_scroll = self.verticalScrollBar().value()
+        self._tile_heatmap_segments = ()
         self._interaction_scene_bounds = None
         if self._document_unsubscribe is not None:
             self._document_unsubscribe()
@@ -613,8 +638,31 @@ class CanvasView(QGraphicsView):
 
     def drawForeground(self, painter: QPainter, rect: QRectF | QRect) -> None:
         super().drawForeground(painter, rect)
+        if self._tile_heatmap_segments:
+            painter.save()
+            scene_to_view = painter.worldTransform()
+            painter.resetTransform()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            for line, difference in self._tile_heatmap_segments:
+                ratio = difference / 255.0
+                color = QColor(255, round(138 * (1.0 - ratio)), 0, 230)
+                first = scene_to_view.map(line.p1())
+                second = scene_to_view.map(line.p2())
+                # Integer device-aligned strips avoid the differing half-pixel
+                # conventions of cosmetic QPen lines in raster and GL engines.
+                if line.x1() == line.x2():
+                    top = round(min(first.y(), second.y()))
+                    bottom = round(max(first.y(), second.y()))
+                    strip = QRect(round(first.x()) - 1, top, 3, max(1, bottom - top))
+                else:
+                    left = round(min(first.x(), second.x()))
+                    right = round(max(first.x(), second.x()))
+                    strip = QRect(left, round(first.y()) - 1, max(1, right - left), 3)
+                painter.fillRect(strip, color)
+            painter.restore()
         rect = self._brush_cursor_rect()
         if rect.isEmpty():
+            self._capture_completed_frame(painter)
             return
         painter.save()
         painter.resetTransform()
@@ -631,6 +679,18 @@ class CanvasView(QGraphicsView):
         painter.setPen(inner)
         painter.drawEllipse(rect)
         painter.restore()
+
+        self._capture_completed_frame(painter)
+
+    def _capture_completed_frame(self, painter: QPainter) -> None:
+        backend = self._opengl_backend
+        if self._capture_overlays_requested and backend is not None and backend.is_initialized:
+            self._capture_overlays_requested = False
+            ratio = self.viewport().devicePixelRatioF()
+            self._captured_overlay_frame = backend.capture_completed_frame(
+                painter, round(self.viewport().width() * ratio),
+                round(self.viewport().height() * ratio),
+            )
 
     def _emit_cursor_position(self, viewport_point: QPoint) -> None:
         if self._document is None:

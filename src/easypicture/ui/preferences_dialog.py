@@ -21,7 +21,10 @@ from easypicture.ui.drag_value_spinbox import (
     DragValueDoubleSpinBox,
     DragValueSpinBox,
 )
-from easypicture.ui.selection_style import MAX_SELECTION_OUTLINE_WIDTH
+from easypicture.ui.selection_style import (
+    DEFAULT_SELECTION_OUTLINE_WIDTH,
+    MAX_SELECTION_OUTLINE_WIDTH,
+)
 from easypicture.ui.settings import (
     DEFAULT_NUMERIC_DRAG_SENSITIVITY,
     DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY,
@@ -60,6 +63,7 @@ class PreferencesDialog(QDialog):
             1,
             MAX_SELECTION_OUTLINE_WIDTH,
             selection_width,
+            default_value=DEFAULT_SELECTION_OUTLINE_WIDTH,
             suffix=" px",
             parent=self,
         )
@@ -70,6 +74,7 @@ class PreferencesDialog(QDialog):
             sensitivity_minimum,
             sensitivity_maximum,
             numeric_drag_sensitivity * 100.0,
+            default_value=DEFAULT_NUMERIC_DRAG_SENSITIVITY * 100.0,
             suffix=" %",
             decimals=3,
             parent=self,
@@ -78,6 +83,7 @@ class PreferencesDialog(QDialog):
             sensitivity_minimum,
             sensitivity_maximum,
             numeric_fine_drag_sensitivity * 100.0,
+            default_value=DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY * 100.0,
             suffix=" %",
             decimals=3,
             parent=self,

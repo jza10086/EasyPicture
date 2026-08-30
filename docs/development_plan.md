@@ -3,7 +3,7 @@
 - 状态：拟执行
 - 日期：2026-07-24
 - 依据：用户提供的《轻量化图像处理应用技术栈说明》
-- 当前仓库：P0～P10B 已完成人工验收；P10C 已实现并等待人工验收；当前版本 EasyPicture 0.5.0
+- 当前仓库：P0～P10B 已完成人工验收；P10C 已完成并提交；P10D 已完成人工验收（2026-08-30）；当前版本 EasyPicture 0.6.0
 
 ## 1. 执行结论
 
@@ -679,6 +679,19 @@ P8 范围已根据本机单用户使用目标收缩。当前阶段不承担跨�
 - `.limg schema v4` 保存动画和保持拍数；Atlas JSON v2 同步输出动画顺序、FPS、模式和帧时长。
 
 实现决策见 [`docs/adr/0035-sprite-animation-and-onion-skin.md`](adr/0035-sprite-animation-and-onion-skin.md)；验收记录见 [`docs/p10c_acceptance.md`](p10c_acceptance.md)。
+
+## P10D：Tile 无缝检查与像素过渡（0.6.0）
+
+状态：Accepted，2026-08-30 人工验收通过，包含模式精简和属性默认值菜单改进。
+
+- 现有精灵帧直接作为 Tile 输入，不建立第二套像素所有权；linked 帧读取源图最新合成，detached 帧读取嵌入文档。
+- 每工程提供唯一只读 Tile 检查表面，支持带整数循环偏移的 3×3/5×5 平铺、四方向 A/B 相邻布局及完整帧更新；按模式隐藏无关属性。
+- 接缝比较采用 RGB/RGBA 最大通道差，输出匹配率、平均差值、最大差值和固定屏幕线宽热力图。
+- 过渡生成固定为硬切和 Bayer 4×4 有序抖动，只选择 A/B 的完整 straight RGBA 像素，不产生中间颜色。
+- 生成结果作为未分组 detached 帧嵌入父工程，一条命令同时管理帧元数据和嵌入文档，可继续手工修整。
+- Tile 工作区选择和打开状态仅属于运行时，参数进入 QSettings；`.limg` 保持 schema v4。
+
+实现决策见 [`docs/adr/0036-tile-inspection-and-transition.md`](adr/0036-tile-inspection-and-transition.md)；验收记录见 [`docs/p10d_acceptance.md`](p10d_acceptance.md)。
 
 ## 7. 总工时与交付预期
 

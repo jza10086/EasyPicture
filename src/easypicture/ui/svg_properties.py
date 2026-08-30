@@ -94,6 +94,7 @@ class SvgPropertiesPanel(QWidget):
         self.pivot_x_spin = self._range_field(SIGNED_COORDINATE_RANGE)
         self.pivot_y_spin = self._range_field(SIGNED_COORDINATE_RANGE)
         self.opacity_spin = self._field(0.0, 100.0, suffix="%")
+        self.opacity_spin.setDefaultValue(100.0)
         self.visible_check = QCheckBox("可见", self)
         self.locked_check = QCheckBox("锁定对象", self)
 
@@ -329,13 +330,15 @@ class SvgPropertiesPanel(QWidget):
         *,
         suffix: str = "",
     ) -> DragValueDoubleSpinBox:
-        return self._field(
+        field = self._field(
             numeric_range.soft_minimum,
             numeric_range.soft_maximum,
             suffix=suffix,
             manual_minimum=numeric_range.hard_minimum,
             manual_maximum=numeric_range.hard_maximum,
         )
+        field.setDefaultValue(numeric_range.default_value)
+        return field
 
     def _geometry_page(
         self,
@@ -350,6 +353,8 @@ class SvgPropertiesPanel(QWidget):
             for numeric_range in ranges
         )
         for label, field in zip(labels, fields, strict=True):
+            if label.startswith("圆角"):
+                field.setDefaultValue(0.0)
             form.addRow(label, field)
         return page, fields
 

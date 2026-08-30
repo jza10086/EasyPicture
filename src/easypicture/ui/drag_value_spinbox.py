@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QColor,
+    QContextMenuEvent,
     QCursor,
     QHideEvent,
     QKeyEvent,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLineEdit,
+    QMenu,
     QSizePolicy,
     QWidget,
 )
@@ -84,6 +86,7 @@ class NumericEditState(Enum):
     DRAGGING = "dragging"
     TEXT_EDITING = "text_editing"
     TEXT_SELECTING = "text_selecting"
+    APPLYING_DEFAULT = "applying_default"
     WAIT_ENTER_RELEASE = "wait_enter_release"
     WAIT_RIGHT_RELEASE = "wait_right_release"
     WAIT_CONTEXT_MENU = "wait_context_menu"
@@ -192,6 +195,7 @@ class DragValueSpinBox(QWidget):
         range_fraction_per_pixel: float | None = None,
         fine_range_fraction_per_pixel: float | None = None,
         display_divisor: int = 1,
+        default_value: int | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -210,6 +214,7 @@ class DragValueSpinBox(QWidget):
             fine_range_fraction_per_pixel=fine_range_fraction_per_pixel,
         )
         self._value = self._clamp_hard(value)
+        self._default_value = int(value if default_value is None else default_value)
         self._state = NumericEditState.IDLE
         self._session: _InteractionSession | None = None
         self._cancel_cleanup: _CancelCleanup | None = None
@@ -251,7 +256,7 @@ class DragValueSpinBox(QWidget):
         self.setMinimumHeight(25)
         self.setToolTip(
             "左右拖动按范围比例修改；按住 Shift 精细调整；"
-            "单击后全选并可输入表达式；右键撤销"
+            "单击后全选并可输入表达式；编辑中右键撤销；空闲时右键设为默认值"
         )
         self._restore_display_text()
         self._sync_editor_mode()
@@ -291,6 +296,47 @@ class DragValueSpinBox(QWidget):
 
     def value(self) -> int:
         return self._value
+
+    def defaultValue(self) -> int:
+        """Return the preset constrained by the property's current hard range."""
+        return self._clamp_hard(self._default_value)
+
+    def setDefaultValue(self, value: int) -> None:
+        """Declare a preset without modifying the value or an active edit."""
+        self._default_value = int(value)
+
+    def resetToDefault(self) -> None:
+        """Apply the preset as one normal, undoable property interaction."""
+        if (
+            not self.isEnabled()
+            or self._state is not NumericEditState.IDLE
+            or self.value() == self.defaultValue()
+        ):
+            return
+        self._session = _InteractionSession(self._value, QCursor.pos(), float(self._value))
+        self._set_state(NumericEditState.APPLYING_DEFAULT)
+        self.interactionStarted.emit()
+        if self.interaction_state is not NumericEditState.APPLYING_DEFAULT:
+            return
+        self._set_value_internal(self.defaultValue())
+        if self.interaction_state is NumericEditState.APPLYING_DEFAULT:
+            self._session = None
+            self._set_state(NumericEditState.IDLE)
+            self.editingFinished.emit()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        event.accept()
+        if not self.isEnabled() or self._state is not NumericEditState.IDLE:
+            return
+        menu = QMenu(self)
+        menu.setObjectName("NumericPropertyMenu")
+        action = menu.addAction("设为默认值")
+        action.setToolTip(f"恢复为 {self._format_value(self.defaultValue())}")
+        menu.setToolTipsVisible(True)
+        action.setEnabled(self.value() != self.defaultValue())
+        action.triggered.connect(self.resetToDefault)
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(event.globalPos())
 
     def setValue(self, value: int) -> None:
         """Set a hard-range-clamped value, cancelling an active interaction."""
@@ -1072,6 +1118,7 @@ class DragValueDoubleSpinBox(QWidget):
         decimals: int = 2,
         range_fraction_per_pixel: float | None = None,
         fine_range_fraction_per_pixel: float | None = None,
+        default_value: float | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1092,6 +1139,7 @@ class DragValueDoubleSpinBox(QWidget):
             range_fraction_per_pixel=range_fraction_per_pixel,
             fine_range_fraction_per_pixel=fine_range_fraction_per_pixel,
             display_divisor=self._factor,
+            default_value=None if default_value is None else round(default_value * self._factor),
             parent=self,
         )
         layout = QHBoxLayout(self)
@@ -1122,6 +1170,18 @@ class DragValueDoubleSpinBox(QWidget):
 
     def value(self) -> float:
         return float(self._field.value()) / self._factor
+
+    def defaultValue(self) -> float:
+        return float(self._field.defaultValue()) / self._factor
+
+    def setDefaultValue(self, value: float) -> None:
+        self._field.setDefaultValue(round(value * self._factor))
+
+    def resetToDefault(self) -> None:
+        self._field.resetToDefault()
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self._field.contextMenuEvent(event)
 
     def setValue(self, value: float) -> None:
         self._field.setValue(round(value * self._factor))

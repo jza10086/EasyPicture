@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import UUID, uuid4
 
+import numpy as np
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QUndoGroup
 from PySide6.QtWidgets import QMessageBox, QWidget
 
 from easypicture.commands import DocumentCommandService
 from easypicture.controller import ApplicationController
-from easypicture.domain import Document, DocumentKind, SpriteFrameContentMode
+from easypicture.domain import Document, DocumentKind, Size, SpriteFrameContentMode
 from easypicture.domain.document import Unsubscribe
 from easypicture.jobs import CancellationToken, JobRunner
 from easypicture.persistence import (
@@ -29,14 +30,14 @@ from easypicture.ui.settings import AppSettings
 
 @dataclass(frozen=True, slots=True)
 class EditingSurfaceRef:
-    kind: Literal["source", "frame", "animation"]
+    kind: Literal["source", "frame", "animation", "tile"]
     frame_id: UUID | None = None
     animation_id: UUID | None = None
 
     def __post_init__(self) -> None:
-        if self.kind == "source":
+        if self.kind in {"source", "tile"}:
             if self.frame_id is not None or self.animation_id is not None:
-                raise ValueError("source surfaces cannot reference content")
+                raise ValueError(f"{self.kind} surfaces cannot reference content")
         elif self.kind == "frame":
             if self.frame_id is None or self.animation_id is not None:
                 raise ValueError("frame surfaces require exactly one frame")
@@ -70,6 +71,7 @@ class ProjectSession:
         default_factory=dict
     )
     animation_surface_indices: dict[UUID, int] = field(default_factory=dict)
+    tile_surface_document: Document | None = None
 
     @property
     def document(self) -> Document:
@@ -82,6 +84,18 @@ class ProjectSession:
     def edit_document(self) -> Document:
         if self.active_surface.kind == "source":
             return self.document
+        if self.active_surface.kind == "tile":
+            if self.tile_surface_document is None:
+                pixels = np.zeros(
+                    (
+                        self.document.sprite_workspace.cell_size.height,
+                        self.document.sprite_workspace.cell_size.width,
+                        4,
+                    ),
+                    dtype=np.uint8,
+                )
+                self.tile_surface_document = self._preview_document(pixels)
+            return self.tile_surface_document
         if self.active_surface.kind == "animation":
             assert self.active_surface.animation_id is not None
             animation_id = self.active_surface.animation_id
@@ -132,7 +146,9 @@ class ProjectSession:
         return preview
 
     def _preview_document(self, pixels: RGBAArray) -> Document:
-        preview = Document.create_sprite_frame(self.document.sprite_workspace.cell_size)
+        preview = Document.create_sprite_frame(
+            Size(int(pixels.shape[1]), int(pixels.shape[0]))
+        )
         preview.active_layer.pixels.write_region(
             Rect(0, 0, preview.width, preview.height),
             pixels,
@@ -151,7 +167,7 @@ class ProjectSession:
 
     @property
     def active_surface_is_read_only(self) -> bool:
-        return self.active_surface.kind == "animation" or self.active_surface_is_linked
+        return self.active_surface.kind in {"animation", "tile"} or self.active_surface_is_linked
 
 
 class WorkspaceCommandProxy(QObject):
@@ -191,6 +207,7 @@ class WorkspaceCommandProxy(QObject):
             "reorder_sprite_frames",
             "set_sprite_cell_size",
             "detach_sprite_frame",
+            "create_detached_sprite_frame",
             "reset_sprite_frame_to_source",
             "duplicate_sprite_frame",
             "create_sprite_animation",
@@ -224,6 +241,7 @@ class WorkspaceController(QObject):
     active_session_changed = Signal(int)
     surfaces_changed = Signal()
     animation_surface_changed = Signal(object)
+    tile_surface_changed = Signal(object)
 
     def __init__(
         self,
@@ -404,6 +422,32 @@ class WorkspaceController(QObject):
             session.open_surfaces.append(surface)
         return self.set_active_surface(surface)
 
+    def open_tile_surface(self, preview: Document) -> bool:
+        session = self.active_session
+        if session is None:
+            return False
+        session.tile_surface_document = preview
+        surface = EditingSurfaceRef("tile")
+        if surface not in session.open_surfaces:
+            session.open_surfaces.append(surface)
+        if session.active_surface == surface:
+            self.tile_surface_changed.emit(session.tile_surface_document)
+            return True
+        return self.set_active_surface(surface)
+
+    def update_tile_surface(self, preview: Document) -> bool:
+        session = self.active_session
+        if session is None:
+            return False
+        if session.tile_surface_document is preview:
+            return True
+        session.tile_surface_document = preview
+        if session.active_surface == EditingSurfaceRef("tile"):
+            session.controller.commands.set_edit_document(session.document)
+            self._command_proxy.set_service(session.controller.commands, read_only=True)
+            self.tile_surface_changed.emit(preview)
+        return True
+
     def update_animation_surface(
         self,
         animation_id: UUID,
@@ -476,6 +520,19 @@ class WorkspaceController(QObject):
         session.open_surfaces.remove(surface)
         session.animation_surface_documents.pop(animation_id, None)
         session.animation_surface_indices.pop(animation_id, None)
+        if session.active_surface == surface:
+            self.set_active_surface(EditingSurfaceRef("source"))
+        self.surfaces_changed.emit()
+
+    def close_tile_surface(self) -> None:
+        session = self.active_session
+        if session is None:
+            return
+        surface = EditingSurfaceRef("tile")
+        if surface not in session.open_surfaces:
+            return
+        session.open_surfaces.remove(surface)
+        session.tile_surface_document = None
         if session.active_surface == surface:
             self.set_active_surface(EditingSurfaceRef("source"))
         self.surfaces_changed.emit()
@@ -606,6 +663,7 @@ class WorkspaceController(QObject):
             surface
             for surface in session.open_surfaces
             if surface.kind == "source"
+            or surface.kind == "tile"
             or (surface.kind == "frame" and surface.frame_id in valid_frames)
             or (
                 surface.kind == "animation"
@@ -620,6 +678,10 @@ class WorkspaceController(QObject):
                 self._command_proxy.set_service(session.controller.commands)
                 self.document_changed.emit(session.document)
                 self.surfaces_changed.emit()
+        elif session.active_surface.kind == "tile":
+            # Derived Tile surfaces refresh atomically via tile_surface_changed;
+            # rebinding the old document here would reset zoom and tool state.
+            pass
         elif session is self.active_session and (
             session.active_surface_is_read_only or self._command_proxy.read_only
         ):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 
 import numpy as np
 
@@ -105,6 +105,25 @@ class TilePixelStore:
         clone._tile_revisions = self._tile_revisions.copy()
         clone._revision = self._revision
         return clone
+
+    @classmethod
+    def from_readonly_tiles(
+        cls, tiles: Mapping[TileCoord, RGBAArray], tile_size: int = DEFAULT_TILE_SIZE
+    ) -> TilePixelStore:
+        """Adopt immutable buffers, preserving COW even for repeated preview tiles.
+
+        The producer relinquishes mutable access to these arrays. Ordinary writes
+        still acquire fresh buffers through writable_tile/replace_tile.
+        """
+        store = cls(tile_size)
+        for coord, pixels in tiles.items():
+            validate_rgba_array(pixels, expected_width=tile_size, expected_height=tile_size)
+            if pixels.flags.writeable:
+                raise ValueError("shared tiles must be read-only")
+            store._tiles[coord] = pixels
+            store._tile_revisions[coord] = 1
+        store._revision = 1 if tiles else 0
+        return store
 
     def read_region(self, rect: Rect) -> RGBAArray:
         """Copy a rectangular region into a contiguous RGBA array."""

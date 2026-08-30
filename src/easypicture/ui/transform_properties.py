@@ -25,6 +25,8 @@ class TransformPropertiesPanel(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._syncing = False
+        self._corner_defaults_set = False
+        self._pivot_defaults_set = False
         title = QLabel("自由变换角点", self)
         title.setObjectName("TransformPropertiesTitle")
         hint = QLabel(
@@ -86,6 +88,10 @@ class TransformPropertiesPanel(QWidget):
             self.set_session_active(False)
             return
         self.set_session_active(True)
+        if not self._corner_defaults_set:
+            for field, value in zip(self._fields, values, strict=True):
+                field.setDefaultValue(value)
+            self._corner_defaults_set = True
         self._syncing = True
         try:
             for field, value in zip(self._fields, values, strict=True):
@@ -99,6 +105,10 @@ class TransformPropertiesPanel(QWidget):
             self.set_session_active(False)
             return
         self.set_session_active(True)
+        if not self._pivot_defaults_set:
+            for field, value in zip(self._pivot_fields, values, strict=True):
+                field.setDefaultValue(value)
+            self._pivot_defaults_set = True
         self._syncing = True
         try:
             for field, value in zip(self._pivot_fields, values, strict=True):
@@ -108,6 +118,9 @@ class TransformPropertiesPanel(QWidget):
             self._syncing = False
 
     def set_session_active(self, active: bool) -> None:
+        if not active:
+            self._corner_defaults_set = False
+            self._pivot_defaults_set = False
         for field in (*self._pivot_fields, *self._fields):
             field.setEnabled(active)
         self.setToolTip("" if active else "当前没有可编辑的自由变换会话")

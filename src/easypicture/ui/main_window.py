@@ -54,6 +54,7 @@ from easypicture.domain import (
     SpriteAnimation,
     SpriteFrameContentChanged,
     SpriteFrameContentMode,
+    SpriteFrameDefinition,
     SpritePlaybackCursor,
     SpritePlaybackMode,
     SpriteWorkspaceChanged,
@@ -89,6 +90,7 @@ from easypicture.imaging import (
     ShapeOutputTarget,
     ShapeSettings,
     ThresholdAdjustment,
+    TilePreviewMode,
     TrimTransparentRequest,
     calculate_bulk_selection,
     calculate_canvas_resize,
@@ -105,6 +107,7 @@ from easypicture.imaging import (
     selection_bounds,
 )
 from easypicture.jobs import CancellationToken, JobHandle, JobOperation, JobOutcome, JobStatus
+from easypicture.jobs.runner import ProgressSink
 from easypicture.persistence import (
     DocumentSnapshot,
     render_animation_preview,
@@ -143,13 +146,20 @@ from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.notifications import NoticeSeverity, UserNotice
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.preferences_dialog import PreferencesDialog
-from easypicture.ui.settings import AppSettings
+from easypicture.ui.settings import AppSettings, TileWorkspaceSettings
 from easypicture.ui.shape_properties import ShapePropertiesPanel
 from easypicture.ui.sprite_animation_toolbar import SpriteAnimationToolbar
 from easypicture.ui.sprite_frame_panel import SpriteFramePanel
 from easypicture.ui.sprite_workspace_panel import SpriteWorkspacePanel
 from easypicture.ui.svg_properties import SvgPropertiesPanel
 from easypicture.ui.text_properties import TextPropertiesPanel
+from easypicture.ui.tile_preview import (
+    TilePreviewRequest,
+    TilePreviewResult,
+    calculate_tile_preview,
+    tile_source_signature,
+)
+from easypicture.ui.tile_workspace_panel import TileWorkspacePanel
 from easypicture.ui.tool_options import ToolOptionsPanel
 from easypicture.ui.transform_properties import TransformPropertiesPanel
 from easypicture.workspace import CanvasViewState, EditingSurfaceRef, WorkspaceController
@@ -266,6 +276,18 @@ class MainWindow(QMainWindow):
         self._slice_preview_picking = False
         self._slice_preview_manual_reference = False
         self._geometry_clear_sprite_frames = False
+        self._tile_frame_selections: dict[UUID, tuple[UUID | None, UUID | None]] = {}
+        self._tile_pick_target: str | None = None
+        self._tile_heatmap_segments: tuple[
+            tuple[float, float, float, float, int], ...
+        ] = ()
+        self._tile_job: JobHandle | None = None
+        self._tile_job_generation = 0
+        self._tile_requested_key: tuple[UUID, int, UUID, UUID, TileWorkspaceSettings] | None = None
+        self._tile_cached_key: tuple[UUID, int, UUID, UUID, TileWorkspaceSettings] | None = None
+        self._tile_cached_result: TilePreviewResult | None = None
+        self._tile_cached_source_signature: tuple[object, ...] | None = None
+        self._tile_pending: tuple[TilePreviewRequest, int, bool] | None = None
 
         self.canvas_view = CanvasView(
             self,
@@ -711,6 +733,10 @@ class MainWindow(QMainWindow):
             self._sprite_pivot_marker_radius
         )
         self.properties_stack.addWidget(self.sprite_properties)
+        self.tile_properties = TileWorkspacePanel(
+            self.settings.tile_workspace_settings(), self
+        )
+        self.properties_stack.addWidget(self.tile_properties)
         self.properties_stack.addWidget(self.color_adjustment_panel)
         self.color_adjustment_controller = ColorAdjustmentController(
             self.canvas_view,
@@ -832,6 +858,9 @@ class MainWindow(QMainWindow):
         self.sprite_frame_panel.animation_mode_requested.connect(
             self._set_sprite_animation_mode
         )
+        self.sprite_frame_panel.tile_inspect_requested.connect(
+            self._open_tile_workspace
+        )
         self.sprite_frame_panel.view_size_changed.connect(
             lambda _size: self._resize_sprite_frame_dock()
         )
@@ -856,6 +885,14 @@ class MainWindow(QMainWindow):
         )
         self.animation_toolbar.onion_settings_changed.connect(
             lambda _settings: self._render_active_animation_frame()
+        )
+        self.tile_properties.parameters_changed.connect(
+            self._refresh_tile_workspace
+        )
+        self.tile_properties.pick_requested.connect(self._start_tile_pick)
+        self.tile_properties.cancel_requested.connect(self._cancel_tile_work)
+        self.tile_properties.generate_requested.connect(
+            self._generate_tile_transition_frame
         )
 
     def _create_status_bar(self) -> None:
@@ -1013,11 +1050,14 @@ class MainWindow(QMainWindow):
             self.controller.sessions_changed.connect(self._refresh_workspace_tabs)
             self.controller.active_session_changed.connect(self._refresh_workspace_tabs)
             self.controller.active_session_changed.connect(
-                lambda _index: QTimer.singleShot(0, self._configure_animation_surface)
+                lambda _index: QTimer.singleShot(0, self._configure_active_read_only_surface)
             )
             self.controller.surfaces_changed.connect(self._refresh_surface_tabs)
             self.controller.animation_surface_changed.connect(
                 self._on_animation_surface_changed
+            )
+            self.controller.tile_surface_changed.connect(
+                self._on_tile_surface_changed
             )
             self.workspace_tabs.tabMoved.connect(self.controller.move_session)
         self.canvas_view.render_backend_fallback.connect(self._on_render_backend_fallback)
@@ -1090,7 +1130,7 @@ class MainWindow(QMainWindow):
                             title = f"{frame.name}{'*' if embedded.modified else ''}"
                     except ValueError:
                         continue
-                else:
+                elif surface.kind == "animation":
                     assert surface.animation_id is not None
                     try:
                         animation = session.document.sprite_workspace.animation_by_id(
@@ -1099,6 +1139,8 @@ class MainWindow(QMainWindow):
                     except ValueError:
                         continue
                     title = f"动画：{animation.name}"
+                else:
+                    title = "Tile 检查"
                 index = self.surface_tabs.addTab(title)
                 self.surface_tabs.setTabData(index, surface)
                 if surface == session.active_surface:
@@ -1127,6 +1169,7 @@ class MainWindow(QMainWindow):
             self.controller.set_active_surface(surface)
             self._restore_canvas_state()
             self._configure_animation_surface()
+            self._configure_tile_surface()
 
     def _surface_tab_close_requested(self, index: int) -> None:
         surface = self.surface_tabs.tabData(index)
@@ -1136,6 +1179,9 @@ class MainWindow(QMainWindow):
             self.controller.close_frame_surface(surface.frame_id)
         elif surface.kind == "animation" and surface.animation_id is not None:
             self.controller.close_animation_surface(surface.animation_id)
+        elif surface.kind == "tile":
+            self._cancel_tile_work()
+            self.controller.close_tile_surface()
 
     def _capture_canvas_state(self) -> None:
         session = getattr(self.controller, "active_session", None)
@@ -1517,6 +1563,7 @@ class MainWindow(QMainWindow):
             self._geometry_progress = None
 
     def _on_document_changed(self, document: Document | None) -> None:
+        self._cancel_tile_work()
         project_document = self._project_document()
         if (
             self._slice_preview_reference_id is not None
@@ -1725,6 +1772,9 @@ class MainWindow(QMainWindow):
     def _select_sprite_frame(self, frame_id: object) -> None:
         if frame_id is not None and not isinstance(frame_id, UUID):
             return
+        if isinstance(frame_id, UUID) and self._tile_pick_target is not None:
+            self._apply_tile_pick(frame_id)
+            return
         if isinstance(frame_id, UUID) and self._slice_preview_picking:
             self._set_slice_preview_reference(frame_id, manual=True)
             return
@@ -1748,6 +1798,9 @@ class MainWindow(QMainWindow):
             tool.set_region(frame.region)
 
     def _sprite_frame_clicked(self, frame_id: object) -> None:
+        if isinstance(frame_id, UUID) and self._tile_pick_target is not None:
+            self._apply_tile_pick(frame_id)
+            return
         if isinstance(frame_id, UUID) and self._slice_preview_picking:
             self._set_slice_preview_reference(frame_id, manual=True)
 
@@ -1938,6 +1991,292 @@ class MainWindow(QMainWindow):
             return
         if self.controller.open_animation_surface(animation_id):
             self._configure_animation_surface()
+
+    def _configure_active_read_only_surface(self) -> None:
+        self._configure_animation_surface()
+        self._configure_tile_surface()
+
+    def _tile_selection(
+        self,
+    ) -> tuple[UUID | None, UUID | None]:
+        session = getattr(self.controller, "active_session", None)
+        if session is None:
+            return (None, None)
+        return self._tile_frame_selections.get(session.id, (None, None))
+
+    def _set_tile_selection(
+        self,
+        first: UUID | None,
+        second: UUID | None,
+    ) -> None:
+        session = getattr(self.controller, "active_session", None)
+        if session is not None:
+            self._tile_frame_selections[session.id] = (first, second)
+
+    def _open_tile_workspace(self, frame_id: object) -> None:
+        if not isinstance(frame_id, UUID):
+            return
+        project = self._project_document()
+        if project is None:
+            return
+        try:
+            project.sprite_workspace.frame_by_id(frame_id)
+        except ValueError:
+            return
+        self._set_tile_selection(frame_id, frame_id)
+        self._capture_canvas_state()
+        self._cancel_tile_work()
+        if not self._active_tile_surface():
+            self.controller.open_tile_surface(
+                Document.create_sprite_frame(project.sprite_workspace.cell_size)
+            )
+        self._configure_animation_surface()
+        self._refresh_tile_workspace(open_surface=True)
+        self.properties_stack.setCurrentWidget(self.tile_properties)
+        self.properties_dock.show()
+
+    def _configure_tile_surface(self) -> None:
+        session = getattr(self.controller, "active_session", None)
+        if session is None or session.active_surface.kind != "tile":
+            self._cancel_tile_work()
+            self.canvas_view.clear_tile_heatmap()
+            return
+        self.properties_stack.setCurrentWidget(self.tile_properties)
+        self.properties_dock.show()
+        self.properties_dock.raise_()
+        self._refresh_tile_workspace(open_surface=False)
+
+    def _start_tile_pick(self, target: str) -> None:
+        if target not in {"a", "b"} or not self._active_tile_surface():
+            return
+        self._tile_pick_target = target
+        self._show_operation_status(
+            f"请在精灵帧中选择 Tile {target.upper()}；Esc 取消"
+        )
+        self.sprite_frames_dock.show()
+        self.sprite_frames_dock.raise_()
+
+    def _apply_tile_pick(self, frame_id: UUID) -> None:
+        first, second = self._tile_selection()
+        if self._tile_pick_target == "a":
+            first = frame_id
+            if second is None:
+                second = frame_id
+        elif self._tile_pick_target == "b":
+            second = frame_id
+            if first is None:
+                first = frame_id
+        else:
+            return
+        self._tile_pick_target = None
+        self._set_tile_selection(first, second)
+        self._refresh_tile_workspace(open_surface=False)
+        self._show_operation_status("已选择 Tile")
+
+    def _tile_frames(
+        self,
+    ) -> tuple[Document, SpriteFrameDefinition, SpriteFrameDefinition] | None:
+        project = self._project_document()
+        first_id, second_id = self._tile_selection()
+        if project is None:
+            return None
+        frames = {frame.id: frame for frame in project.sprite_workspace.frames}
+        first = frames.get(first_id) if first_id is not None else None
+        second = frames.get(second_id) if second_id is not None else None
+        self._set_tile_selection(first.id if first else None, second.id if second else None)
+        self.tile_properties.set_frames(
+            first.id if first else None, first.name if first else None,
+            second.id if second else None, second.name if second else None,
+        )
+        if self.tile_properties.settings_value().preview_mode is TilePreviewMode.OFFSET:
+            # Tiling only consumes A. Keep the remembered B selection for the
+            # other modes, but never require or rasterize an invisible input.
+            second = first
+        if first is None or second is None:
+            return None
+        return project, first, second
+
+    def _cancel_tile_work(self) -> None:
+        self._tile_job_generation += 1
+        self._tile_requested_key = None
+        self._tile_pending = None
+        self._tile_pick_target = None
+        if self._tile_job is not None:
+            self._tile_job.cancel()
+        if hasattr(self, "tile_properties"):
+            self.tile_properties.set_busy(False)
+
+    def _refresh_tile_workspace(self, *_args: object, open_surface: bool = False) -> None:
+        session = getattr(self.controller, "active_session", None)
+        if session is None or (not open_surface and session.active_surface.kind != "tile"):
+            return
+        resolved = self._tile_frames()
+        if resolved is None:
+            self._cancel_tile_work()
+            self._tile_cached_key = None
+            self._tile_cached_result = None
+            self.tile_properties.set_metrics(None)
+            self._tile_heatmap_segments = ()
+            self.canvas_view.clear_tile_heatmap()
+            if self._active_tile_surface():
+                self.controller.update_tile_surface(
+                    Document.create_sprite_frame(session.document.sprite_workspace.cell_size)
+                )
+            return
+        project, first, second = resolved
+        size = project.sprite_workspace.cell_size
+        self.tile_properties.set_tile_size(size.width, size.height)
+        settings = self.tile_properties.settings_value()
+        self.settings.set_tile_workspace_settings(settings)
+        key = (project.id, project.revision, first.id, second.id, settings)
+        signature = tile_source_signature(project, (first.id, second.id))
+        same_sources = signature == self._tile_cached_source_signature
+        if (
+            same_sources and self._tile_cached_key is not None
+            and self._tile_cached_key[-1] == settings
+        ):
+            self._tile_cached_key = key
+        if key == self._tile_cached_key and self._tile_cached_result is not None:
+            self._apply_tile_preview(self._tile_cached_result, open_surface=open_surface)
+            return
+        if key == self._tile_requested_key:
+            return
+        self._tile_job_generation += 1
+        generation = self._tile_job_generation
+        self._tile_requested_key = key
+        request = TilePreviewRequest(
+            DocumentSnapshot.capture(project), first.id, second.id, settings,
+            self._tile_cached_result.sources
+            if same_sources and self._tile_cached_result is not None else None,
+        )
+        if self._tile_job is not None:
+            self._tile_job.cancel()
+            self._tile_pending = (request, generation, open_surface)
+            self.tile_properties.set_busy(True)
+            return
+        large = max(size.width, size.height) > 1024 or size.width * size.height > 32768
+        if large:
+            self._start_tile_workspace_job(request, generation, open_surface)
+            return
+        try:
+            result = calculate_tile_preview(
+                request, CancellationToken(), lambda _done, _total, _label: None
+            )
+        except (ValueError, MemoryError) as error:
+            self._tile_requested_key = None
+            self._show_operation_status(f"Tile 预览失败：{error}")
+            return
+        self._tile_cached_key, self._tile_cached_result = key, result
+        self._tile_cached_source_signature = signature
+        self._apply_tile_preview(result, open_surface=open_surface)
+
+    def _apply_tile_preview(self, result: TilePreviewResult, *, open_surface: bool) -> None:
+        self.tile_properties.set_busy(False)
+        self.tile_properties.set_metrics(result.metrics)
+        self._tile_heatmap_segments = result.segments
+        if open_surface:
+            self.controller.open_tile_surface(result.document)
+            self.properties_stack.setCurrentWidget(self.tile_properties)
+            self.properties_dock.show()
+            self.properties_dock.raise_()
+        else:
+            self.controller.update_tile_surface(result.document)
+        if self._active_tile_surface():
+            self.canvas_view.set_tile_heatmap(result.segments)
+
+    def _start_tile_workspace_job(
+        self, request: TilePreviewRequest, generation: int, open_surface: bool
+    ) -> None:
+        self.tile_properties.set_busy(True)
+
+        def operation(token: CancellationToken, progress: ProgressSink) -> TilePreviewResult:
+            return calculate_tile_preview(request, token, progress)
+
+        handle = self.controller.jobs.submit(operation)
+        self._tile_job = handle
+        handle.progress.connect(
+            lambda done, total, label: self.tile_properties.set_progress(done, total, label)
+            if generation == self._tile_job_generation else None
+        )
+        handle.finished.connect(
+            lambda outcome: self._tile_workspace_job_finished(
+                outcome, request, generation, open_surface
+            )
+        )
+
+    def _tile_workspace_job_finished(
+        self, outcome: JobOutcome, request: TilePreviewRequest,
+        generation: int, open_surface: bool,
+    ) -> None:
+        self._tile_job = None
+        project = self._project_document()
+        first_id, second_id = self._tile_selection()
+        if request.settings.preview_mode is TilePreviewMode.OFFSET:
+            second_id = first_id
+        valid = (
+            generation == self._tile_job_generation and project is not None
+            and project.id == request.snapshot.document_id
+            and project.revision == request.snapshot.revision
+            and (first_id, second_id) == (request.first_id, request.second_id)
+            and self._active_tile_surface()
+        )
+        if valid:
+            self.tile_properties.set_busy(False)
+            if outcome.status is JobStatus.SUCCESS and isinstance(outcome.value, TilePreviewResult):
+                self._tile_cached_key = self._tile_requested_key
+                self._tile_cached_result = outcome.value
+                assert project is not None
+                self._tile_cached_source_signature = tile_source_signature(
+                    project, (request.first_id, request.second_id)
+                )
+                self._apply_tile_preview(outcome.value, open_surface=open_surface)
+            else:
+                self._tile_requested_key = None
+                if outcome.status is JobStatus.FAILED:
+                    self._show_operation_status(f"Tile 预览失败：{outcome.error}")
+        pending, self._tile_pending = self._tile_pending, None
+        if pending is not None:
+            self._start_tile_workspace_job(*pending)
+
+    def _active_tile_surface(self) -> bool:
+        session = getattr(self.controller, "active_session", None)
+        return bool(session is not None and session.active_surface.kind == "tile")
+
+    def _on_tile_surface_changed(self, document: object) -> None:
+        if not isinstance(document, Document) or not self._active_tile_surface():
+            return
+        self.canvas_view.set_document(document, preserve_view=True)
+        self.canvas_view.set_tile_heatmap(self._tile_heatmap_segments)
+        self.document_size_label.setText(f"{document.width} × {document.height} px")
+
+    def _generate_tile_transition_frame(self) -> None:
+        resolved = self._tile_frames()
+        if resolved is None or not self._active_tile_surface():
+            return
+        project, first_frame, second_frame = resolved
+        key = (project.id, project.revision, first_frame.id, second_frame.id,
+               self.tile_properties.settings_value())
+        result = self._tile_cached_result
+        if key != self._tile_cached_key or result is None or result.transition is None:
+            self._show_operation_status("请等待最新过渡预览完成后再生成")
+            return
+        used_names = {frame.name for frame in project.sprite_workspace.frames}
+        index = 1
+        while f"transition_{index:03d}" in used_names:
+            index += 1
+        frame_id = self.controller.commands.create_detached_sprite_frame(
+            result.transition,
+            name=f"transition_{index:03d}",
+            source_region=first_frame.region,
+            pivot=first_frame.pivot,
+            duration_ticks=first_frame.duration_ticks,
+        )
+        if not isinstance(frame_id, UUID):
+            self._show_operation_status("无法生成 Tile 过渡帧")
+            return
+        self._capture_canvas_state()
+        self.controller.open_frame_surface(frame_id)
+        self._show_operation_status("已生成独立 Tile 过渡帧")
 
     def _active_sprite_animation(self) -> SpriteAnimation | None:
         session = getattr(self.controller, "active_session", None)
@@ -3010,6 +3349,9 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._refresh_slice_preview_reference)
         if self._active_sprite_animation() is not None:
             QTimer.singleShot(0, self._configure_animation_surface)
+        session = getattr(self.controller, "active_session", None)
+        if session is not None and EditingSurfaceRef("tile") in session.open_surfaces:
+            QTimer.singleShot(0, self._refresh_tile_workspace)
 
     def _select_all(self) -> None:
         document = self.controller.document
@@ -3277,6 +3619,7 @@ class MainWindow(QMainWindow):
             self.coordinate_label.setText(f"x: {int(point.x)}  y: {int(point.y)}")
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._cancel_tile_work()
         self._cancel_color_adjustment_for_lifecycle()
         if not self.controller.request_exit(self):
             event.ignore()
@@ -3285,6 +3628,11 @@ class MainWindow(QMainWindow):
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._tile_pick_target is not None and event.key() == Qt.Key.Key_Escape:
+            self._tile_pick_target = None
+            self._show_operation_status("已取消 Tile 选择")
+            event.accept()
+            return
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             if event.key() == Qt.Key.Key_Escape:
                 if self.color_adjustment_controller.sampling:

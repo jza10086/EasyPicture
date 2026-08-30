@@ -516,8 +516,9 @@ class _SpriteWorkspaceCommand(_DocumentCommand):
         frame_ids: tuple[UUID, ...] = (),
         before_embedded: Mapping[UUID, Document] | None = None,
         after_embedded: Mapping[UUID, Document] | None = None,
+        storage_bytes: int = 0,
     ) -> None:
-        super().__init__(document, text)
+        super().__init__(document, text, storage_bytes=storage_bytes)
         self.before = before.clone()
         self.after = after.clone()
         self.change = change
@@ -1091,6 +1092,78 @@ class DocumentCommandService:
                 after_embedded=after_embedded,
             )
         )
+
+    def create_detached_sprite_frame(
+        self,
+        pixels: RGBAArray,
+        *,
+        name: str,
+        source_region: Rect,
+        pivot: PixelPoint | None = None,
+        duration_ticks: int = 1,
+    ) -> UUID | None:
+        """Create one ungrouped editable frame and embedded document atomically."""
+        project = self._require_project_document()
+        workspace = project.sprite_workspace
+        height, width = pixels.shape[:2] if pixels.ndim == 3 else (0, 0)
+        if (
+            pixels.dtype != np.uint8
+            or pixels.ndim != 3
+            or pixels.shape[2] != 4
+            or not pixels.flags.c_contiguous
+            or (width, height) != (workspace.cell_size.width, workspace.cell_size.height)
+            or len(workspace.frames) >= 1024
+            or source_region.width != width
+            or source_region.height != height
+            or source_region.x < 0
+            or source_region.y < 0
+            or source_region.right > project.width
+            or source_region.bottom > project.height
+            or not 1 <= duration_ticks <= 999
+        ):
+            return None
+        resolved_name = _unique_name(
+            name.strip() or "transition_001",
+            {frame.name for frame in workspace.frames},
+        )
+        resolved_pivot = pivot or PixelPoint(width // 2, height // 2)
+        try:
+            embedded = Document.create_sprite_frame(workspace.cell_size)
+            embedded.active_layer.pixels.write_region(
+                Rect(0, 0, width, height),
+                pixels,
+            )
+            embedded.active_layer.record_pixel_change()
+            embedded.mark_clean()
+            frame = SpriteFrameDefinition(
+                id=uuid4(),
+                name=resolved_name,
+                region=source_region,
+                pivot=resolved_pivot,
+                content_mode=SpriteFrameContentMode.DETACHED,
+                embedded_document_id=embedded.id,
+                duration_ticks=duration_ticks,
+            )
+        except ValueError:
+            return None
+        after = workspace.clone()
+        after.frames.append(frame)
+        after_embedded = dict(project.embedded_documents)
+        after_embedded[embedded.id] = embedded
+        if not self._push(
+            _SpriteWorkspaceCommand(
+                project,
+                workspace,
+                after,
+                "生成 Tile 过渡帧",
+                change="created_detached",
+                frame_ids=(frame.id,),
+                after_embedded=after_embedded,
+                storage_bytes=embedded.active_layer.pixels.allocated_bytes,
+            )
+        ):
+            return None
+        return frame.id
 
     def reset_sprite_frame_to_source(self, frame_id: UUID) -> bool:
         project = self._require_project_document()

@@ -177,6 +177,18 @@ class OpenGLCanvasBackend:
         self._captured_frame = None
         return image
 
+    def capture_completed_frame(self, painter: QPainter, width: int, height: int) -> QImage:
+        """Diagnostic-only capture while the view's real framebuffer is bound.
+
+        QOpenGLWidget.grabFramebuffer may trigger its own blank repaint when it
+        is a QGraphicsView viewport. Capture at the end of drawForeground instead.
+        """
+        painter.beginNativePainting()
+        try:
+            return self._read_framebuffer(width, height)
+        finally:
+            painter.endNativePainting()
+
     def initialize(self, coordinator: CanvasRenderCoordinator) -> bool:
         context = QOpenGLContext.currentContext()
         if context is None or not context.isValid():

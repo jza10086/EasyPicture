@@ -9,7 +9,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
-from easypicture.domain import Document
+from easypicture.domain import Document, DocumentKind
 
 
 class SpriteGridOverlayItem(QGraphicsItem):
@@ -57,12 +57,17 @@ class SpriteGridOverlayItem(QGraphicsItem):
                 QColor(30, 30, 30, 100),
             )
         if self.cell_grid_visible:
-            workspace = self._document.sprite_workspace
+            # Embedded frames and read-only animation/Tile surfaces deliberately
+            # have no sprite workspace. Their whole canvas is one logical cell.
+            cell_size = (
+                self._document.sprite_workspace.cell_size
+                if self._document.kind is DocumentKind.PROJECT else self._document.size
+            )
             self._draw_grid(
                 painter,
                 exposed,
-                workspace.cell_size.width,
-                workspace.cell_size.height,
+                cell_size.width,
+                cell_size.height,
                 0,
                 0,
                 QColor(255, 138, 0, 180),

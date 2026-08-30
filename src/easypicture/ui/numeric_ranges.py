@@ -14,6 +14,7 @@ class UiNumericRange:
     soft_maximum: float
     hard_minimum: float
     hard_maximum: float
+    default_value: float = 0.0
 
 
 COMMON_CANVAS_SIZE = 4096.0
@@ -24,6 +25,7 @@ DOCUMENT_DIMENSION_RANGE = UiNumericRange(
     COMMON_CANVAS_SIZE,
     1.0,
     float(MAX_DOCUMENT_DIMENSION),
+    32.0,
 )
 TRANSFORM_DIMENSION_RANGE = DOCUMENT_DIMENSION_RANGE
 OBJECT_DIMENSION_RANGE = UiNumericRange(
@@ -31,6 +33,7 @@ OBJECT_DIMENSION_RANGE = UiNumericRange(
     COMMON_CANVAS_SIZE,
     0.01,
     EXTENDED_SPATIAL_LIMIT,
+    32.0,
 )
 SIGNED_COORDINATE_RANGE = UiNumericRange(
     -COMMON_CANVAS_SIZE,
@@ -44,12 +47,13 @@ OBJECT_RADIUS_RANGE = UiNumericRange(
     COMMON_CANVAS_SIZE / 2.0,
     0.0,
     EXTENDED_SPATIAL_LIMIT / 2.0,
+    16.0,
 )
-STROKE_WIDTH_RANGE = UiNumericRange(0.0, 256.0, 0.0, 8192.0)
+STROKE_WIDTH_RANGE = UiNumericRange(0.0, 256.0, 0.0, 8192.0, 1.0)
 DASH_LENGTH_RANGE = UiNumericRange(0.0, 256.0, 0.0, 8192.0)
 DASH_OFFSET_RANGE = UiNumericRange(-4096.0, 4096.0, -8192.0, 8192.0)
-MITER_LIMIT_RANGE = UiNumericRange(1.0, 100.0, 1.0, 1000.0)
-FONT_SIZE_RANGE = UiNumericRange(1.0, 256.0, 1.0, MAX_TEXT_FONT_SIZE)
+MITER_LIMIT_RANGE = UiNumericRange(1.0, 100.0, 1.0, 1000.0, 4.0)
+FONT_SIZE_RANGE = UiNumericRange(1.0, 256.0, 1.0, MAX_TEXT_FONT_SIZE, 32.0)
 
 
 __all__ = [

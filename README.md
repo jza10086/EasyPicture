@@ -2,9 +2,20 @@
 
 EasyPicture 是一款面向 Windows 的本地离线轻量图像编辑器，适合个人日常图片处理。项目以 Python 3.14、PySide6、NumPy 和 Pillow 为基础，权威像素采用 256 px Tile 存储，画布提供 OpenGL 3.3 与软件双渲染后端。
 
-当前版本支持两级栅格/矢量图层组、画笔与常用像素工具、统一选区、自由变换、基础图形、可编辑文字、静态 SVG、非破坏性颜色调整、像素精确工作区、手动精灵帧切分、多工程标签、独立帧编辑、精灵动画与洋葱皮、Atlas 导出、`.limg` 工程保存和七种常用图片格式导出。EasyPicture 目前仅面向本机单用户使用，不以跨平台发布、多人协作或超大画布为主要目标。
+当前版本支持两级栅格/矢量图层组、画笔与常用像素工具、统一选区、自由变换、基础图形、可编辑文字、静态 SVG、非破坏性颜色调整、像素精确工作区、手动精灵帧切分、多工程标签、独立帧编辑、精灵动画与洋葱皮、Tile 无缝检查与过渡帧生成、Atlas 导出、`.limg` 工程保存和七种常用图片格式导出。EasyPicture 目前仅面向本机单用户使用，不以跨平台发布、多人协作或超大画布为主要目标。
 
 ## 版本记录
+
+### 0.6.0 — 2026-08-30
+
+P10D 已通过人工验收。
+
+- 增加每工程唯一的只读 Tile 检查标签，可将现有 linked/detached 精灵帧作为 Tile A/B 输入。
+- 支持带整数循环偏移的 3×3/5×5 平铺、四方向相邻对比、RGBA 接缝统计和固定屏幕宽度热力图；属性栏只显示当前预览模式使用的参数。
+- 数值与枚举属性输入支持右键“设为默认值”（恢复预设），保留编辑中右键取消与动态范围钳制。
+- 支持硬切与 Bayer 4×4 有序抖动过渡；生成结果只选择来源完整 RGBA 像素，不创建中间颜色。
+- 过渡结果以单命令创建为未分组独立帧，可继续使用现有像素、图层、文字和 SVG 工具手工修整；`.limg` 继续使用 schema v4。
+- 大 Tile 在后台合成、分析和准备完整预览，连续改参只保留最新请求；支持取消、重复块共享和源帧缓存，刷新保留缩放和平移。
 
 ### 0.5.0 — 2026-08-27
 
@@ -98,4 +109,4 @@ uv run python -m easypicture --render-backend opengl --render-smoke-test .cache\
 uv run python -m easypicture --svg-smoke-test .cache\svg-smoke
 ```
 
-总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p10c_acceptance.md`](docs/p10c_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。
+总体架构与开发路线见 [`docs/development_plan.md`](docs/development_plan.md)，当前阶段验收见 [`docs/p10d_acceptance.md`](docs/p10d_acceptance.md)，界面输入约定见 [`docs/ui_design_principles.md`](docs/ui_design_principles.md)，低优先级问题见 [`docs/low_priority_issues.md`](docs/low_priority_issues.md)。

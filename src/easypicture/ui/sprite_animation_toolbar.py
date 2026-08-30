@@ -38,6 +38,14 @@ class OnionSkinSettingsDialog(QDialog):
         self.falloff = DragValueSpinBox(
             0, 100, current.falloff_percent, suffix="%", parent=self
         )
+        defaults = OnionSkinSettings()
+        for field, value in (
+            (self.previous_count, defaults.previous_count),
+            (self.next_count, defaults.next_count),
+            (self.opacity, defaults.opacity_percent),
+            (self.falloff, defaults.falloff_percent),
+        ):
+            field.setDefaultValue(value)
         self._previous_color = QColor(current.previous_color)
         self._next_color = QColor(current.next_color)
         self.previous_color_button = QPushButton("前帧颜色", self)
@@ -137,6 +145,7 @@ class SpriteAnimationToolbar(QWidget):
             (SpritePlaybackMode.PING_PONG, "往返"),
         ):
             self.mode.addItem(label, mode)
+        self.mode.setDefaultValue(SpritePlaybackMode.LOOP)
         onion = settings.onion_skin_settings()
         self.onion = QCheckBox("洋葱皮", self)
         self.onion.setChecked(onion.enabled)
