@@ -31,13 +31,15 @@ from easypicture.domain import (
     VectorObject,
 )
 from easypicture.domain.document import MAX_DOCUMENT_LAYERS
+from easypicture.imaging.ai_pixel_cleanup import AiPixelCleanupResult
 from easypicture.imaging.geometry_ops import DocumentGeometryResult
+from easypicture.imaging.pixel_outline import PixelOutlineResult
 from easypicture.imaging.transform import RasterTransformResult
 from easypicture.imaging.vector_rasterize import rasterize_vector_objects
 from easypicture.jobs import CancellationToken
 from easypicture.persistence.snapshots import DocumentSnapshot
 from easypicture.persistence.sprite_io import render_snapshot_region
-from easypicture.pixels import MaskArray, Rect, RGBAArray, TileCoord
+from easypicture.pixels import MaskArray, Rect, RGBAArray, TileCoord, TilePixelStore
 
 DEFAULT_UNDO_BUDGET_BYTES = 1024 * 1024 * 1024
 DEFAULT_UNDO_LIMIT = 100
@@ -119,6 +121,43 @@ class _InsertLayerCommand(_DocumentCommand):
 
     def undo(self) -> None:
         self.document.remove_layer(self.layer.id)
+
+
+class _InsertOutlineCommand(_InsertLayerCommand):
+    def __init__(self, document: Document, layer: RasterLayer, source_id: UUID) -> None:
+        super().__init__(
+            document,
+            layer,
+            document.layer_index(source_id) + 1,
+            "像素描边",
+            storage_bytes=layer.pixels.allocated_bytes,
+        )
+        self.source_id = source_id
+        self.previous_active_id = document.active_layer_id
+
+    def redo(self) -> None:
+        # An unrelated UI selection between undo/redo must not change the target group.
+        self.document.set_active_layer(self.source_id)
+        super().redo()
+
+    def undo(self) -> None:
+        super().undo()
+        self.document.set_active_layer(self.previous_active_id)
+
+
+class _InsertCleanupCommand(_InsertOutlineCommand):
+    def __init__(self, document: Document, layer: RasterLayer, source_id: UUID) -> None:
+        super().__init__(document, layer, source_id)
+        self.setText("AI 像素整理")
+        self.source_visible = document.layer_by_id(source_id).visible
+
+    def redo(self) -> None:
+        super().redo()
+        self.document.set_layer_visible(self.source_id, False)
+
+    def undo(self) -> None:
+        self.document.set_layer_visible(self.source_id, self.source_visible)
+        super().undo()
 
 
 class _DeleteLayerCommand(_DocumentCommand):
@@ -762,9 +801,7 @@ class _DocumentGeometryCommand(_DocumentCommand):
                 self.after_sprite_workspace if use_after else self.before_sprite_workspace
             ),
             embedded_documents=(
-                self.after_embedded_documents
-                if use_after
-                else self.before_embedded_documents
+                self.after_embedded_documents if use_after else self.before_embedded_documents
             ),
         )
 
@@ -950,9 +987,7 @@ class DocumentCommandService:
         after.frames = [frame for frame in after.frames if frame.id not in removed_ids]
         after.animations = [
             animation.with_changes(
-                frame_ids=tuple(
-                    item for item in animation.frame_ids if item not in removed_ids
-                )
+                frame_ids=tuple(item for item in animation.frame_ids if item not in removed_ids)
             )
             for animation in after.animations
         ]
@@ -1038,8 +1073,7 @@ class DocumentCommandService:
         if clear_frames:
             after.frames.clear()
             after.animations = [
-                animation.with_changes(frame_ids=())
-                for animation in after.animations
+                animation.with_changes(frame_ids=()) for animation in after.animations
             ]
         return self._push(
             _SpriteWorkspaceCommand(
@@ -1251,9 +1285,7 @@ class DocumentCommandService:
         workspace = project.sprite_workspace
         if len(workspace.animations) >= 128:
             return False
-        resolved = _unique_name(
-            name, {animation.name for animation in workspace.animations}
-        )
+        resolved = _unique_name(name, {animation.name for animation in workspace.animations})
         animation = SpriteAnimation.create(resolved)
         after = workspace.clone()
         after.animations.append(animation)
@@ -1279,11 +1311,7 @@ class DocumentCommandService:
             return False
         normalized = _unique_name(
             normalized,
-            {
-                item.name
-                for item in workspace.animations
-                if item.id != animation_id
-            },
+            {item.name for item in workspace.animations if item.id != animation_id},
         )
         updated = animation.with_changes(name=normalized)
         if updated == animation:
@@ -1363,17 +1391,12 @@ class DocumentCommandService:
         frames_by_id = {frame.id: frame for frame in workspace.frames}
         if any(frame_id not in frames_by_id for frame_id in unique_ids):
             return False
-        if all(
-            frames_by_id[frame_id].duration_ticks == duration_ticks
-            for frame_id in unique_ids
-        ):
+        if all(frames_by_id[frame_id].duration_ticks == duration_ticks for frame_id in unique_ids):
             return False
         changed = set(unique_ids)
         after = workspace.clone()
         after.frames = [
-            frame.with_changes(duration_ticks=duration_ticks)
-            if frame.id in changed
-            else frame
+            frame.with_changes(duration_ticks=duration_ticks) if frame.id in changed else frame
             for frame in after.frames
         ]
         return self._push(
@@ -1395,10 +1418,7 @@ class DocumentCommandService:
             source_index = workspace.animations.index(animation)
         except ValueError:
             return False
-        if (
-            not 0 <= target_index < len(workspace.animations)
-            or source_index == target_index
-        ):
+        if not 0 <= target_index < len(workspace.animations) or source_index == target_index:
             return False
         after = workspace.clone()
         after.animations.insert(target_index, after.animations.pop(source_index))
@@ -1463,9 +1483,7 @@ class DocumentCommandService:
         for index, animation in enumerate(after.animations):
             if frame_id in animation.frame_ids:
                 after.animations[index] = animation.with_changes(
-                    frame_ids=tuple(
-                        item for item in animation.frame_ids if item != frame_id
-                    )
+                    frame_ids=tuple(item for item in animation.frame_ids if item != frame_id)
                 )
         if animation_id is not None:
             try:
@@ -1511,9 +1529,7 @@ class DocumentCommandService:
             if moved_ids.intersection(animation.frame_ids):
                 after.animations[index] = animation.with_changes(
                     frame_ids=tuple(
-                        frame_id
-                        for frame_id in animation.frame_ids
-                        if frame_id not in moved_ids
+                        frame_id for frame_id in animation.frame_ids if frame_id not in moved_ids
                     )
                 )
         if animation_id is not None:
@@ -1529,9 +1545,7 @@ class DocumentCommandService:
             )
         else:
             grouped = {
-                frame_id
-                for animation in after.animations
-                for frame_id in animation.frame_ids
+                frame_id for animation in after.animations for frame_id in animation.frame_ids
             }
             current = [
                 frame.id
@@ -1541,11 +1555,7 @@ class DocumentCommandService:
             insert_at = min(max(target_index, 0), len(current))
             current[insert_at:insert_at] = unique_ids
             replacements = iter(current)
-            ungrouped_slots = {
-                frame.id
-                for frame in after.frames
-                if frame.id not in grouped
-            }
+            ungrouped_slots = {frame.id for frame in after.frames if frame.id not in grouped}
             by_id = {frame.id: frame for frame in after.frames}
             after.frames = [
                 by_id[next(replacements)] if frame.id in ungrouped_slots else frame
@@ -1639,6 +1649,62 @@ class DocumentCommandService:
         layer = RasterLayer.create_blank(f"图层 {number}", document.size)
         index = document.layer_index(document.active_layer_id) + 1
         return self._push(_InsertLayerCommand(document, layer, index, "新建图层"))
+
+    def apply_pixel_outline(self, result: PixelOutlineResult) -> bool:
+        document = self._require_document()
+        if (
+            document.id != result.document_id
+            or document.revision != result.source_revision
+            or document.active_layer_id != result.layer_id
+            or len(document.layers) >= MAX_DOCUMENT_LAYERS
+            or not result.updates
+        ):
+            return False
+        source = document.layer_by_id(result.layer_id)
+        if source.locked or document.raster_group_for_layer(source.id).locked:
+            return False
+        name = _unique_name(f"{source.name} 描边", _document_names(document))
+        layer = RasterLayer.create_blank(name, document.size)
+        for coord in result.updates:
+            if (
+                coord.x < 0
+                or coord.y < 0
+                or coord.x * 256 >= document.width
+                or (coord.y * 256 >= document.height)
+            ):
+                raise ValueError("outline tile outside canvas")
+        layer.pixels = TilePixelStore.from_readonly_tiles(result.updates)
+        if not layer.pixels.allocated_tile_count:
+            return False
+        return self._push(_InsertOutlineCommand(document, layer, source.id))
+
+    def apply_ai_pixel_cleanup(self, result: AiPixelCleanupResult) -> bool:
+        document = self._require_document()
+        if (
+            document.id != result.document_id
+            or document.revision != result.source_revision
+            or document.active_layer_id != result.layer_id
+            or not result.changed
+            or not result.source_color_count
+            or len(document.layers) >= MAX_DOCUMENT_LAYERS
+        ):
+            return False
+        source = document.layer_by_id(result.layer_id)
+        if source.locked or document.raster_group_for_layer(source.id).locked:
+            return False
+        for coord in result.updates:
+            if (
+                coord.x < 0
+                or coord.y < 0
+                or coord.x * 256 >= document.width
+                or (coord.y * 256 >= document.height)
+            ):
+                raise ValueError("cleanup tile outside canvas")
+        name = _unique_name(f"{source.name} 像素整理", _document_names(document))
+        layer = RasterLayer.create_blank(name, document.size)
+        layer.opacity, layer.visible = source.opacity, source.visible
+        layer.pixels = TilePixelStore.from_readonly_tiles(result.updates)
+        return self._push(_InsertCleanupCommand(document, layer, source.id))
 
     def create_raster_group(self, name: str = "栅格组") -> bool:
         document = self._require_document()
@@ -2561,6 +2627,8 @@ class DocumentCommandService:
         label: str,
         *,
         clear_sprite_frames: bool = False,
+        sprite_frame_offset: PixelPoint | None = None,
+        delete_out_of_bounds_sprite_frames: bool = False,
     ) -> bool:
         document = self._require_document()
         if (
@@ -2660,6 +2728,7 @@ class DocumentCommandService:
             return False
 
         before_sprite_workspace = document.sprite_workspace.clone()
+        after_embedded_documents = document.embedded_documents
         if clear_sprite_frames:
             after_sprite_workspace = SpriteWorkspace(
                 cell_size=Size(
@@ -2668,6 +2737,60 @@ class DocumentCommandService:
                 ),
                 frames=[],
             )
+            after_embedded_documents = {}
+        elif sprite_frame_offset is not None:
+            translated = [
+                frame.with_changes(
+                    region=Rect(
+                        frame.region.x + sprite_frame_offset.x,
+                        frame.region.y + sprite_frame_offset.y,
+                        frame.region.width,
+                        frame.region.height,
+                    )
+                )
+                for frame in before_sprite_workspace.frames
+            ]
+            retained = [
+                frame
+                for frame in translated
+                if (
+                    frame.region.x >= 0
+                    and frame.region.y >= 0
+                    and frame.region.right <= result.document_size.width
+                    and frame.region.bottom <= result.document_size.height
+                )
+            ]
+            if len(retained) != len(translated) and not delete_out_of_bounds_sprite_frames:
+                for patch in captured_patches:
+                    self.patch_store.release(patch.before)
+                    self.patch_store.release(patch.after)
+                return False
+            retained_ids = {frame.id for frame in retained}
+            animations = [
+                animation.with_changes(
+                    frame_ids=tuple(
+                        frame_id for frame_id in animation.frame_ids if frame_id in retained_ids
+                    )
+                )
+                for animation in before_sprite_workspace.animations
+            ]
+            cell_size = before_sprite_workspace.cell_size
+            if not retained:
+                cell_size = Size(
+                    min(cell_size.width, result.document_size.width),
+                    min(cell_size.height, result.document_size.height),
+                )
+            after_sprite_workspace = SpriteWorkspace(cell_size, retained, animations)
+            retained_documents = {
+                frame.embedded_document_id
+                for frame in retained
+                if frame.content_mode is SpriteFrameContentMode.DETACHED
+            }
+            after_embedded_documents = {
+                document_id: embedded
+                for document_id, embedded in document.embedded_documents.items()
+                if document_id in retained_documents
+            }
         else:
             after_sprite_workspace = before_sprite_workspace.clone()
             if not after_sprite_workspace.frames:
@@ -2706,7 +2829,7 @@ class DocumentCommandService:
                 before_sprite_workspace,
                 after_sprite_workspace,
                 document.embedded_documents,
-                {} if clear_sprite_frames else document.embedded_documents,
+                after_embedded_documents,
                 self.patch_store,
                 label.strip() or "几何变更",
             )

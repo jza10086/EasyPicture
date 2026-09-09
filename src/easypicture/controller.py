@@ -148,6 +148,14 @@ class ApplicationController(QObject):
         self._logger.info("created document %sx%s", spec.width, spec.height)
         return True
 
+    def adopt_generated_document(self, document: Document) -> None:
+        """Install an already prepared unsaved result in a fresh controller only."""
+        if self._document is not None or document.project_path is not None:
+            raise ValueError("generated documents require a fresh controller and no project path")
+        self._replace_document(document)
+        if document.modified and self.recovery_enabled:
+            self._recovery_timer.start()
+
     def request_open_document(self, parent: QWidget) -> bool:
         path = self.dialogs.choose_project_open_file(parent)
         return False if path is None else self.open_path(parent, path)

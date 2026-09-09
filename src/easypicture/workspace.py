@@ -16,13 +16,14 @@ from easypicture.commands import DocumentCommandService
 from easypicture.controller import ApplicationController
 from easypicture.domain import Document, DocumentKind, Size, SpriteFrameContentMode
 from easypicture.domain.document import Unsubscribe
+from easypicture.imaging.ai_pixel_cleanup import AiPixelCleanupResult, PixelCleanupOutput
 from easypicture.jobs import CancellationToken, JobRunner
 from easypicture.persistence import (
     DocumentSnapshot,
     render_animation_preview,
     render_snapshot_region,
 )
-from easypicture.pixels import Rect, RGBAArray
+from easypicture.pixels import Rect, RGBAArray, TilePixelStore
 from easypicture.ui.dialogs import DialogService
 from easypicture.ui.notifications import NotificationService
 from easypicture.ui.settings import AppSettings
@@ -324,6 +325,34 @@ class WorkspaceController(QObject):
         self.sessions_changed.emit()
         self.set_active_session(len(self._sessions) - 1)
         return session
+
+    def create_ai_cleanup_project(self, result: AiPixelCleanupResult) -> bool:
+        source = self.document
+        if (source is None or source.id != result.document_id
+                or source.revision != result.source_revision
+                or source.active_layer_id != result.layer_id or not result.source_color_count
+                or result.parameters.output is not PixelCleanupOutput.PROJECT):
+            return False
+        source_layer = source.active_layer
+        if source_layer.locked or source.raster_group_for_layer(source_layer.id).locked:
+            return False
+        generated = Document.create(result.logical_size.width, result.logical_size.height)
+        generated.active_layer.pixels = TilePixelStore.from_readonly_tiles(result.logical_tiles)
+        base = f"{source.display_name} 像素整理"
+        name, suffix = base, 1
+        used = {session.document.display_name for session in self._sessions}
+        while name in used:
+            name = f"{base}.{suffix}"
+            suffix += 1
+        document = Document.restore(
+            document_id=generated.id, size=generated.size,
+            active_layer_id=generated.active_layer_id, selection=generated.selection,
+            nodes=list(generated.nodes), sprite_workspace=generated.sprite_workspace,
+            source_name=name, modified=True)
+        controller = self._fresh_controller()
+        controller.adopt_generated_document(document)
+        self._add_controller(controller)
+        return True
 
     def request_new_document(self, parent: QWidget) -> bool:
         controller = self._fresh_controller()

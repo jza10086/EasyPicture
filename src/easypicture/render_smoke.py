@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,16 @@ from easypicture.domain import (
     create_svg_primitive,
 )
 from easypicture.imaging import TilePreviewMode, TransformInterpolation
+from easypicture.imaging.ai_pixel_cleanup import (
+    AiPixelCleanupParameters,
+    AiPixelCleanupRequest,
+    calculate_ai_pixel_cleanup,
+)
+from easypicture.imaging.pixel_outline import (
+    PixelOutlineParameters,
+    PixelOutlineRequest,
+    calculate_pixel_outline,
+)
 from easypicture.jobs import CancellationToken
 from easypicture.persistence import DocumentSnapshot
 from easypicture.pixels import DEFAULT_TILE_SIZE, Rect, TileCoord
@@ -178,6 +189,8 @@ def run_render_smoke_test(
                 bottom_right.y(),
             ),
         )
+        outline_error = _outline_preview_smoke(app, view, reference, directory)
+        cleanup_error = _cleanup_preview_smoke(app, view, reference, directory)
         tile_error, tile_overlay_error = _tile_surface_smoke(app, view, reference, directory)
         diagnostics = view.render_coordinator.diagnostics
         payload = {
@@ -196,6 +209,8 @@ def run_render_smoke_test(
             "maximum_transient_vector_preview_channel_error": transient_vector_error,
             "maximum_tile_surface_channel_error": tile_error,
             "maximum_tile_overlay_channel_error": tile_overlay_error,
+            "maximum_outline_preview_vs_committed_error": outline_error,
+            "maximum_ai_cleanup_preview_vs_committed_error": cleanup_error,
             "maximum_channel_error_including_border": full_error,
             "border_comparison": "2 px document border excluded",
         }
@@ -212,6 +227,8 @@ def run_render_smoke_test(
             and preview_error <= 1
             and replaced_preview_error <= 1
             and transient_vector_error <= 1
+            and outline_error <= 1
+            and cleanup_error <= 1
             and tile_error <= 1
             and tile_overlay_error <= 1
             else 3
@@ -234,6 +251,96 @@ def run_render_smoke_test(
         view.close()
         reference.close()
         _process_frames(app, count=1)
+
+
+def _outline_preview_smoke(
+    app: QApplication, view: CanvasView, reference: CanvasView, directory: Path,
+) -> int:
+    """Compare transient insertion with actual committed pixels, including occlusion."""
+    project = Document.create(128, 128)
+    pixels = np.zeros((128, 128, 4), dtype=np.uint8)
+    pixels[30:95, 30:95] = (30, 120, 240, 255)
+    project.active_layer.pixels.write_region(Rect(0, 0, 128, 128), pixels)
+    source = project.active_layer
+    upper = RasterLayer.create_blank("遮挡", project.size)
+    pixels[:] = 0
+    pixels[50:110, 10:60] = (180, 30, 80, 190)
+    upper.pixels.write_region(Rect(0, 0, 128, 128), pixels)
+    project.insert_layer(upper, 1, activate=False)
+    project.nodes[0].opacity = 0.65
+    view.set_document(project)
+    maximum = 0
+    for width in (1, 7, 2):
+        result = calculate_pixel_outline(PixelOutlineRequest(DocumentSnapshot.capture(project),
+            source.id, PixelOutlineParameters(width=width, color=(240, 180, 30, 210))),
+            CancellationToken(), lambda *_args: None)
+        committed = DocumentSnapshot.capture(project).to_document()
+        commands = DocumentCommandService()
+        commands.attach_document(committed)
+        assert commands.apply_pixel_outline(replace(result, source_revision=committed.revision))
+        reference.set_document(committed)
+        view.render_coordinator.replace_raster_layer_preview(source.id, result.updates)
+        for canvas in (view, reference):
+            canvas.set_zoom(2)
+            canvas.centerOn(64, 64)
+        _process_frames(app)
+        actual = _capture_frame(view, app).convertToFormat(QImage.Format.Format_RGBA8888)
+        expected = _capture_frame(reference, app).convertToFormat(QImage.Format.Format_RGBA8888)
+        actual.save(str(directory / f"outline-{width}.png"))
+        expected.save(str(directory / f"outline-{width}-committed.png"))
+        corner, bottom = view.mapFromScene(0, 0), view.mapFromScene(128, 128)
+        error, _ = _channel_errors(actual, expected,
+                                   (corner.x(), corner.y(), bottom.x(), bottom.y()))
+        maximum = max(maximum, error)
+    view.render_coordinator.clear_raster_layer_preview()
+    return maximum
+
+
+def _cleanup_preview_smoke(
+    app: QApplication, view: CanvasView, reference: CanvasView, directory: Path,
+) -> int:
+    project = Document.create(128, 128)
+    pixels = np.zeros((128, 128, 4), dtype=np.uint8)
+    pixels[12:115, 20:100] = (90, 120, 170, 180)
+    source = project.active_layer
+    source.pixels.write_region(Rect(0, 0, 128, 128), pixels)
+    source.opacity = 0.8
+    upper = RasterLayer.create_blank("遮挡", project.size)
+    pixels[:] = 0
+    pixels[40:90, :50] = (170, 40, 80, 160)
+    upper.pixels.write_region(Rect(0, 0, 128, 128), pixels)
+    project.insert_layer(upper, 1, activate=False)
+    project.nodes[0].opacity = 0.65
+    view.set_document(project)
+    maximum = 0
+    for number, color in enumerate(((10, 20, 30), (210, 180, 130), (20, 60, 90))):
+        result = calculate_ai_pixel_cleanup(
+            AiPixelCleanupRequest(DocumentSnapshot.capture(project), source.id,
+                                  AiPixelCleanupParameters(fixed_palette=(color,))),
+            CancellationToken(), lambda *_args: None,
+        )
+        committed = DocumentSnapshot.capture(project).to_document()
+        commands = DocumentCommandService()
+        commands.attach_document(committed)
+        assert commands.apply_ai_pixel_cleanup(replace(result, source_revision=committed.revision))
+        reference.set_document(committed)
+        view.render_coordinator.replace_raster_layer_preview(
+            source.id, result.updates, replace_source=True,
+        )
+        for canvas in (view, reference):
+            canvas.set_zoom(2)
+            canvas.centerOn(64, 64)
+        _process_frames(app)
+        actual = _capture_frame(view, app).convertToFormat(QImage.Format.Format_RGBA8888)
+        expected = _capture_frame(reference, app).convertToFormat(QImage.Format.Format_RGBA8888)
+        actual.save(str(directory / f"ai-cleanup-{number}.png"))
+        expected.save(str(directory / f"ai-cleanup-{number}-committed.png"))
+        corner, bottom = view.mapFromScene(0, 0), view.mapFromScene(128, 128)
+        error, _ = _channel_errors(actual, expected,
+                                  (corner.x(), corner.y(), bottom.x(), bottom.y()))
+        maximum = max(maximum, error)
+    view.render_coordinator.clear_raster_layer_preview()
+    return maximum
 
 
 def _tile_surface_smoke(
@@ -260,6 +367,9 @@ def _tile_surface_smoke(
         _process_frames(app)
         for canvas in (view, reference):
             canvas.set_zoom(1)
+            # Compare on an identical integer pixel grid; the preceding 2x outline
+            # fixture can leave a half-pixel translation from cursor-anchored zoom.
+            canvas.resetTransform()
             canvas.centerOn(192, 192)
         _process_frames(app)
         actual = _capture_frame(view, app).convertToFormat(QImage.Format.Format_RGBA8888)

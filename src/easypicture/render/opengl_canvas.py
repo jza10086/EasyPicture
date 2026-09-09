@@ -258,7 +258,10 @@ class OpenGLCanvasBackend:
                 self._destroy_pages()
                 self._document_id = document_id
             elif document is not None:
-                self._purge_removed_layers({layer.id for layer in document.layers})
+                self._purge_removed_layers({
+                    layer.id for group in document.nodes if isinstance(group, RasterGroupLayer)
+                    for layer in coordinator.display_raster_children(group)
+                })
             functions = self._require_functions()
             program = self._require_program()
             vao = self._require_vao()
@@ -319,7 +322,7 @@ class OpenGLCanvasBackend:
                     if isinstance(group, RasterGroupLayer):
                         if not group.visible or group.opacity <= 0.0:
                             continue
-                        for layer in group.children:
+                        for layer in coordinator.display_raster_children(group):
                             if layer.id == active_layer_id and preview is not None:
                                 if document.selection.is_active:
                                     self._draw_layer(

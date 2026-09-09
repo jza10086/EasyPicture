@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import cast
 
 import numpy as np
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import (
     QBrush,
     QColor,
@@ -25,7 +25,9 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
+    QLayout,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -52,9 +54,12 @@ from easypicture.imaging import (
     ThresholdAdjustment,
     curve_lut,
 )
+from easypicture.imaging.palette_extraction import PaletteExtractionResult
 from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.dialogs import DialogService
 from easypicture.ui.drag_value_spinbox import DragValueDoubleSpinBox, DragValueSpinBox
+from easypicture.ui.numeric_ranges import PALETTE_COLOR_COUNT_RANGE
+from easypicture.ui.palette_presets import PalettePresetStore
 from easypicture.ui.settings import AppSettings
 
 type RGBAColor = tuple[int, int, int, int]
@@ -345,12 +350,25 @@ class GradientEditor(QWidget):
         )
 
 
+class _AdjustmentPages(QStackedWidget):
+    """Only the active adjustment contributes its required content height."""
+
+    def sizeHint(self) -> QSize:
+        page = self.currentWidget()
+        return page.sizeHint() if page is not None else QSize(0, 0)
+
+    def minimumSizeHint(self) -> QSize:
+        page = self.currentWidget()
+        return page.minimumSizeHint() if page is not None else QSize(0, 0)
+
+
 class ColorAdjustmentPanel(QWidget):
     parameters_changed = Signal(object)
     apply_requested = Signal()
     cancel_requested = Signal()
     preview_toggled = Signal(bool)
     sample_requested = Signal(bool)
+    extraction_requested = Signal(int)
 
     def __init__(
         self,
@@ -362,6 +380,7 @@ class ColorAdjustmentPanel(QWidget):
     ) -> None:
         super().__init__(parent)
         self._settings = settings
+        self._presets = PalettePresetStore(settings)
         self._dialogs = dialogs
         self._foreground_provider = foreground_provider
         self._background_provider = background_provider
@@ -380,12 +399,13 @@ class ColorAdjustmentPanel(QWidget):
         self.title_label.setStyleSheet("font-weight: 600;")
         self.preview_check = QCheckBox("显示预览", self)
         self.preview_check.setChecked(True)
-        self.stack = QStackedWidget(self)
+        self.stack = _AdjustmentPages(self)
+        stack_layout = self.stack.layout()
+        assert stack_layout is not None
+        stack_layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self.stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
+        self.stack.currentChanged.connect(lambda _index: self.stack.updateGeometry())
         self._build_pages()
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setWidget(self.stack)
         self.progress_label = QLabel("", self)
         self.progress_bar = QProgressBar(self)
         self.progress_bar.setVisible(False)
@@ -400,10 +420,11 @@ class ColorAdjustmentPanel(QWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.addWidget(self.title_label)
         layout.addWidget(self.preview_check)
-        layout.addWidget(scroll, 1)
+        layout.addWidget(self.stack)
         layout.addWidget(self.progress_label)
         layout.addWidget(self.progress_bar)
         layout.addLayout(buttons)
+        layout.addStretch(1)
 
         self.preview_check.toggled.connect(self.preview_toggled)
         self.apply_button.clicked.connect(self.apply_requested)
@@ -415,6 +436,9 @@ class ColorAdjustmentPanel(QWidget):
 
     def activate(self, kind: ColorAdjustmentKind) -> ColorAdjustmentParameters:
         self._kind = kind
+        if kind is ColorAdjustmentKind.PALETTE_MAP:
+            self.palette_source_count.setText("原始有效 RGB 色数：尚未提取")
+            self._refresh_presets()
         self.title_label.setText(_LABELS[kind])
         self.stack.setCurrentWidget(self._pages[kind])
         self.preview_check.setChecked(True)
@@ -465,7 +489,7 @@ class ColorAdjustmentPanel(QWidget):
                 self.replace_include_alpha.isChecked(),
                 self.replace_alpha.isChecked(),
             )
-        return PaletteMapAdjustment(self._palette, self.palette_dither.isChecked())
+        return PaletteMapAdjustment(self._palette, bool(self.palette_dither.currentData()))
 
     def set_parameters(self, parameters: ColorAdjustmentParameters) -> None:
         self._loading = True
@@ -485,6 +509,10 @@ class ColorAdjustmentPanel(QWidget):
 
     def set_running(self, running: bool) -> None:
         self.apply_button.setText("等待结果…" if running else "应用")
+
+    def set_applying(self, applying: bool) -> None:
+        self.stack.setEnabled(not applying)
+        self.apply_button.setEnabled(not applying)
 
     def use_sampled_source(self, color: RGBAColor) -> None:
         self._replace_source = color
@@ -616,8 +644,44 @@ class ColorAdjustmentPanel(QWidget):
 
     def _palette_page(self) -> QWidget:
         page = QWidget(self)
-        self.palette_grid = QGridLayout()
-        self.palette_dither = QCheckBox("Floyd–Steinberg 抖动", page)
+        grid_widget = QWidget(page)
+        self.palette_grid = QGridLayout(grid_widget)
+        palette_scroll = QScrollArea(page)
+        palette_scroll.setWidgetResizable(True)
+        palette_scroll.setWidget(grid_widget)
+        palette_scroll.setMinimumHeight(100)
+        palette_scroll.setMaximumHeight(240)
+        self.palette_dither = BlenderComboBox(page)
+        self.palette_dither.addItem("无抖动", False)
+        self.palette_dither.addItem("Floyd–Steinberg", True)
+        self.palette_source_count = QLabel("原始有效 RGB 色数：尚未提取", page)
+        count_range = PALETTE_COLOR_COUNT_RANGE
+        self.palette_target = DragValueSpinBox(
+            int(count_range.soft_minimum), int(count_range.soft_maximum),
+            int(count_range.default_value), manual_maximum=int(count_range.hard_maximum),
+            default_value=int(count_range.default_value), parent=page)
+        try:
+            self.palette_target.syncValue(int(self._settings.color_adjustment_state(
+                "palette_target") or "16"))
+        except ValueError:
+            pass
+        self.palette_target.valueChanged.connect(lambda value:
+            self._settings.set_color_adjustment_state("palette_target", str(value)))
+        extract_button = QPushButton("从当前层提取", page)
+        extract_button.clicked.connect(lambda: self.extraction_requested.emit(
+            self.palette_target.value()))
+        self.palette_preset = BlenderComboBox(page)
+        self._refresh_presets()
+        self.palette_preset.currentIndexChanged.connect(self._load_preset)
+        save_preset = QPushButton("保存预设…", page)
+        rename_preset = QPushButton("重命名…", page)
+        delete_preset = QPushButton("删除预设", page)
+        save_preset.clicked.connect(lambda: self._save_preset(False))
+        rename_preset.clicked.connect(lambda: self._save_preset(True))
+        delete_preset.clicked.connect(self._delete_preset)
+        preset_buttons = QHBoxLayout()
+        for button in (save_preset, rename_preset, delete_preset):
+            preset_buttons.addWidget(button)
         add_foreground = QPushButton("添加前景色", page)
         add_background = QPushButton("添加背景色", page)
         add_custom = QPushButton("添加颜色…", page)
@@ -632,9 +696,21 @@ class ColorAdjustmentPanel(QWidget):
         buttons.addWidget(move_left, 2, 0)
         buttons.addWidget(move_right, 2, 1)
         layout = QVBoxLayout(page)
-        layout.addLayout(self.palette_grid)
+        layout.addWidget(self.palette_source_count)
+        target_form = QFormLayout()
+        target_form.addRow("目标色数", self.palette_target)
+        layout.addLayout(target_form)
+        layout.addWidget(extract_button)
+        layout.addWidget(self.palette_preset)
+        layout.addLayout(preset_buttons)
+        layout.addWidget(palette_scroll)
         layout.addWidget(self.palette_dither)
         layout.addLayout(buttons)
+        hint = QLabel("只读取当前栅格层。软选区边缘混合可能产生调色板以外的颜色；"
+                      "目标色数不是整个工程的颜色数上限。", page)
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         add_foreground.clicked.connect(
             lambda: self._add_palette_color(self._foreground_provider()[:3])
         )
@@ -647,6 +723,55 @@ class ColorAdjustmentPanel(QWidget):
         move_right.clicked.connect(lambda: self._move_palette_color(1))
         self._refresh_palette()
         return page
+
+    def use_extracted_palette(self, result: PaletteExtractionResult) -> None:
+        self.palette_source_count.setText(f"原始有效 RGB 色数：{result.source_color_count}")
+        self.set_progress(0, 0, "")
+        self.set_running(False)
+        if result.colors:
+            self._palette = result.colors
+            self._selected_palette = 0
+            self._refresh_palette()
+            self._emit_parameters()
+
+    def _refresh_presets(self, selected: str | None = None) -> None:
+        self.palette_preset.blockSignals(True)
+        self.palette_preset.clear()
+        self.palette_preset.addItem("本机预设…", None)
+        for name in self._presets.palettes():
+            self.palette_preset.addItem(name, name)
+        self.palette_preset.setCurrentIndex(max(0, self.palette_preset.findData(selected)))
+        self.palette_preset.blockSignals(False)
+
+    def _load_preset(self, _index: int) -> None:
+        colors = self._presets.palettes().get(str(self.palette_preset.currentData()))
+        if colors:
+            self._palette = colors
+            self._selected_palette = 0
+            self._refresh_palette()
+            self._emit_parameters()
+
+    def _save_preset(self, rename: bool) -> None:
+        old_name = self.palette_preset.currentData() if rename else None
+        if rename and old_name is None:
+            return
+        name, accepted = QInputDialog.getText(
+            self, "本机调色板", "名称", text=str(old_name or "调色板"))
+        if not accepted or not name.strip():
+            return
+        colors = self._presets.palettes()[str(old_name)] if rename else self._palette
+        try:
+            saved = self._presets.save(name, colors, replacing=old_name)
+        except ValueError as error:
+            self.palette_source_count.setText(str(error))
+            return
+        self._refresh_presets(saved)
+
+    def _delete_preset(self) -> None:
+        name = self.palette_preset.currentData()
+        if name is not None:
+            self._presets.delete(str(name))
+            self._refresh_presets()
 
     def _channel_combo(self, parent: QWidget) -> BlenderComboBox:
         combo = BlenderComboBox(parent)
@@ -759,7 +884,7 @@ class ColorAdjustmentPanel(QWidget):
             self._add_palette_color((selected.red(), selected.green(), selected.blue()))
 
     def _add_palette_color(self, color: RGBColor) -> None:
-        if color in self._palette or len(self._palette) >= 32:
+        if color in self._palette or len(self._palette) >= 256:
             return
         self._palette = (*self._palette, color)
         self._selected_palette = len(self._palette) - 1
@@ -767,7 +892,7 @@ class ColorAdjustmentPanel(QWidget):
         self._emit_parameters()
 
     def _remove_palette_color(self) -> None:
-        if len(self._palette) <= 2:
+        if len(self._palette) <= 1:
             return
         colors = list(self._palette)
         colors.pop(self._selected_palette)
@@ -778,7 +903,13 @@ class ColorAdjustmentPanel(QWidget):
 
     def _select_palette(self, index: int) -> None:
         self._selected_palette = index
-        self._refresh_palette()
+        # Keep the clicked widget alive so Qt can deliver the second click/double click.
+        for position, color in enumerate(self._palette):
+            item = self.palette_grid.itemAt(position)
+            button = item.widget() if item is not None else None
+            if button is not None:
+                border = "#ff8a00" if position == index else "#111111"
+                button.setStyleSheet(f"background-color: rgb{color}; border: 2px solid {border};")
 
     def _move_palette_color(self, offset: int) -> None:
         target = self._selected_palette + offset
@@ -820,6 +951,7 @@ class ColorAdjustmentPanel(QWidget):
                 widget.deleteLater()
         for index, color in enumerate(self._palette):
             button = QPushButton("", self)
+            button.setToolTip(f"RGB {color} · 双击编辑")
             button.setFixedSize(30, 24)
             border = "#ff8a00" if index == self._selected_palette else "#111111"
             button.setStyleSheet(
@@ -904,7 +1036,8 @@ class ColorAdjustmentPanel(QWidget):
             self._refresh_replace_colors()
         elif isinstance(parameters, PaletteMapAdjustment):
             self._palette = parameters.colors
-            self.palette_dither.setChecked(parameters.dither)
+            self._selected_palette = min(self._selected_palette, len(self._palette) - 1)
+            self.palette_dither.setCurrentIndex(int(parameters.dither))
             self._refresh_palette()
 
     @staticmethod

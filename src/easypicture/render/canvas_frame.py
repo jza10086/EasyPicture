@@ -29,7 +29,7 @@ from easypicture.domain import (
 )
 from easypicture.domain.document import Unsubscribe
 from easypicture.imaging import TransformInterpolation
-from easypicture.pixels import Rect, RGBAArray, TileCoord
+from easypicture.pixels import Rect, RGBAArray, TileCoord, TilePixelStore
 from easypicture.pixels.types import validate_rgba_array
 from easypicture.render.qimage_bridge import rgba_tile_to_qimage
 from easypicture.render.text_renderer import paint_vector_objects
@@ -108,6 +108,8 @@ class CanvasRenderCoordinator(QObject):
         self._transform_preview: TransformPreviewState | None = None
         self._geometry_preview: GeometryPreviewState | None = None
         self._vector_preview: VectorPreviewState | None = None
+        self._raster_layer_preview: tuple[UUID, RasterLayer] | None = None
+        self._raster_preview_replaces_source = False
         self._source_cache: OrderedDict[SourceCacheKey, QImage] = OrderedDict()
         self._generation = 0
         self._active_backend = RenderBackendKind.SOFTWARE
@@ -186,6 +188,7 @@ class CanvasRenderCoordinator(QObject):
             self._unsubscribe()
             self._unsubscribe = None
         self.document = document
+        self._raster_layer_preview = None
         self._pixel_preview_layer_id = None
         self._pixel_preview_tiles.clear()
         self._pixel_preview_revisions.clear()
@@ -202,12 +205,49 @@ class CanvasRenderCoordinator(QObject):
             self._unsubscribe()
             self._unsubscribe = None
         self.document = None
+        self._raster_layer_preview = None
         self._source_cache.clear()
         self._pixel_preview_tiles.clear()
         self._pixel_preview_revisions.clear()
         self._transform_preview = None
         self._geometry_preview = None
         self._vector_preview = None
+
+    def replace_raster_layer_preview(
+        self, source_layer_id: UUID, updates: Mapping[TileCoord, RGBAArray],
+        *, replace_source: bool = False,
+    ) -> None:
+        """Atomically insert a display-only layer above its source, within its group."""
+        document = self._require_document()
+        source = document.layer_by_id(source_layer_id)
+        layer = RasterLayer.create_blank("临时像素描边", document.size)
+        if replace_source:
+            layer.opacity, layer.visible = source.opacity, source.visible
+        # Worker-owned immutable buffers transfer without a full image copy on the UI thread.
+        layer.pixels = TilePixelStore.from_readonly_tiles(updates)
+        previous = self._raster_layer_preview
+        self._raster_layer_preview = (source_layer_id, layer)
+        self._raster_preview_replaces_source = replace_source
+        if previous is not None:
+            self._discard_layer_cache(previous[1].id)
+        self.request_frame()
+
+    def clear_raster_layer_preview(self) -> None:
+        if self._raster_layer_preview is not None:
+            self._discard_layer_cache(self._raster_layer_preview[1].id)
+            self._raster_layer_preview = None
+            self.request_frame()
+
+    def display_raster_children(self, group: RasterGroupLayer) -> tuple[RasterLayer, ...]:
+        preview = self._raster_layer_preview
+        children: list[RasterLayer] = []
+        for layer in group.children:
+            if not (preview is not None and layer.id == preview[0]
+                    and self._raster_preview_replaces_source):
+                children.append(layer)
+            if preview is not None and layer.id == preview[0]:
+                children.append(preview[1])
+        return tuple(children)
 
     def set_pixel_preview(
         self,
@@ -566,7 +606,7 @@ class CanvasRenderCoordinator(QObject):
         if not group.visible or group.opacity <= 0.0:
             return
         if isinstance(group, RasterGroupLayer):
-            for layer in group.children:
+            for layer in self.display_raster_children(group):
                 if transform_preview is not None and layer.id == transform_preview.layer_id:
                     if self._require_document().selection.is_active:
                         self._draw_normal_layer(
@@ -782,6 +822,7 @@ class CanvasRenderCoordinator(QObject):
         document = self.document
         if document is None:
             return
+        self._raster_layer_preview = None
         if isinstance(event, LayerPixelsChanged):
             self._discard_layer_cache(event.layer_id)
         elif isinstance(event, (GroupListChanged, GroupMembersChanged)):

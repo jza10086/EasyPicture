@@ -132,6 +132,80 @@ def test_geometry_clear_restores_frames_in_same_undo_step(qtbot) -> None:
     assert document.sprite_workspace.frames == [frame]
 
 
+def test_canvas_expand_translates_and_preserves_frames_animation_and_detached_content(
+    qtbot,
+) -> None:
+    document = Document.create(16, 16)
+    service = DocumentCommandService()
+    service.attach_document(document)
+    assert service.set_sprite_cell_size(Size(4, 4), clear_frames=False)
+    assert service.create_sprite_frame(Rect(0, 0, 4, 4))
+    frame = document.sprite_workspace.frames[0]
+    assert service.detach_sprite_frame(frame.id)
+    assert service.create_sprite_animation("待机")
+    animation = document.sprite_workspace.animations[0]
+    assert service.move_sprite_frame_to_animation(frame.id, animation.id, 0)
+    embedded = dict(document.embedded_documents)
+    result = calculate_canvas_resize(
+        CanvasResizeRequest(DocumentSnapshot.capture(document), Size(24, 20), CanvasAnchor.CENTER),
+        CancellationToken(),
+        _progress,
+    )
+
+    assert service.apply_document_geometry(
+        result,
+        "扩大画布",
+        sprite_frame_offset=PixelPoint(4, 2),
+    )
+    moved = document.sprite_workspace.frames[0]
+    assert moved.id == frame.id and moved.region == Rect(4, 2, 4, 4)
+    assert document.sprite_workspace.animations[0].frame_ids == (frame.id,)
+    assert document.embedded_documents == embedded
+    service.undo_stack.undo()
+    assert document.size == Size(16, 16)
+    assert document.sprite_workspace.frames[0].region == Rect(0, 0, 4, 4)
+    assert document.embedded_documents == embedded
+
+
+def test_canvas_shrink_deletes_only_out_of_bounds_frames_and_filters_animation(qtbot) -> None:
+    document = Document.create(16, 8)
+    service = DocumentCommandService()
+    service.attach_document(document)
+    assert service.set_sprite_cell_size(Size(4, 4), clear_frames=False)
+    assert service.create_sprite_frame(Rect(0, 0, 4, 4))
+    assert service.create_sprite_frame(Rect(12, 0, 4, 4))
+    first, second = document.sprite_workspace.frames
+    assert service.detach_sprite_frame(second.id)
+    first, second = document.sprite_workspace.frames
+    embedded = dict(document.embedded_documents)
+    assert service.create_sprite_animation("移动")
+    animation = document.sprite_workspace.animations[0]
+    assert service.move_sprite_frames_to_animation((first.id, second.id), animation.id, 0)
+    result = calculate_canvas_resize(
+        CanvasResizeRequest(DocumentSnapshot.capture(document), Size(12, 8), CanvasAnchor.TOP_LEFT),
+        CancellationToken(),
+        _progress,
+    )
+
+    assert not service.apply_document_geometry(
+        result,
+        "缩小画布",
+        sprite_frame_offset=PixelPoint(),
+    )
+    assert service.apply_document_geometry(
+        result,
+        "缩小画布",
+        sprite_frame_offset=PixelPoint(),
+        delete_out_of_bounds_sprite_frames=True,
+    )
+    assert [frame.id for frame in document.sprite_workspace.frames] == [first.id]
+    assert document.sprite_workspace.animations[0].frame_ids == (first.id,)
+    assert document.embedded_documents == {}
+    service.undo_stack.undo()
+    assert [frame.id for frame in document.sprite_workspace.frames] == [first.id, second.id]
+    assert document.embedded_documents == embedded
+
+
 def test_sprite_frames_support_atomic_automatic_reordering(qtbot) -> None:
     document = Document.create(16, 8)
     service = DocumentCommandService()

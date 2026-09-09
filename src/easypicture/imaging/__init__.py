@@ -54,6 +54,18 @@ from easypicture.imaging.geometry_ops import (
     canvas_anchor_offset,
     selection_bounds,
 )
+from easypicture.imaging.palette_extraction import (
+    PaletteExtractionRequest,
+    PaletteExtractionResult,
+    extract_layer_palette,
+)
+from easypicture.imaging.pixel_outline import (
+    PixelOutlineParameters,
+    PixelOutlinePlacement,
+    PixelOutlineRequest,
+    PixelOutlineResult,
+    calculate_pixel_outline,
+)
 from easypicture.imaging.region import RegionQuery, RegionResult, find_region
 from easypicture.imaging.sampling import sample_document_pixel
 from easypicture.imaging.selection import (
@@ -110,6 +122,14 @@ from easypicture.imaging.transform import (
 )
 
 __all__ = [
+    "PaletteExtractionRequest",
+    "PaletteExtractionResult",
+    "extract_layer_palette",
+    "PixelOutlineParameters",
+    "PixelOutlinePlacement",
+    "PixelOutlineRequest",
+    "PixelOutlineResult",
+    "calculate_pixel_outline",
     "BACKGROUND_SELECTION_PIXEL_THRESHOLD",
     "BrushSettings",
     "BrushStrokeEngine",

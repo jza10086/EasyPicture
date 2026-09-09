@@ -185,12 +185,14 @@ class PaletteMapAdjustment:
     dither: bool = False
 
     def __post_init__(self) -> None:
-        if not 2 <= len(self.colors) <= 32:
-            raise ValueError("palette must contain between 2 and 32 colors")
+        if not 1 <= len(self.colors) <= 256:
+            raise ValueError("palette must contain between 1 and 256 colors")
         if len(set(self.colors)) != len(self.colors):
             raise ValueError("palette colors must be unique")
         for color in self.colors:
-            if len(color) != 3 or not all(0 <= channel <= 255 for channel in color):
+            if len(color) != 3 or not all(
+                isinstance(channel, int) and 0 <= channel <= 255 for channel in color
+            ):
                 raise ValueError("palette RGB channels must be between 0 and 255")
 
 
@@ -557,11 +559,16 @@ def _nearest_palette(rgb: np.ndarray, colors: tuple[RGBColor, ...]) -> np.ndarra
     palette = np.asarray(colors, dtype=np.uint8)
     palette_lab = rgb_to_lab(palette)
     output = np.empty_like(flat)
-    batch_size = 65_536
+    # Bound the temporary Lab distance tensor for a full 256-color palette.
+    batch_size = max(256, min(65_536, 262_144 // len(colors)))
     for start in range(0, len(flat), batch_size):
         batch = flat[start : start + batch_size]
         lab = rgb_to_lab(batch)
-        distance = np.sum((lab[:, None, :] - palette_lab[None, :, :]) ** 2, axis=-1)
+        # Accumulate the three channels without a (pixels, colors, 3) tensor.
+        # This preserves the sum/argmin order (including ties) and bounds working memory.
+        distance = (lab[:, 0, None] - palette_lab[None, :, 0]) ** 2
+        distance += (lab[:, 1, None] - palette_lab[None, :, 1]) ** 2
+        distance += (lab[:, 2, None] - palette_lab[None, :, 2]) ** 2
         output[start : start + len(batch)] = palette[np.argmin(distance, axis=1)]
     return output.reshape(rgb.shape)
 
@@ -640,8 +647,12 @@ def _floyd_steinberg(
         cancellation.raise_if_cancelled()
         next_error.fill(0.0)
         for x in range(rgba.shape[1]):
+            if x % 256 == 0:
+                cancellation.raise_if_cancelled()
             original = rgba[y, x]
-            value = np.clip(original[:3].astype(np.float32) + current_error[x + 1], 0, 255)
+            value = original[:3].astype(np.float32)
+            if original[3] != 0:
+                value = np.clip(value + current_error[x + 1], 0, 255)
             lab = rgb_to_lab(value[None, :])[0]
             index = int(np.argmin(np.sum((palette_lab - lab) ** 2, axis=1)))
             selected = palette[index]
@@ -649,10 +660,12 @@ def _floyd_steinberg(
             if original[3] == 0:
                 continue
             error = value - selected
-            current_error[x + 2] += error * (7.0 / 16.0)
-            next_error[x] += error * (3.0 / 16.0)
-            next_error[x + 1] += error * (5.0 / 16.0)
-            next_error[x + 2] += error * (1.0 / 16.0)
+            if x + 1 < rgba.shape[1] and rgba[y, x + 1, 3]:
+                current_error[x + 2] += error * (7.0 / 16.0)
+            if y + 1 < rgba.shape[0]:
+                for dx, weight in ((-1, 3.0), (0, 5.0), (1, 1.0)):
+                    if 0 <= x + dx < rgba.shape[1] and rgba[y + 1, x + dx, 3]:
+                        next_error[x + dx + 1] += error * (weight / 16.0)
         current_error, next_error = next_error, current_error
         progress(y + 1, rgba.shape[0], "应用调色板抖动")
 
@@ -746,10 +759,17 @@ def _rgba_surface(width: int, height: int) -> Iterator[np.ndarray]:
             yield surface
         finally:
             surface.flush()
-            del surface
+            # The caller still owns its `with ... as surface` reference here. Close
+            # the mapping explicitly before Windows removes the owned temp directory.
+            mapping = getattr(surface, "_mmap", None)
+            if mapping is not None:
+                mapping.close()
 
 
 def _layer_by_id(snapshot: DocumentSnapshot, layer_id: UUID) -> LayerSnapshot:
+    for group in snapshot.nodes:
+        if group.locked and any(child.id == layer_id for child in group.children):
+            raise PermissionError("raster group is locked")
     for layer in snapshot.raster_layers:
         if layer.id == layer_id:
             return layer

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 from PySide6.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer, QUrl
@@ -106,6 +107,8 @@ from easypicture.imaging import (
     select_all_candidate,
     selection_bounds,
 )
+from easypicture.imaging.ai_pixel_cleanup import AiPixelCleanupParameters, AiPixelCleanupResult
+from easypicture.imaging.pixel_outline import PixelOutlineParameters
 from easypicture.jobs import CancellationToken, JobHandle, JobOperation, JobOutcome, JobStatus
 from easypicture.jobs.runner import ProgressSink
 from easypicture.persistence import (
@@ -135,6 +138,8 @@ from easypicture.tools import (
     TransformTool,
 )
 from easypicture.ui.about_dialog import AboutDialog
+from easypicture.ui.ai_pixel_cleanup_panel import AiPixelCleanupPanel
+from easypicture.ui.ai_pixel_grid_overlay import AiPixelGridOverlay
 from easypicture.ui.atlas_export_dialog import AtlasExportDialog
 from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_adjustment_controller import ColorAdjustmentController
@@ -145,6 +150,7 @@ from easypicture.ui.geometry_dialogs import CanvasSizeDialog, ScaleGeometryDialo
 from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.notifications import NoticeSeverity, UserNotice
 from easypicture.ui.overlays import OverlayManager
+from easypicture.ui.pixel_outline_panel import PixelOutlinePanel
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.settings import AppSettings, TileWorkspaceSettings
 from easypicture.ui.shape_properties import ShapePropertiesPanel
@@ -270,17 +276,15 @@ class MainWindow(QMainWindow):
         self._slice_preview_project_id: UUID | None = None
         self._slice_preview_enabled = self.settings.sprite_slice_preview_enabled()
         self._slice_preview_opacity = self.settings.sprite_slice_preview_opacity()
-        self._sprite_pivot_marker_radius = (
-            self.settings.sprite_pivot_marker_radius()
-        )
+        self._sprite_pivot_marker_radius = self.settings.sprite_pivot_marker_radius()
         self._slice_preview_picking = False
         self._slice_preview_manual_reference = False
         self._geometry_clear_sprite_frames = False
+        self._geometry_sprite_frame_offset: PixelPoint | None = None
+        self._geometry_delete_out_of_bounds_frames = False
         self._tile_frame_selections: dict[UUID, tuple[UUID | None, UUID | None]] = {}
         self._tile_pick_target: str | None = None
-        self._tile_heatmap_segments: tuple[
-            tuple[float, float, float, float, int], ...
-        ] = ()
+        self._tile_heatmap_segments: tuple[tuple[float, float, float, float, int], ...] = ()
         self._tile_job: JobHandle | None = None
         self._tile_job_generation = 0
         self._tile_requested_key: tuple[UUID, int, UUID, UUID, TileWorkspaceSettings] | None = None
@@ -491,6 +495,13 @@ class MainWindow(QMainWindow):
             )
             self.color_adjustment_actions[kind] = action
 
+        self.pixel_outline_action = QAction("像素描边…", self)
+        self.pixel_outline_action.setEnabled(False)
+        self.pixel_outline_action.triggered.connect(self._start_pixel_outline)
+        self.ai_pixel_cleanup_action = QAction("AI 像素整理…", self)
+        self.ai_pixel_cleanup_action.setEnabled(False)
+        self.ai_pixel_cleanup_action.triggered.connect(self._start_ai_pixel_cleanup)
+
     def _create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("文件(&F)")
         file_menu.addAction(self.new_action)
@@ -527,6 +538,7 @@ class MainWindow(QMainWindow):
 
         layer_menu = self.menuBar().addMenu("图层(&L)")
         layer_menu.addAction(self.layer_scale_action)
+        layer_menu.addAction(self.pixel_outline_action)
 
         color_menu = self.menuBar().addMenu("颜色(&C)")
         for kind in ColorAdjustmentKind:
@@ -538,6 +550,8 @@ class MainWindow(QMainWindow):
                 ColorAdjustmentKind.COLOR_REPLACE,
             ):
                 color_menu.addSeparator()
+        color_menu.addSeparator()
+        color_menu.addAction(self.ai_pixel_cleanup_action)
 
         view_menu = self.menuBar().addMenu("视图(&V)")
         view_menu.addAction(self.zoom_in_action)
@@ -729,15 +743,20 @@ class MainWindow(QMainWindow):
         self.svg_properties = SvgPropertiesPanel(self.controller.commands, self)
         self.properties_stack.addWidget(self.svg_properties)
         self.sprite_properties = SpriteWorkspacePanel(self)
-        self.sprite_properties.set_pivot_marker_radius(
-            self._sprite_pivot_marker_radius
-        )
+        self.sprite_properties.set_pivot_marker_radius(self._sprite_pivot_marker_radius)
         self.properties_stack.addWidget(self.sprite_properties)
-        self.tile_properties = TileWorkspacePanel(
-            self.settings.tile_workspace_settings(), self
-        )
+        self.tile_properties = TileWorkspacePanel(self.settings.tile_workspace_settings(), self)
         self.properties_stack.addWidget(self.tile_properties)
         self.properties_stack.addWidget(self.color_adjustment_panel)
+        self.pixel_outline_panel = PixelOutlinePanel(
+            self.settings, self.controller.dialogs, self._foreground_rgba, self
+        )
+        self.properties_stack.addWidget(self.pixel_outline_panel)
+        self.ai_pixel_cleanup_panel = AiPixelCleanupPanel(
+            self.settings, self.controller.dialogs, self
+        )
+        self.properties_stack.addWidget(self.ai_pixel_cleanup_panel)
+        self._ai_grid_overlay: AiPixelGridOverlay | None = None
         self.color_adjustment_controller = ColorAdjustmentController(
             self.canvas_view,
             lambda: self.controller.document,
@@ -771,14 +790,58 @@ class MainWindow(QMainWindow):
             lambda merged: self.color_adjustment_controller.begin_sampling(merged=merged)
         )
         self.color_adjustment_controller.active_changed.connect(self._on_color_adjustment_active)
+        self.color_adjustment_panel.extraction_requested.connect(
+            self.color_adjustment_controller.extract_palette
+        )
+        self.color_adjustment_controller.palette_extracted.connect(
+            self.color_adjustment_panel.use_extracted_palette
+        )
+        self.color_adjustment_controller.applying_changed.connect(
+            self.color_adjustment_panel.set_applying
+        )
+        self.color_adjustment_controller.applying_changed.connect(
+            self.pixel_outline_panel.set_applying
+        )
+        self.pixel_outline_panel.parameters_changed.connect(self._outline_parameters_changed)
+        self.pixel_outline_panel.apply_requested.connect(self._apply_color_adjustment)
+        self.pixel_outline_panel.cancel_requested.connect(self.color_adjustment_controller.cancel)
+        self.pixel_outline_panel.preview_toggled.connect(
+            self.color_adjustment_controller.set_preview_enabled
+        )
+        self.color_adjustment_controller.progress_changed.connect(
+            self.pixel_outline_panel.set_progress
+        )
+        self.color_adjustment_controller.preview_ready.connect(self.pixel_outline_panel.show_result)
         self.color_adjustment_controller.progress_changed.connect(
             self.color_adjustment_panel.set_progress
         )
         self.color_adjustment_controller.preview_ready.connect(
             lambda _result: self.color_adjustment_panel.set_running(False)
         )
-        self.color_adjustment_controller.sampled_color.connect(
-            self.color_adjustment_panel.use_sampled_source
+        self.color_adjustment_controller.sampled_color.connect(self._on_adjustment_sampled_color)
+        self.ai_pixel_cleanup_panel.parameters_changed.connect(self._ai_cleanup_parameters_changed)
+        self.ai_pixel_cleanup_panel.apply_requested.connect(self._apply_color_adjustment)
+        self.ai_pixel_cleanup_panel.cancel_requested.connect(
+            self.color_adjustment_controller.cancel
+        )
+        self.ai_pixel_cleanup_panel.preview_toggled.connect(
+            self.color_adjustment_controller.set_preview_enabled
+        )
+        self.ai_pixel_cleanup_panel.sample_requested.connect(
+            lambda: self.color_adjustment_controller.begin_sampling(merged=False)
+        )
+        self.ai_pixel_cleanup_panel.grid_visibility_changed.connect(
+            self._ai_grid_visibility_changed
+        )
+        self.color_adjustment_controller.applying_changed.connect(
+            self.ai_pixel_cleanup_panel.set_applying
+        )
+        self.color_adjustment_controller.progress_changed.connect(
+            self.ai_pixel_cleanup_panel.set_progress
+        )
+        self.color_adjustment_controller.preview_ready.connect(self._on_ai_cleanup_result)
+        self.color_adjustment_controller.ai_project_requested.connect(
+            self._create_ai_cleanup_project
         )
         self.layer_panel.node_selected.connect(self._on_layer_node_selected)
         self.properties_dock = self._make_dock(
@@ -810,18 +873,14 @@ class MainWindow(QMainWindow):
         self.sprite_properties.frame_duration_requested.connect(
             self._set_selected_sprite_frame_duration
         )
-        self.sprite_properties.slice_preview_toggled.connect(
-            self._set_slice_preview_enabled
-        )
+        self.sprite_properties.slice_preview_toggled.connect(self._set_slice_preview_enabled)
         self.sprite_properties.slice_preview_opacity_changed.connect(
             self._set_slice_preview_opacity
         )
         self.sprite_properties.slice_preview_opacity_committed.connect(
             self.settings.set_sprite_slice_preview_opacity
         )
-        self.sprite_properties.slice_preview_pick_requested.connect(
-            self._start_slice_preview_pick
-        )
+        self.sprite_properties.slice_preview_pick_requested.connect(self._start_slice_preview_pick)
         self.sprite_properties.pivot_marker_radius_changed.connect(
             self._set_sprite_pivot_marker_radius
         )
@@ -846,54 +905,30 @@ class MainWindow(QMainWindow):
         self.sprite_frame_panel.group_rename_requested.connect(self._rename_sprite_group)
         self.sprite_frame_panel.group_move_requested.connect(self._move_sprite_group)
         self.sprite_frame_panel.group_delete_requested.connect(self._delete_sprite_group)
-        self.sprite_frame_panel.frame_group_move_requested.connect(
-            self._move_sprite_frame_to_group
-        )
+        self.sprite_frame_panel.frame_group_move_requested.connect(self._move_sprite_frame_to_group)
         self.sprite_frame_panel.animation_open_requested.connect(
             self._open_sprite_animation_surface
         )
-        self.sprite_frame_panel.animation_fps_requested.connect(
-            self._set_sprite_animation_fps
-        )
-        self.sprite_frame_panel.animation_mode_requested.connect(
-            self._set_sprite_animation_mode
-        )
-        self.sprite_frame_panel.tile_inspect_requested.connect(
-            self._open_tile_workspace
-        )
+        self.sprite_frame_panel.animation_fps_requested.connect(self._set_sprite_animation_fps)
+        self.sprite_frame_panel.animation_mode_requested.connect(self._set_sprite_animation_mode)
+        self.sprite_frame_panel.tile_inspect_requested.connect(self._open_tile_workspace)
         self.sprite_frame_panel.view_size_changed.connect(
             lambda _size: self._resize_sprite_frame_dock()
         )
-        self.animation_toolbar.first_requested.connect(
-            lambda: self._seek_animation("first")
-        )
-        self.animation_toolbar.previous_requested.connect(
-            lambda: self._seek_animation("previous")
-        )
+        self.animation_toolbar.first_requested.connect(lambda: self._seek_animation("first"))
+        self.animation_toolbar.previous_requested.connect(lambda: self._seek_animation("previous"))
         self.animation_toolbar.play_toggled.connect(self._toggle_animation_playback)
-        self.animation_toolbar.next_requested.connect(
-            lambda: self._seek_animation("next")
-        )
-        self.animation_toolbar.last_requested.connect(
-            lambda: self._seek_animation("last")
-        )
-        self.animation_toolbar.fps_requested.connect(
-            self._set_active_animation_fps
-        )
-        self.animation_toolbar.mode_requested.connect(
-            self._set_active_animation_mode
-        )
+        self.animation_toolbar.next_requested.connect(lambda: self._seek_animation("next"))
+        self.animation_toolbar.last_requested.connect(lambda: self._seek_animation("last"))
+        self.animation_toolbar.fps_requested.connect(self._set_active_animation_fps)
+        self.animation_toolbar.mode_requested.connect(self._set_active_animation_mode)
         self.animation_toolbar.onion_settings_changed.connect(
             lambda _settings: self._render_active_animation_frame()
         )
-        self.tile_properties.parameters_changed.connect(
-            self._refresh_tile_workspace
-        )
+        self.tile_properties.parameters_changed.connect(self._refresh_tile_workspace)
         self.tile_properties.pick_requested.connect(self._start_tile_pick)
         self.tile_properties.cancel_requested.connect(self._cancel_tile_work)
-        self.tile_properties.generate_requested.connect(
-            self._generate_tile_transition_frame
-        )
+        self.tile_properties.generate_requested.connect(self._generate_tile_transition_frame)
 
     def _create_status_bar(self) -> None:
         self._status_message_generation = 0
@@ -971,9 +1006,7 @@ class MainWindow(QMainWindow):
             "text": "文字 · 拖动创建文本框 · 右键取消",
             "sprite_slice": "精灵切片 · 拖动定位 · Enter 确定 · F2 重命名",
         }
-        self.shortcut_hint_label.setText(
-            hints.get(tool_name, "中键/Space 平移 · Ctrl+滚轮缩放")
-        )
+        self.shortcut_hint_label.setText(hints.get(tool_name, "中键/Space 平移 · Ctrl+滚轮缩放"))
 
     def _connect_signals(self) -> None:
         self.empty_state.new_button.clicked.connect(self._request_new_document)
@@ -1053,12 +1086,8 @@ class MainWindow(QMainWindow):
                 lambda _index: QTimer.singleShot(0, self._configure_active_read_only_surface)
             )
             self.controller.surfaces_changed.connect(self._refresh_surface_tabs)
-            self.controller.animation_surface_changed.connect(
-                self._on_animation_surface_changed
-            )
-            self.controller.tile_surface_changed.connect(
-                self._on_tile_surface_changed
-            )
+            self.controller.animation_surface_changed.connect(self._on_animation_surface_changed)
+            self.controller.tile_surface_changed.connect(self._on_tile_surface_changed)
             self.workspace_tabs.tabMoved.connect(self.controller.move_session)
         self.canvas_view.render_backend_fallback.connect(self._on_render_backend_fallback)
         self.canvas_view.render_coordinator.diagnostics_changed.connect(self._on_render_diagnostics)
@@ -1098,10 +1127,7 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.setVisible(bool(sessions))
         self.surface_tabs.setVisible(bool(sessions))
         if hasattr(self, "sprite_frame_panel"):
-            labels = tuple(
-                self._project_display_label(session.document)
-                for session in sessions
-            )
+            labels = tuple(self._project_display_label(session.document) for session in sessions)
             active_index = sessions.index(active) if active is not None else -1
             self.sprite_frame_panel.set_projects(labels, active_index)
         self._refresh_surface_tabs()
@@ -1189,11 +1215,7 @@ class MainWindow(QMainWindow):
             return
         center = self.canvas_view.mapToScene(self.canvas_view.viewport().rect().center())
         tool_name = next(
-            (
-                name
-                for name, action in self.tool_actions.items()
-                if action.isChecked()
-            ),
+            (name for name, action in self.tool_actions.items() if action.isChecked()),
             "brush",
         )
         session.canvas_states[session.active_surface] = CanvasViewState(
@@ -1332,6 +1354,11 @@ class MainWindow(QMainWindow):
         self.canvas_view.clear_geometry_preview()
         if not accepted:
             return
+        offset = canvas_anchor_offset(snapshot.size, dialog.size_value, dialog.anchor)
+        frame_policy = self._canvas_resize_frame_policy(dialog.size_value, offset)
+        if frame_policy is None:
+            return
+        clear_frames, delete_out_of_bounds = frame_policy
         request = CanvasResizeRequest(snapshot, dialog.size_value, dialog.anchor)
         self._start_geometry_job(
             lambda token, progress: calculate_canvas_resize(
@@ -1340,7 +1367,51 @@ class MainWindow(QMainWindow):
                 progress,
             ),
             "调整画布大小",
+            clear_sprite_frames_on_success=clear_frames,
+            sprite_frame_offset=offset,
+            delete_out_of_bounds_sprite_frames=delete_out_of_bounds,
         )
+
+    def _canvas_resize_frame_policy(
+        self,
+        target_size: Size,
+        offset: PixelPoint,
+    ) -> tuple[bool, bool] | None:
+        """Resolve clear/delete policy; valid frames always follow canvas content."""
+        document = self.controller.document
+        if (
+            document is None
+            or document.kind is not DocumentKind.PROJECT
+            or not document.sprite_workspace.frames
+        ):
+            return False, False
+        invalid = sum(
+            1
+            for frame in document.sprite_workspace.frames
+            if (
+                frame.region.x + offset.x < 0
+                or frame.region.y + offset.y < 0
+                or frame.region.right + offset.x > target_size.width
+                or frame.region.bottom + offset.y > target_size.height
+            )
+        )
+        if not invalid:
+            return False, False
+        answer = QMessageBox.question(
+            self,
+            "调整画布大小",
+            f"调整后有 {invalid} 个精灵帧超出新画布。\n"
+            "选择“是”仅删除越界帧，选择“否”清空全部帧，选择“取消”放弃调整。",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            return False, True
+        if answer == QMessageBox.StandardButton.No:
+            return True, False
+        return None
 
     def _show_image_scale_dialog(self) -> None:
         document = self.controller.document
@@ -1493,6 +1564,8 @@ class MainWindow(QMainWindow):
         label: str,
         *,
         clear_sprite_frames_on_success: bool = True,
+        sprite_frame_offset: PixelPoint | None = None,
+        delete_out_of_bounds_sprite_frames: bool = False,
     ) -> None:
         if self._geometry_job is not None:
             return
@@ -1503,17 +1576,23 @@ class MainWindow(QMainWindow):
             and document.kind is DocumentKind.PROJECT
             and document.sprite_workspace.frames
         )
-        if clear_frames:
+        if clear_frames and sprite_frame_offset is None:
             answer = QMessageBox.question(
                 self,
                 label,
-                "此操作会清空现有精灵帧定义；撤销几何操作可同时恢复。是否继续？",
+                "此操作会清空现有精灵帧定义；撤销几何操作可同时恢复。\n"
+                "选择“是”清空并继续，选择“否”取消操作。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
-            if answer is not QMessageBox.StandardButton.Yes:
+            # PySide6 6.11 returns the native integer button value here rather
+            # than the StandardButton enum object. Compare by value: identity
+            # comparison incorrectly treated an actual Yes click as cancel.
+            if answer != QMessageBox.StandardButton.Yes:
                 return
         self._geometry_clear_sprite_frames = clear_frames
+        self._geometry_sprite_frame_offset = sprite_frame_offset
+        self._geometry_delete_out_of_bounds_frames = delete_out_of_bounds_sprite_frames
         handle = self.controller.jobs.submit(operation)
         self._geometry_job = handle
         dialog = QProgressDialog(f"正在{label}…", "取消", 0, 0, self)
@@ -1540,6 +1619,10 @@ class MainWindow(QMainWindow):
         self._set_editing_busy(False)
         clear_sprite_frames = self._geometry_clear_sprite_frames
         self._geometry_clear_sprite_frames = False
+        sprite_frame_offset = self._geometry_sprite_frame_offset
+        self._geometry_sprite_frame_offset = None
+        delete_out_of_bounds = self._geometry_delete_out_of_bounds_frames
+        self._geometry_delete_out_of_bounds_frames = False
         if outcome.status is JobStatus.CANCELLED:
             self._show_operation_status(f"已取消{label}")
             return
@@ -1553,6 +1636,8 @@ class MainWindow(QMainWindow):
             outcome.value,
             label,
             clear_sprite_frames=clear_sprite_frames,
+            sprite_frame_offset=sprite_frame_offset,
+            delete_out_of_bounds_sprite_frames=delete_out_of_bounds,
         ):
             self._show_operation_status(f"{label}未产生变化或结果已过期")
 
@@ -1565,12 +1650,8 @@ class MainWindow(QMainWindow):
     def _on_document_changed(self, document: Document | None) -> None:
         self._cancel_tile_work()
         project_document = self._project_document()
-        if (
-            self._slice_preview_reference_id is not None
-            and (
-                project_document is None
-                or project_document.id != self._slice_preview_project_id
-            )
+        if self._slice_preview_reference_id is not None and (
+            project_document is None or project_document.id != self._slice_preview_project_id
         ):
             self._clear_slice_preview_reference()
         self._selected_vector_object = False
@@ -1592,9 +1673,7 @@ class MainWindow(QMainWindow):
         self.tool_controller.reset_active_tool()
         self.layer_panel.set_document(document)
         self.sprite_properties.set_document(project_document)
-        self.sprite_properties.set_pivot_marker_radius(
-            self._resolved_sprite_pivot_marker_radius()
-        )
+        self.sprite_properties.set_pivot_marker_radius(self._resolved_sprite_pivot_marker_radius())
         self.sprite_properties.set_slice_preview_reference(
             None,
             enabled=self._slice_preview_enabled,
@@ -1604,13 +1683,8 @@ class MainWindow(QMainWindow):
         self.sprite_properties.set_frame(None)
         self.sprite_frame_panel.set_document(project_document)
         active_session = getattr(self.controller, "active_session", None)
-        if (
-            active_session is not None
-            and active_session.active_sprite_animation_id is not None
-        ):
-            self.sprite_frame_panel.set_active_group(
-                active_session.active_sprite_animation_id
-            )
+        if active_session is not None and active_session.active_sprite_animation_id is not None:
+            self.sprite_frame_panel.set_active_group(active_session.active_sprite_animation_id)
         self._group_expansion_state = {}
         self._pending_group_expansion = None
         self._restore_group_expansion()
@@ -1653,10 +1727,12 @@ class MainWindow(QMainWindow):
             has_document and not linked_read_only and not self._editing_busy
         )
         self.layer_panel.setEnabled(not linked_read_only and not self._editing_busy)
-        for action in self.color_adjustment_actions.values():
-            action.setEnabled(
-                has_document and not linked_read_only and not self._editing_busy
-            )
+        for action in (
+            *self.color_adjustment_actions.values(),
+            self.pixel_outline_action,
+            self.ai_pixel_cleanup_action,
+        ):
+            action.setEnabled(has_document and not linked_read_only and not self._editing_busy)
         if document is None:
             self.document_size_label.setText("无文档")
             self.sprite_count_label.setText("帧 0")
@@ -1666,9 +1742,7 @@ class MainWindow(QMainWindow):
                 f"帧 {len(project_document.sprite_workspace.frames) if project_document else 0}"
             )
         if "sprite_slice" in self.tool_actions:
-            self.tool_actions["sprite_slice"].setEnabled(
-                source_surface and not self._editing_busy
-            )
+            self.tool_actions["sprite_slice"].setEnabled(source_surface and not self._editing_busy)
         self._refresh_workspace_tabs()
         self._update_undo_actions()
         self._update_selection_actions()
@@ -1938,9 +2012,10 @@ class MainWindow(QMainWindow):
     def _delete_sprite_frame(self, frame_id: object) -> None:
         frame_ids = (
             frame_id
-            if isinstance(frame_id, tuple)
-            and all(isinstance(item, UUID) for item in frame_id)
-            else (frame_id,) if isinstance(frame_id, UUID) else ()
+            if isinstance(frame_id, tuple) and all(isinstance(item, UUID) for item in frame_id)
+            else (frame_id,)
+            if isinstance(frame_id, UUID)
+            else ()
         )
         if not frame_ids:
             return
@@ -2050,9 +2125,7 @@ class MainWindow(QMainWindow):
         if target not in {"a", "b"} or not self._active_tile_surface():
             return
         self._tile_pick_target = target
-        self._show_operation_status(
-            f"请在精灵帧中选择 Tile {target.upper()}；Esc 取消"
-        )
+        self._show_operation_status(f"请在精灵帧中选择 Tile {target.upper()}；Esc 取消")
         self.sprite_frames_dock.show()
         self.sprite_frames_dock.raise_()
 
@@ -2085,8 +2158,10 @@ class MainWindow(QMainWindow):
         second = frames.get(second_id) if second_id is not None else None
         self._set_tile_selection(first.id if first else None, second.id if second else None)
         self.tile_properties.set_frames(
-            first.id if first else None, first.name if first else None,
-            second.id if second else None, second.name if second else None,
+            first.id if first else None,
+            first.name if first else None,
+            second.id if second else None,
+            second.name if second else None,
         )
         if self.tile_properties.settings_value().preview_mode is TilePreviewMode.OFFSET:
             # Tiling only consumes A. Keep the remembered B selection for the
@@ -2132,7 +2207,8 @@ class MainWindow(QMainWindow):
         signature = tile_source_signature(project, (first.id, second.id))
         same_sources = signature == self._tile_cached_source_signature
         if (
-            same_sources and self._tile_cached_key is not None
+            same_sources
+            and self._tile_cached_key is not None
             and self._tile_cached_key[-1] == settings
         ):
             self._tile_cached_key = key
@@ -2145,9 +2221,13 @@ class MainWindow(QMainWindow):
         generation = self._tile_job_generation
         self._tile_requested_key = key
         request = TilePreviewRequest(
-            DocumentSnapshot.capture(project), first.id, second.id, settings,
+            DocumentSnapshot.capture(project),
+            first.id,
+            second.id,
+            settings,
             self._tile_cached_result.sources
-            if same_sources and self._tile_cached_result is not None else None,
+            if same_sources and self._tile_cached_result is not None
+            else None,
         )
         if self._tile_job is not None:
             self._tile_job.cancel()
@@ -2195,8 +2275,11 @@ class MainWindow(QMainWindow):
         handle = self.controller.jobs.submit(operation)
         self._tile_job = handle
         handle.progress.connect(
-            lambda done, total, label: self.tile_properties.set_progress(done, total, label)
-            if generation == self._tile_job_generation else None
+            lambda done, total, label: (
+                self.tile_properties.set_progress(done, total, label)
+                if generation == self._tile_job_generation
+                else None
+            )
         )
         handle.finished.connect(
             lambda outcome: self._tile_workspace_job_finished(
@@ -2205,8 +2288,11 @@ class MainWindow(QMainWindow):
         )
 
     def _tile_workspace_job_finished(
-        self, outcome: JobOutcome, request: TilePreviewRequest,
-        generation: int, open_surface: bool,
+        self,
+        outcome: JobOutcome,
+        request: TilePreviewRequest,
+        generation: int,
+        open_surface: bool,
     ) -> None:
         self._tile_job = None
         project = self._project_document()
@@ -2214,7 +2300,8 @@ class MainWindow(QMainWindow):
         if request.settings.preview_mode is TilePreviewMode.OFFSET:
             second_id = first_id
         valid = (
-            generation == self._tile_job_generation and project is not None
+            generation == self._tile_job_generation
+            and project is not None
             and project.id == request.snapshot.document_id
             and project.revision == request.snapshot.revision
             and (first_id, second_id) == (request.first_id, request.second_id)
@@ -2254,8 +2341,13 @@ class MainWindow(QMainWindow):
         if resolved is None or not self._active_tile_surface():
             return
         project, first_frame, second_frame = resolved
-        key = (project.id, project.revision, first_frame.id, second_frame.id,
-               self.tile_properties.settings_value())
+        key = (
+            project.id,
+            project.revision,
+            first_frame.id,
+            second_frame.id,
+            self.tile_properties.settings_value(),
+        )
         result = self._tile_cached_result
         if key != self._tile_cached_key or result is None or result.transition is None:
             self._show_operation_status("请等待最新过渡预览完成后再生成")
@@ -2303,9 +2395,7 @@ class MainWindow(QMainWindow):
             self._animation_id = None
             self.animation_toolbar.hide()
             return
-        frames = {
-            frame.id: frame for frame in session.document.sprite_workspace.frames
-        }
+        frames = {frame.id: frame for frame in session.document.sprite_workspace.frames}
         previous = self._animation_cursor
         index = session.animation_surface_indices.get(animation.id, 0)
         direction = 1
@@ -2341,9 +2431,7 @@ class MainWindow(QMainWindow):
         animation = self._active_sprite_animation()
         if animation is not None and animation.id == cursor.animation.id:
             cursor.animation = animation
-        frames = {
-            frame.id: frame for frame in session.document.sprite_workspace.frames
-        }
+        frames = {frame.id: frame for frame in session.document.sprite_workspace.frames}
         cursor.frames = frames
         self.animation_toolbar.set_animation(
             cursor.animation,
@@ -2360,10 +2448,7 @@ class MainWindow(QMainWindow):
         animation = self._active_sprite_animation()
         if animation is not None and animation.id == cursor.animation.id:
             cursor.animation = animation
-            cursor.frames = {
-                frame.id: frame
-                for frame in session.document.sprite_workspace.frames
-            }
+            cursor.frames = {frame.id: frame for frame in session.document.sprite_workspace.frames}
         onion = self.settings.onion_skin_settings()
         previous_color = self._qcolor_rgba(onion.previous_color)
         next_color = self._qcolor_rgba(onion.next_color)
@@ -2420,8 +2505,7 @@ class MainWindow(QMainWindow):
             cursor.animation = animation
             if session is not None:
                 cursor.frames = {
-                    frame.id: frame
-                    for frame in session.document.sprite_workspace.frames
+                    frame.id: frame for frame in session.document.sprite_workspace.frames
                 }
         if playing:
             cursor.play(time.monotonic())
@@ -2504,9 +2588,7 @@ class MainWindow(QMainWindow):
     def _sprite_group_selected(self, group_id: object) -> None:
         session = getattr(self.controller, "active_session", None)
         if session is not None:
-            session.active_sprite_animation_id = (
-                group_id if isinstance(group_id, UUID) else None
-            )
+            session.active_sprite_animation_id = group_id if isinstance(group_id, UUID) else None
 
     def _create_sprite_group(self, name: str) -> None:
         self.controller.commands.create_sprite_animation(name)
@@ -2527,9 +2609,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         frame_ids = (
             frame_id
-            if isinstance(frame_id, tuple)
-            and all(isinstance(item, UUID) for item in frame_id)
-            else (frame_id,) if isinstance(frame_id, UUID) else ()
+            if isinstance(frame_id, tuple) and all(isinstance(item, UUID) for item in frame_id)
+            else (frame_id,)
+            if isinstance(frame_id, UUID)
+            else ()
         )
         if frame_ids and (group_id is None or isinstance(group_id, UUID)):
             self.controller.commands.move_sprite_frames_to_animation(
@@ -2605,9 +2688,13 @@ class MainWindow(QMainWindow):
         name: object,
         pivot: object,
     ) -> None:
-        if isinstance(frame_id, UUID) and isinstance(name, str) and isinstance(
-            pivot,
-            PixelPoint,
+        if (
+            isinstance(frame_id, UUID)
+            and isinstance(name, str)
+            and isinstance(
+                pivot,
+                PixelPoint,
+            )
         ):
             self.controller.commands.update_sprite_frame(
                 frame_id,
@@ -2624,11 +2711,11 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "更改单格尺寸",
-                "更改单格尺寸会清空现有精灵帧定义。是否继续？",
+                "更改单格尺寸会清空现有精灵帧定义。\n选择“是”清空并继续，选择“否”取消操作。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
-            if answer is not QMessageBox.StandardButton.Yes:
+            if answer != QMessageBox.StandardButton.Yes:
                 self.sprite_properties.set_document(document)
                 return
             clear_frames = True
@@ -2818,7 +2905,12 @@ class MainWindow(QMainWindow):
 
     def _start_color_adjustment(self, kind: ColorAdjustmentKind) -> None:
         document = self.controller.document
-        if document is None or self._editing_busy:
+        if (
+            document is None
+            or self._editing_busy
+            or self._active_surface_is_read_only()
+            or self._selected_vector_object
+        ):
             return
         previous_tool = self.tool_controller.active_tool
         self._adjustment_previous_tool = previous_tool
@@ -2827,6 +2919,73 @@ class MainWindow(QMainWindow):
         if not self.color_adjustment_controller.start(parameters):
             self.tool_controller.set_tool(previous_tool)
             self._adjustment_previous_tool = None
+
+    def _start_pixel_outline(self) -> None:
+        if (
+            self.controller.document is None
+            or self._editing_busy
+            or self._active_surface_is_read_only()
+            or self._selected_vector_object
+        ):
+            return
+        previous = self.tool_controller.active_tool
+        self._adjustment_previous_tool = previous
+        self.tool_controller.set_tool(NullTool())
+        if not self.color_adjustment_controller.start(self.pixel_outline_panel.activate()):
+            self.tool_controller.set_tool(previous)
+            self._adjustment_previous_tool = None
+
+    def _start_ai_pixel_cleanup(self) -> None:
+        document = self.controller.document
+        if (
+            document is None
+            or self._editing_busy
+            or self._active_surface_is_read_only()
+            or self._selected_vector_object
+        ):
+            return
+        previous = self.tool_controller.active_tool
+        self._adjustment_previous_tool = previous
+        self.tool_controller.set_tool(NullTool())
+        params = self.ai_pixel_cleanup_panel.activate(document.size)
+        if not self.color_adjustment_controller.start(params):
+            self.tool_controller.set_tool(previous)
+            self._adjustment_previous_tool = None
+
+    def _ai_cleanup_parameters_changed(self, parameters: object) -> None:
+        if isinstance(parameters, AiPixelCleanupParameters):
+            if self.color_adjustment_controller.update_parameters(parameters):
+                self.ai_pixel_cleanup_panel.set_running(True)
+                if self._ai_grid_overlay is not None:
+                    self._ai_grid_overlay.set_parameters(parameters)
+
+    def _ai_grid_visibility_changed(self, visible: bool) -> None:
+        if self._ai_grid_overlay is not None:
+            self._ai_grid_overlay.setVisible(visible)
+
+    def _on_ai_cleanup_result(self, result: object) -> None:
+        if isinstance(result, AiPixelCleanupResult):
+            self.ai_pixel_cleanup_panel.show_result(result)
+            if self._ai_grid_overlay is not None:
+                self._ai_grid_overlay.set_masks(result.grid_selection)
+
+    def _on_adjustment_sampled_color(self, color: object) -> None:
+        if isinstance(self.color_adjustment_controller.parameters, AiPixelCleanupParameters):
+            self.ai_pixel_cleanup_panel.use_sampled_color(color)
+        else:
+            self.color_adjustment_panel.use_sampled_source(cast(tuple[int, int, int, int], color))
+
+    def _create_ai_cleanup_project(self, result: object) -> None:
+        if isinstance(result, AiPixelCleanupResult):
+            if self.controller.create_ai_cleanup_project(result):
+                self._show_operation_status("已创建低分辨率像素整理工程，来源工程未修改")
+            else:
+                self._show_operation_status("来源已变化，未创建过期整理结果")
+
+    def _outline_parameters_changed(self, parameters: object) -> None:
+        if isinstance(parameters, PixelOutlineParameters):
+            if self.color_adjustment_controller.update_parameters(parameters):
+                self.pixel_outline_panel.set_running(True)
 
     def _color_adjustment_parameters_changed(self, parameters: object) -> None:
         if not isinstance(
@@ -2846,11 +3005,22 @@ class MainWindow(QMainWindow):
             return
         if self.color_adjustment_controller.update_parameters(parameters):
             self.color_adjustment_panel.set_running(True)
-        elif self.color_adjustment_controller.parameters is not None:
+        elif self.color_adjustment_controller.parameters is not None and not isinstance(
+            self.color_adjustment_controller.parameters,
+            (PixelOutlineParameters, AiPixelCleanupParameters),
+        ):
             self.color_adjustment_panel.set_parameters(self.color_adjustment_controller.parameters)
 
     def _apply_color_adjustment(self) -> None:
+        if isinstance(self.color_adjustment_controller.parameters, AiPixelCleanupParameters):
+            try:
+                self.ai_pixel_cleanup_panel.parameters()
+            except ValueError as error:
+                self._show_operation_status(str(error))
+                return
+            self.ai_pixel_cleanup_panel.set_running(True)
         self.color_adjustment_panel.set_running(True)
+        self.pixel_outline_panel.set_running(True)
         self.color_adjustment_controller.apply()
 
     def _apply_color_adjustment_if_active(self) -> None:
@@ -2860,11 +3030,36 @@ class MainWindow(QMainWindow):
     def _on_color_adjustment_active(self, active: bool) -> None:
         if active:
             self._set_editing_busy(True)
-            self.properties_stack.setCurrentWidget(self.color_adjustment_panel)
+            params = self.color_adjustment_controller.parameters
+            document = self.controller.document
+            if isinstance(params, AiPixelCleanupParameters) and document is not None:
+                self.properties_stack.setCurrentWidget(self.ai_pixel_cleanup_panel)
+                self._ai_grid_overlay = AiPixelGridOverlay(document.size, params)
+                self._ai_grid_overlay.setVisible(
+                    self.ai_pixel_cleanup_panel.grid_visible.isChecked()
+                )
+                self.canvas_view.scene().addItem(self._ai_grid_overlay)
+                self.properties_dock.show()
+                self.properties_dock.raise_()
+                return
+            self.properties_stack.setCurrentWidget(
+                self.pixel_outline_panel
+                if isinstance(self.color_adjustment_controller.parameters, PixelOutlineParameters)
+                else self.color_adjustment_panel
+            )
             self.properties_dock.show()
             self.properties_dock.raise_()
             return
+        if self._ai_grid_overlay is not None:
+            scene = self._ai_grid_overlay.scene()
+            if scene is not None:
+                scene.removeItem(self._ai_grid_overlay)
+            self._ai_grid_overlay = None
+        self.ai_pixel_cleanup_panel.set_running(False)
+        self.ai_pixel_cleanup_panel.set_progress(0, 0, "")
         self.color_adjustment_panel.set_running(False)
+        self.pixel_outline_panel.set_running(False)
+        self.pixel_outline_panel.set_progress(0, 0, "")
         self.color_adjustment_panel.set_progress(0, 0, "")
         self._set_editing_busy(False)
         previous = self._adjustment_previous_tool
@@ -3057,6 +3252,19 @@ class MainWindow(QMainWindow):
             ):
                 enabled = False
             action.setEnabled(enabled)
+
+        allowed = (
+            has_document
+            and not self._editing_busy
+            and not self._selected_vector_object
+            and not self._active_surface_is_read_only()
+        )
+        for action in (
+            *self.color_adjustment_actions.values(),
+            self.pixel_outline_action,
+            self.ai_pixel_cleanup_action,
+        ):
+            action.setEnabled(allowed)
 
     def _active_surface_is_read_only(self) -> bool:
         session = getattr(self.controller, "active_session", None)
@@ -3257,7 +3465,11 @@ class MainWindow(QMainWindow):
         self._refresh_tool_actions(has_document)
         self.tool_options_panel.setEnabled(has_document and not linked_read_only and not busy)
         self.layer_panel.setEnabled(not linked_read_only and not busy)
-        for action in self.color_adjustment_actions.values():
+        for action in (
+            *self.color_adjustment_actions.values(),
+            self.pixel_outline_action,
+            self.ai_pixel_cleanup_action,
+        ):
             action.setEnabled(has_document and not linked_read_only and not busy)
         for action in (
             self.save_action,
@@ -3531,12 +3743,8 @@ class MainWindow(QMainWindow):
         active = has_document and document.selection.is_active if document is not None else False
         self.select_all_action.setEnabled(writable and not self._editing_busy)
         self.crop_to_selection_action.setEnabled(writable and active and not self._editing_busy)
-        self.clear_selected_pixels_action.setEnabled(
-            writable and active and not self._editing_busy
-        )
-        self.tool_options_panel.set_selection_active(
-            writable and active and not self._editing_busy
-        )
+        self.clear_selected_pixels_action.setEnabled(writable and active and not self._editing_busy)
+        self.tool_options_panel.set_selection_active(writable and active and not self._editing_busy)
         for action in (
             self.deselect_action,
             self.invert_selection_action,

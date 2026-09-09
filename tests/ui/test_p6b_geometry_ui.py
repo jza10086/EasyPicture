@@ -2,10 +2,20 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtWidgets import QMessageBox
 
 from easypicture.controller import ApplicationController
-from easypicture.domain import Size
-from easypicture.imaging import CanvasAnchor, GeometryRect, TransformInterpolation
+from easypicture.domain import PixelPoint, Size
+from easypicture.imaging import (
+    CanvasAnchor,
+    CanvasResizeRequest,
+    GeometryRect,
+    TransformInterpolation,
+    calculate_canvas_resize,
+)
+from easypicture.jobs import CancellationToken
+from easypicture.persistence import DocumentSnapshot
+from easypicture.pixels import Rect
 from easypicture.tools import CropTool
 from easypicture.ui.dialogs import NewDocumentSpec
 from easypicture.ui.geometry_dialogs import CanvasSizeDialog, ScaleGeometryDialog
@@ -91,9 +101,7 @@ def test_canvas_size_dialog_emits_all_anchor_and_size_values(qtbot) -> None:
     dialog = CanvasSizeDialog(Size(64, 48))
     qtbot.addWidget(dialog)
     values: list[tuple[Size, CanvasAnchor]] = []
-    dialog.preview_changed.connect(
-        lambda size, anchor: values.append((size, anchor))
-    )
+    dialog.preview_changed.connect(lambda size, anchor: values.append((size, anchor)))
 
     dialog.width_spin.setValue(80)
     dialog.height_spin.setValue(60)
@@ -104,6 +112,131 @@ def test_canvas_size_dialog_emits_all_anchor_and_size_values(qtbot) -> None:
     assert dialog.size_value == Size(80, 60)
     assert dialog.anchor is CanvasAnchor.BOTTOM_RIGHT
     assert values[-1] == (Size(80, 60), CanvasAnchor.BOTTOM_RIGHT)
+
+
+def test_canvas_resize_native_yes_value_clears_frames_and_commits(qtbot, tmp_path, monkeypatch):
+    controller, window = _window(qtbot, tmp_path)
+    document = controller.document
+    assert document is not None
+    assert controller.commands.set_sprite_cell_size(Size(16, 16), clear_frames=False)
+    assert controller.commands.create_sprite_frame(Rect(0, 0, 16, 16))
+    result = calculate_canvas_resize(
+        CanvasResizeRequest(
+            DocumentSnapshot.capture(document),
+            Size(80, 60),
+            CanvasAnchor.TOP_LEFT,
+        ),
+        CancellationToken(),
+        lambda *_args: None,
+    )
+    # QMessageBox.question() returns int on the supported PySide6 runtime.
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: int(QMessageBox.StandardButton.Yes),
+    )
+
+    window._start_geometry_job(lambda _token, _progress: result, "调整画布大小")
+
+    qtbot.waitUntil(lambda: document.size == Size(80, 60), timeout=5000)
+    assert document.sprite_workspace.frames == []
+    controller.commands.undo_stack.undo()
+    assert document.size == Size(64, 48)
+    assert len(document.sprite_workspace.frames) == 1
+
+
+def test_canvas_resize_native_no_value_cancels_without_changes(qtbot, tmp_path, monkeypatch):
+    controller, window = _window(qtbot, tmp_path)
+    document = controller.document
+    assert document is not None
+    assert controller.commands.set_sprite_cell_size(Size(16, 16), clear_frames=False)
+    assert controller.commands.create_sprite_frame(Rect(0, 0, 16, 16))
+    revision = document.revision
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: int(QMessageBox.StandardButton.No),
+    )
+
+    window._start_geometry_job(lambda _token, _progress: None, "调整画布大小")
+
+    assert window._geometry_job is None
+    assert document.size == Size(64, 48)
+    assert len(document.sprite_workspace.frames) == 1
+    assert document.revision == revision
+
+
+def test_cell_size_native_yes_value_clears_frames(qtbot, tmp_path, monkeypatch):
+    controller, window = _window(qtbot, tmp_path)
+    document = controller.document
+    assert document is not None
+    assert controller.commands.set_sprite_cell_size(Size(16, 16), clear_frames=False)
+    assert controller.commands.create_sprite_frame(Rect(0, 0, 16, 16))
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: int(QMessageBox.StandardButton.Yes),
+    )
+
+    window._set_sprite_cell_size(Size(8, 8))
+
+    assert document.sprite_workspace.cell_size == Size(8, 8)
+    assert document.sprite_workspace.frames == []
+
+
+def test_canvas_resize_policy_preserves_frames_when_all_translated_regions_fit(
+    qtbot, tmp_path, monkeypatch
+):
+    controller, window = _window(qtbot, tmp_path)
+    document = controller.document
+    assert document is not None
+    assert controller.commands.set_sprite_cell_size(Size(16, 16), clear_frames=False)
+    assert controller.commands.create_sprite_frame(Rect(0, 0, 16, 16))
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("valid translated frames must not prompt")
+        ),
+    )
+
+    assert window._canvas_resize_frame_policy(Size(80, 64), PixelPoint(8, 8)) == (
+        False,
+        False,
+    )
+
+
+def test_canvas_resize_policy_supports_delete_clear_and_cancel(qtbot, tmp_path, monkeypatch):
+    controller, window = _window(qtbot, tmp_path)
+    document = controller.document
+    assert document is not None
+    assert controller.commands.set_sprite_cell_size(Size(16, 16), clear_frames=False)
+    assert controller.commands.create_sprite_frame(Rect(48, 32, 16, 16))
+
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: int(QMessageBox.StandardButton.Yes),
+    )
+    assert window._canvas_resize_frame_policy(Size(56, 48), PixelPoint()) == (
+        False,
+        True,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: int(QMessageBox.StandardButton.No),
+    )
+    assert window._canvas_resize_frame_policy(Size(56, 48), PixelPoint()) == (
+        True,
+        False,
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *_args, **_kwargs: int(QMessageBox.StandardButton.Cancel),
+    )
+    assert window._canvas_resize_frame_policy(Size(56, 48), PixelPoint()) is None
 
 
 def test_scale_dialog_links_aspect_and_exposes_interpolation(qtbot) -> None:

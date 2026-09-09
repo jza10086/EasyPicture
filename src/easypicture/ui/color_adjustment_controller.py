@@ -22,6 +22,25 @@ from easypicture.imaging import (
     calculate_color_adjustment,
     sample_document_pixel,
 )
+from easypicture.imaging.ai_pixel_cleanup import (
+    AiPixelCleanupCache,
+    AiPixelCleanupParameters,
+    AiPixelCleanupRequest,
+    AiPixelCleanupResult,
+    PixelCleanupOutput,
+    calculate_ai_pixel_cleanup,
+)
+from easypicture.imaging.palette_extraction import (
+    PaletteExtractionRequest,
+    PaletteExtractionResult,
+    extract_layer_palette,
+)
+from easypicture.imaging.pixel_outline import (
+    PixelOutlineParameters,
+    PixelOutlineRequest,
+    PixelOutlineResult,
+    calculate_pixel_outline,
+)
 from easypicture.jobs import JobHandle, JobOutcome, JobRunner, JobStatus
 from easypicture.persistence import DocumentSnapshot
 from easypicture.ui.canvas_view import CanvasView
@@ -38,6 +57,11 @@ _LABELS = {
     "palette_map": "调色板映射",
 }
 
+type AdjustmentParameters = (
+    ColorAdjustmentParameters | PixelOutlineParameters | AiPixelCleanupParameters
+)
+type AdjustmentResult = ColorAdjustmentResult | PixelOutlineResult | AiPixelCleanupResult
+
 
 class ColorAdjustmentController(QObject):
     """Own one immutable-snapshot adjustment session and its latest-wins job."""
@@ -47,6 +71,9 @@ class ColorAdjustmentController(QObject):
     preview_ready = Signal(object)
     sampled_color = Signal(object)
     sampling_changed = Signal(bool)
+    palette_extracted = Signal(object)
+    applying_changed = Signal(bool)
+    ai_project_requested = Signal(object)
 
     def __init__(
         self,
@@ -65,17 +92,19 @@ class ColorAdjustmentController(QObject):
         self._status = status
         self._snapshot: DocumentSnapshot | None = None
         self._layer_id: UUID | None = None
-        self._parameters: ColorAdjustmentParameters | None = None
+        self._parameters: AdjustmentParameters | None = None
+        self._extraction_target: int | None = None
         self._generation = 0
         self._submitted_generation = -1
         self._result_generation = -1
-        self._result: ColorAdjustmentResult | None = None
+        self._result: AdjustmentResult | None = None
         self._job: JobHandle | None = None
         self._unsubscribe: Unsubscribe | None = None
         self._preview_enabled = True
         self._pending_apply = False
         self._committing = False
         self._sampling = False
+        self._ai_cache = AiPixelCleanupCache()
         self._sample_merged = False
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
@@ -88,7 +117,7 @@ class ColorAdjustmentController(QObject):
         return self._snapshot is not None
 
     @property
-    def parameters(self) -> ColorAdjustmentParameters | None:
+    def parameters(self) -> AdjustmentParameters | None:
         return self._parameters
 
     @property
@@ -103,47 +132,55 @@ class ColorAdjustmentController(QObject):
     def sampling(self) -> bool:
         return self._sampling
 
-    def start(self, parameters: ColorAdjustmentParameters) -> bool:
+    def start(self, parameters: AdjustmentParameters) -> bool:
         document = self._document_provider()
         if document is None:
             return False
         layer = document.active_layer
-        if layer.locked:
+        if layer.locked or document.raster_group_for_layer(layer.id).locked:
             self._status("活动图层已锁定，无法执行颜色调整")
             return False
-        if layer.alpha_locked and adjustment_changes_alpha(parameters):
+        if (
+            layer.alpha_locked
+            and not isinstance(parameters, (PixelOutlineParameters, AiPixelCleanupParameters))
+            and adjustment_changes_alpha(parameters)
+        ):
             self._status("活动图层已锁定透明像素，无法调整 Alpha")
             return False
         if self.active:
             self.cancel()
         self._snapshot = DocumentSnapshot.capture(document)
+        self._ai_cache = AiPixelCleanupCache()
         self._layer_id = layer.id
         self._parameters = parameters
-        self._generation = 1
+        self._generation += 1
         self._submitted_generation = -1
         self._result_generation = -1
         self._result = None
         self._preview_enabled = True
         self._pending_apply = False
-        self._unsubscribe = document.subscribe(
-            cast(DocumentEventListener, self._on_document_event)
-        )
+        self._unsubscribe = document.subscribe(cast(DocumentEventListener, self._on_document_event))
         self.active_changed.emit(True)
         self._debounce.start()
         return True
 
-    def update_parameters(self, parameters: ColorAdjustmentParameters) -> bool:
-        if not self.active:
+    def update_parameters(self, parameters: AdjustmentParameters) -> bool:
+        if not self.active or self._pending_apply:
             return False
         document = self._document_provider()
         if document is None or self._layer_id is None:
             self.cancel()
             return False
         layer = document.layer_by_id(self._layer_id)
-        if layer.alpha_locked and adjustment_changes_alpha(parameters):
+        if (
+            layer.alpha_locked
+            and not isinstance(parameters, (PixelOutlineParameters, AiPixelCleanupParameters))
+            and adjustment_changes_alpha(parameters)
+        ):
             self._status("透明像素锁定已开启，Alpha 调整不可用")
             return False
         self._parameters = parameters
+        self._extraction_target = None
         self._generation += 1
         self._pending_apply = False
         if self._job is not None:
@@ -151,23 +188,43 @@ class ColorAdjustmentController(QObject):
         self._debounce.start()
         return True
 
+    def extract_palette(self, target: int) -> None:
+        if not self.active or isinstance(
+            self._parameters, (PixelOutlineParameters, AiPixelCleanupParameters)
+        ):
+            return
+        if not 1 <= target <= 256:
+            return
+        self._extraction_target = target
+        self._generation += 1
+        self._pending_apply = False
+        if self._job is not None:
+            self._job.cancel()
+        self._debounce.start()
+
+    def _clear_preview(self) -> None:
+        self._canvas.clear_pixel_preview()
+        self._canvas.render_coordinator.clear_raster_layer_preview()
+
     def set_preview_enabled(self, enabled: bool) -> None:
         self._preview_enabled = enabled
         if not enabled:
-            self._canvas.clear_pixel_preview()
-        elif self.has_exact_result and self._result is not None:
+            self._clear_preview()
+        elif self._result is not None:
             self._show_result(self._result)
 
     def apply(self) -> None:
         if not self.active:
             return
         self._pending_apply = True
+        self.applying_changed.emit(True)
         self._debounce.stop()
         if self.has_exact_result and self._job is None and self._result is not None:
             self._commit(self._result)
             return
         if self._job is not None:
-            self._job.cancel()
+            if self._submitted_generation != self._generation:
+                self._job.cancel()
             return
         self._submit_latest()
 
@@ -178,8 +235,8 @@ class ColorAdjustmentController(QObject):
         self._debounce.stop()
         if self._job is not None:
             self._job.cancel()
-            self._job = None
-        self._canvas.clear_pixel_preview()
+        self._generation += 1
+        self._clear_preview()
         self.cancel_sampling()
         self._reset_session()
         self.active_changed.emit(False)
@@ -245,19 +302,32 @@ class ColorAdjustmentController(QObject):
         if self._job is not None:
             self._job.cancel()
             return
-        request = ColorAdjustmentRequest(
-            self._snapshot,
-            self._layer_id,
-            self._parameters,
-        )
+        snapshot, layer_id, parameters = self._snapshot, self._layer_id, self._parameters
+        extraction_target = self._extraction_target
         generation = self._generation
-        handle = self._jobs.submit(
-            lambda token, progress: calculate_color_adjustment(
-                request,
-                token,
-                progress,
+        if extraction_target is not None:
+            palette_request = PaletteExtractionRequest(snapshot, layer_id, extraction_target)
+            handle = self._jobs.submit(
+                lambda token, progress: extract_layer_palette(palette_request, token, progress)
             )
-        )
+        elif isinstance(parameters, AiPixelCleanupParameters):
+            cleanup_request = AiPixelCleanupRequest(snapshot, layer_id, parameters)
+            cache = self._ai_cache
+            handle = self._jobs.submit(
+                lambda token, progress: calculate_ai_pixel_cleanup(
+                    cleanup_request, token, progress, cache
+                )
+            )
+        elif isinstance(parameters, PixelOutlineParameters):
+            outline_request = PixelOutlineRequest(snapshot, layer_id, parameters)
+            handle = self._jobs.submit(
+                lambda token, progress: calculate_pixel_outline(outline_request, token, progress)
+            )
+        else:
+            request = ColorAdjustmentRequest(snapshot, layer_id, parameters)
+            handle = self._jobs.submit(
+                lambda token, progress: calculate_color_adjustment(request, token, progress)
+            )
         self._job = handle
         self._submitted_generation = generation
         handle.progress.connect(
@@ -306,10 +376,31 @@ class ColorAdjustmentController(QObject):
                 self._submit_latest()
             return
         if outcome.status is JobStatus.FAILED:
-            self._status(f"颜色调整失败：{outcome.error}")
-            self._pending_apply = False
+            self.cancel(f"调整失败：{outcome.error}")
             return
-        if not isinstance(outcome.value, ColorAdjustmentResult):
+        if isinstance(outcome.value, PaletteExtractionResult):
+            extracted = outcome.value
+            self._extraction_target = None
+            if not self._result_is_current(extracted):
+                self.cancel("文档已变化，已丢弃过期提取结果")
+                return
+            pending_apply = self._pending_apply
+            # This synchronous panel update installs the extracted palette, not a
+            # user edit. Keep UI frozen but allow its new parameters into the session.
+            self._pending_apply = False
+            self.palette_extracted.emit(extracted)
+            if pending_apply and extracted.colors:
+                self._pending_apply = True
+                self._debounce.stop()
+                self._submit_latest()
+            if not extracted.colors:
+                self._pending_apply = False
+                self.applying_changed.emit(False)
+                self._status("当前层或选区内没有非透明像素，未生成调色板")
+            return
+        if not isinstance(
+            outcome.value, (ColorAdjustmentResult, PixelOutlineResult, AiPixelCleanupResult)
+        ):
             self._status("颜色调整失败：任务返回了无效结果")
             self._pending_apply = False
             return
@@ -325,28 +416,61 @@ class ColorAdjustmentController(QObject):
         if self._pending_apply:
             self._commit(result)
 
-    def _show_result(self, result: ColorAdjustmentResult) -> None:
-        self._canvas.replace_pixel_preview(result.layer_id, dict(result.updates))
+    def _show_result(self, result: AdjustmentResult) -> None:
+        if isinstance(result, AiPixelCleanupResult):
+            if result.source_color_count:
+                self._canvas.render_coordinator.replace_raster_layer_preview(
+                    result.layer_id, result.updates, replace_source=True
+                )
+            else:
+                self._clear_preview()
+        elif isinstance(result, PixelOutlineResult):
+            self._canvas.render_coordinator.replace_raster_layer_preview(
+                result.layer_id, result.updates
+            )
+        else:
+            self._canvas.replace_pixel_preview(result.layer_id, dict(result.updates))
 
-    def _commit(self, result: ColorAdjustmentResult) -> None:
+    def _commit(self, result: AdjustmentResult) -> None:
         if not self._result_is_current(result):
             self.cancel("文档已变化，无法应用颜色调整")
             return
-        label = _LABELS[adjustment_kind(cast(ColorAdjustmentParameters, self._parameters)).value]
+        if isinstance(result, AiPixelCleanupResult) and (
+            result.parameters.output is PixelCleanupOutput.PROJECT
+        ):
+            self._clear_preview()
+            self.cancel_sampling()
+            self._reset_session()
+            self.active_changed.emit(False)
+            if result.source_color_count:
+                self.ai_project_requested.emit(result)
+            else:
+                self._status("没有有效像素，未创建工程")
+            return
         self._committing = True
-        applied = self._commands.apply_pixel_tiles(
-            result.layer_id,
-            result.updates,
-            label,
+        label = (
+            "AI 像素整理"
+            if isinstance(result, AiPixelCleanupResult)
+            else "像素描边"
+            if isinstance(result, PixelOutlineResult)
+            else _LABELS[adjustment_kind(cast(ColorAdjustmentParameters, self._parameters)).value]
         )
-        self._committing = False
-        self._canvas.clear_pixel_preview()
+        try:
+            if isinstance(result, AiPixelCleanupResult):
+                applied = self._commands.apply_ai_pixel_cleanup(result)
+            elif isinstance(result, PixelOutlineResult):
+                applied = self._commands.apply_pixel_outline(result)
+            else:
+                applied = self._commands.apply_pixel_tiles(result.layer_id, result.updates, label)
+        finally:
+            self._committing = False
+        self._clear_preview()
         self.cancel_sampling()
         self._reset_session()
         self.active_changed.emit(False)
         self._status(f"已应用{label}" if applied else f"{label}未产生变化")
 
-    def _result_is_current(self, result: ColorAdjustmentResult) -> bool:
+    def _result_is_current(self, result: AdjustmentResult | PaletteExtractionResult) -> bool:
         document = self._document_provider()
         return (
             document is not None
@@ -375,9 +499,11 @@ class ColorAdjustmentController(QObject):
         self._snapshot = None
         self._layer_id = None
         self._parameters = None
+        self._extraction_target = None
         self._result = None
         self._result_generation = -1
         self._pending_apply = False
+        self.applying_changed.emit(False)
 
 
 __all__ = ["ColorAdjustmentController"]
