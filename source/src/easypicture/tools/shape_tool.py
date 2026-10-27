@@ -56,6 +56,7 @@ from easypicture.jobs import JobHandle, JobOutcome, JobStatus
 from easypicture.jobs.preview_scheduler import PreviewScheduler, PreviewTarget
 from easypicture.persistence import DocumentSnapshot
 from easypicture.render.shape_path import shape_path as _shape_path
+from easypicture.tools.insertion import object_insertion
 from easypicture.tools.protocol import ToolContext
 
 type ShapeHandle = (
@@ -170,11 +171,6 @@ class ShapeTool:
         if self._scheduler is None and context.jobs is not None:
             self._scheduler = PreviewScheduler(context.jobs, context.canvas)
         context.canvas.set_tool_cursor(Qt.CursorShape.CrossCursor)
-        selected = (
-            context.selected_node_provider() if context.selected_node_provider is not None else None
-        )
-        if isinstance(selected, SvgObject):
-            self._start_existing_svg_session(selected)
 
     def deactivate(self) -> None:
         self.cancel()
@@ -501,13 +497,9 @@ class ShapeTool:
                     )
                     if existing_id is not None
                     else (
-                        not commands.create_svg_object(
-                            group_id,
-                            vector_object,
-                            index=index,
+                        not commands.create_object(
+                            vector_object, group_id if isinstance(group_id, UUID) else None, index
                         )
-                        if isinstance(group_id, UUID)
-                        else not commands.create_svg_object_in_new_group(vector_object)
                     )
                 )
             ):
@@ -516,14 +508,11 @@ class ShapeTool:
             document = context.document_provider()
             if document is not None and context.select_node is not None:
                 try:
-                    created_group, created = document.vector_object_by_id(vector_object.id)
+                    _group, created = document.vector_object_by_id(vector_object.id)
                 except ValueError:
                     pass
                 else:
-                    # A newly created vector shape leaves the containing group
-                    # selected so the next gesture creates another sibling
-                    # instead of immediately entering edit mode for this object.
-                    context.select_node(created_group if existing_id is None else created)
+                    context.select_node(created)
             if existing_id is None:
                 self._status("已创建矢量图形，可继续绘制")
             return True
@@ -566,16 +555,10 @@ class ShapeTool:
                 if context.selected_node_provider is not None
                 else None
             )
-            if isinstance(selected, Collection):
-                vector_group = selected
-            elif isinstance(selected, (TextObject, SvgObject)):
-                try:
-                    vector_group, selected_object = document.vector_object_by_id(selected.id)
-                except ValueError:
-                    vector_group = None
-                else:
-                    vector_index = vector_group.children.index(selected_object)
-            if vector_group is not None and vector_group.locked:
+            parent_id, vector_index = object_insertion(document, selected)
+            parent_node = document.node_by_id(parent_id) if parent_id is not None else None
+            vector_group = parent_node if isinstance(parent_node, Collection) else None
+            if parent_id is not None and document.is_locked(parent_id):
                 self._status("请先选择一个未锁定的集合")
                 return
         snapshot = DocumentSnapshot.capture(document)

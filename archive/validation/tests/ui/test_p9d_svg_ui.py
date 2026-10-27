@@ -243,10 +243,10 @@ def test_vector_shape_release_commits_and_continues_in_same_group(
     assert document is not None
     assert len(document.vector_groups) == 1
     group = document.vector_groups[0]
-    assert len(group.children) == 1
+    assert len(group.children) == 2  # Existing raster and the new SVG share their collection.
     assert controller.commands.undo_stack.count() == 1
     assert not window.canvas_view.render_coordinator.has_transient_vector_preview
-    assert window.layer_panel.current_node() is group
+    assert window.layer_panel.current_node() is group.children[0]
     assert window.tool_controller.active_tool is tool
 
     _drag(
@@ -256,12 +256,12 @@ def test_vector_shape_release_commits_and_continues_in_same_group(
         window.canvas_view.mapFromScene(112.0, 44.0),
     )
     assert len(document.vector_groups) == 1
-    assert len(group.children) == 2
+    assert len(group.children) == 3
     assert controller.commands.undo_stack.count() == 2
-    assert window.layer_panel.current_node() is group
+    assert window.layer_panel.current_node() is group.children[0]
     assert window.tool_controller.active_tool is tool
     controller.commands.undo_stack.undo()
-    assert len(group.children) == 1
+    assert len(group.children) == 2
     controller.commands.undo_stack.undo()
     assert not document.vector_groups
 

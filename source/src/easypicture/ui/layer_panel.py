@@ -1132,6 +1132,7 @@ class LayerListView(QListView):
 class LayerPanel(QWidget):
     node_selected = Signal(object)
     local_canvas_requested = Signal()
+    raster_edit_requested = Signal()
     resolution_requested = Signal()
     opacity_preview_changed = Signal(object, float)
     opacity_preview_cleared = Signal()
@@ -1537,6 +1538,9 @@ class LayerPanel(QWidget):
                 rasterize_action.setEnabled(not node.locked and not parent_locked)
                 rasterize_action.triggered.connect(self._rasterize_current)
             elif isinstance(node, RasterObject):
+                edit_pixels = menu.addAction("编辑栅格像素")
+                edit_pixels.setEnabled(not node.locked)
+                edit_pixels.triggered.connect(self.raster_edit_requested.emit)
                 apply_transform = menu.addAction("应用对象变换")
                 apply_transform.setEnabled(not node.locked and not node.transform.is_identity)
                 apply_transform.triggered.connect(lambda: self.commands.rasterize_object(node.id))

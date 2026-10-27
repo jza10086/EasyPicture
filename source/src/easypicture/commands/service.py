@@ -934,8 +934,11 @@ class DocumentCommandService:
         project = self._project_document
         if project is None:
             raise RuntimeError("no project document is attached")
-        if document is not project and all(
-            candidate is not document for candidate in project.embedded_documents.values()
+        from easypicture.domain.raster_edit import RasterEditDocument
+
+        owner = document.owner if isinstance(document, RasterEditDocument) else document
+        if owner is not project and all(
+            candidate is not owner for candidate in project.embedded_documents.values()
         ):
             raise ValueError("edit document does not belong to the current project")
         if self._visibility_macro_open:

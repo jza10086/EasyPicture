@@ -19,6 +19,7 @@ Windows x64 / Python 3.14 / PySide6。栅格、文字和 SVG 使用统一对象�
 `../archive/runs/`，发布文件只写入 `../release/`。
 
 - [对象架构](docs/object_architecture.md)
+- [独立栅格编辑页与创建集合规则](docs/raster_editor.md)
 - [工程格式](docs/limg_schema_v5.md)
 - [人工交互验收](docs/object_manual_acceptance.md)
 - [目录与构建约定](docs/project_layout.md)

@@ -640,8 +640,37 @@ class CanvasView(QGraphicsView):
             self._render_coordinator.paint_software(painter, exposed)
             return
 
+    show_raster_frames = False
+
     def drawForeground(self, painter: QPainter, rect: QRectF | QRect) -> None:
         super().drawForeground(painter, rect)
+        if self.show_raster_frames and self.document is not None:
+            from easypicture.domain import RasterObject
+            from easypicture.domain.effective import iter_effective_leaves
+
+            painter.save()
+            pen = QPen(QColor("#69b9ff"), 1, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            for entry in iter_effective_leaves(self.document):
+                node = entry.leaf
+                if not entry.visible or not isinstance(node, RasterObject):
+                    continue
+                matrix = self._render_coordinator.raster_display_transform(node)
+                corners = [
+                    matrix.map_point(Point(x, y))
+                    for x, y in (
+                        (0, 0),
+                        (node.size.width, 0),
+                        (node.size.width, node.size.height),
+                        (0, node.size.height),
+                    )
+                ]
+                polygon = QPolygonF([QPointF(point.x, point.y) for point in corners])
+                if polygon.boundingRect().intersects(QRectF(rect)):
+                    painter.drawPolygon(polygon)
+            painter.restore()
         if self._object_selection:
             painter.save()
             pen = QPen(QColor("#ff9b38"), 1)

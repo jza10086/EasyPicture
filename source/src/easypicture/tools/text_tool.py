@@ -34,6 +34,7 @@ from easypicture.domain import (
     TextObject,
 )
 from easypicture.domain.document import Unsubscribe
+from easypicture.tools.insertion import object_insertion
 from easypicture.tools.protocol import ToolContext
 
 
@@ -167,23 +168,7 @@ class TextTool:
         selected = (
             context.selected_node_provider() if context.selected_node_provider is not None else None
         )
-        insertion_index: int | None = None
-        group = selected if isinstance(selected, Collection) else None
-        if isinstance(selected, TextObject):
-            try:
-                group, selected_object = document.text_object_by_id(selected.id)
-            except ValueError:
-                group = None
-            else:
-                insertion_index = group.children.index(selected_object)
-        if group is None:
-            if not context.commands.create_vector_group():
-                self._cancel_draft()
-                return
-            group = document.vector_groups[-1] if document.vector_groups else None
-        if group is None:
-            self._cancel_draft()
-            return
+        parent_id, insertion_index = object_insertion(document, selected)
         frame = FloatRect(
             rect.x(),
             rect.y(),
@@ -191,15 +176,11 @@ class TextTool:
             max(2.0, rect.height()),
         )
         self._cancel_draft()
-        if not context.commands.create_text_object(
-            group.id,
-            frame,
-            index=insertion_index,
-        ):
+        created = TextObject.create(frame, name="文本", text="文本")
+        if not context.commands.create_object(created, parent_id, insertion_index):
             return
-        created = group.children[-1] if insertion_index is None else group.children[insertion_index]
         if context.select_node is not None:
-            context.select_node(created)
+            context.select_node(document.node_by_id(created.id))
 
     def _cancel_draft(self) -> None:
         self._draft_start = None

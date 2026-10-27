@@ -371,6 +371,10 @@ class CanvasRenderCoordinator(QObject):
             node = replace(node, transform=matrix)
         return node
 
+    def raster_display_transform(self, node: RasterObject) -> AffineTransform:
+        """Keep raster boundary overlays aligned with the current object preview."""
+        return self._with_opacity_preview(node).world_transform
+
     def display_groups(self) -> tuple[Collection, ...]:
         """Derived ordered render passes; the document tree remains the sole authority."""
         document = self._require_document()

@@ -16,6 +16,7 @@ from easypicture.commands import DocumentCommandService
 from easypicture.controller import ApplicationController
 from easypicture.domain import Document, DocumentKind, Size, SpriteFrameContentMode
 from easypicture.domain.document import Unsubscribe
+from easypicture.domain.raster_edit import RasterEditDocument
 from easypicture.imaging.ai_pixel_cleanup import AiPixelCleanupResult, PixelCleanupOutput
 from easypicture.jobs import CancellationToken, JobRunner
 from easypicture.persistence import (
@@ -31,11 +32,18 @@ from easypicture.ui.settings import AppSettings
 
 @dataclass(frozen=True, slots=True)
 class EditingSurfaceRef:
-    kind: Literal["source", "frame", "animation", "tile"]
+    kind: Literal["source", "frame", "animation", "tile", "raster"]
     frame_id: UUID | None = None
     animation_id: UUID | None = None
+    object_id: UUID | None = None
 
     def __post_init__(self) -> None:
+        if self.kind == "raster":
+            if self.object_id is None or self.animation_id is not None:
+                raise ValueError("raster surfaces require one object")
+            return
+        if self.object_id is not None:
+            raise ValueError("only raster surfaces can reference an object")
         if self.kind in {"source", "tile"}:
             if self.frame_id is not None or self.animation_id is not None:
                 raise ValueError(f"{self.kind} surfaces cannot reference content")
@@ -69,6 +77,7 @@ class ProjectSession:
     animation_surface_documents: dict[UUID, tuple[int, Document]] = field(default_factory=dict)
     animation_surface_indices: dict[UUID, int] = field(default_factory=dict)
     tile_surface_document: Document | None = None
+    raster_documents: dict[EditingSurfaceRef, RasterEditDocument] = field(default_factory=dict)
 
     @property
     def document(self) -> Document:
@@ -81,6 +90,10 @@ class ProjectSession:
     def edit_document(self) -> Document:
         if self.active_surface.kind == "source":
             return self.document
+        if self.active_surface.kind == "raster":
+            view = self.raster_documents[self.active_surface]
+            view.refresh()
+            return view
         if self.active_surface.kind == "tile":
             if self.tile_surface_document is None:
                 pixels = np.zeros(
@@ -149,6 +162,20 @@ class ProjectSession:
         preview.active_layer.record_pixel_change()
         preview.mark_clean()
         return preview
+
+    def raster_owner(self, surface: EditingSurfaceRef) -> Document:
+        if surface.frame_id is None:
+            return self.document
+        return self.document.embedded_document_for_frame(surface.frame_id)
+
+    def valid_raster_surface(self, surface: EditingSurfaceRef) -> bool:
+        try:
+            owner = self.raster_owner(surface)
+            return (
+                surface.object_id is not None and owner.layer_by_id(surface.object_id) is not None
+            )
+        except ValueError:
+            return False
 
     @property
     def active_surface_is_linked(self) -> bool:
@@ -433,6 +460,46 @@ class WorkspaceController(QObject):
             self._active_index = self._sessions.index(active)
         self.sessions_changed.emit()
 
+    def open_raster_surface(self, object_id: UUID) -> bool:
+        session = self.active_session
+        if session is None or session.active_surface_is_read_only:
+            return False
+        current = session.active_surface
+        if current.kind == "raster":
+            return current.object_id == object_id
+        surface = EditingSurfaceRef("raster", frame_id=current.frame_id, object_id=object_id)
+        owner = session.raster_owner(surface)
+        try:
+            owner.layer_by_id(object_id)
+            if owner.is_locked(object_id):
+                return False
+        except ValueError:
+            return False
+        cached = session.raster_documents.get(surface)
+        if cached is not None and cached.owner is not owner:
+            cached.dispose()
+        if cached is None or cached.owner is not owner:
+            session.raster_documents[surface] = RasterEditDocument(owner, object_id)
+        if surface not in session.open_surfaces:
+            session.open_surfaces.append(surface)
+        return self.set_active_surface(surface)
+
+    def close_raster_surface(self, surface: EditingSurfaceRef) -> None:
+        session = self.active_session
+        if session is None or surface not in session.open_surfaces:
+            return
+        if session.active_surface == surface:
+            destination = (
+                EditingSurfaceRef("frame", surface.frame_id)
+                if surface.frame_id
+                else EditingSurfaceRef("source")
+            )
+            if destination not in session.open_surfaces:
+                session.open_surfaces.append(destination)
+            self.set_active_surface(destination)
+        session.open_surfaces.remove(surface)
+        self.surfaces_changed.emit()
+
     def open_frame_surface(self, frame_id: UUID) -> bool:
         session = self.active_session
         if session is None:
@@ -586,7 +653,10 @@ class WorkspaceController(QObject):
 
     def _remove_session(self, index: int) -> None:
         self._unsubscribe_surface()
-        self._sessions.pop(index)
+        removed = self._sessions.pop(index)
+        for view in removed.raster_documents.values():
+            view.dispose()
+        removed.controller.dispose()
         self._active_index = -1
         self.sessions_changed.emit()
         if self._sessions:
@@ -595,6 +665,14 @@ class WorkspaceController(QObject):
             self._command_proxy.set_service(None)
             self.document_changed.emit(None)
             self.surfaces_changed.emit()
+
+    def dispose(self) -> None:
+        self._unsubscribe_surface()
+        self._command_proxy.set_service(None)
+        for session in self._sessions:
+            for view in session.raster_documents.values():
+                view.dispose()
+            session.controller.dispose()
 
     def request_exit(self, parent: QWidget) -> bool:
         modified = [session for session in self._sessions if session.document.modified]
@@ -701,6 +779,7 @@ class WorkspaceController(QObject):
             for surface in session.open_surfaces
             if surface.kind == "source"
             or surface.kind == "tile"
+            or (surface.kind == "raster" and session.valid_raster_surface(surface))
             or (surface.kind == "frame" and surface.frame_id in valid_frames)
             or (surface.kind == "animation" and surface.animation_id in valid_animations)
         ]
@@ -733,6 +812,8 @@ class WorkspaceController(QObject):
             self.surfaces_changed.emit()
         if session is self.active_session:
             self.document_event.emit(event)
+            if any(surface.kind == "raster" for surface in session.open_surfaces):
+                self.surfaces_changed.emit()
 
     def _unsubscribe_surface(self) -> None:
         if self._surface_unsubscribe is not None:

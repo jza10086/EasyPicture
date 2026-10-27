@@ -52,6 +52,7 @@ from easypicture.domain import (
     GroupMembersChanged,
     PixelPoint,
     Point,
+    RasterObject,
     Size,
     SpriteAnimation,
     SpriteFrameContentChanged,
@@ -65,6 +66,7 @@ from easypicture.domain import (
     parse_editable_svg,
 )
 from easypicture.domain.events import affects_rendered_content
+from easypicture.domain.raster_edit import RasterEditDocument
 from easypicture.imaging import (
     BACKGROUND_SELECTION_PIXEL_THRESHOLD,
     BrightnessContrastAdjustment,
@@ -141,6 +143,7 @@ from easypicture.tools import (
     TransformTool,
 )
 from easypicture.tools.object_tool import ObjectTool
+from easypicture.tools.raster_object_tool import RasterObjectTool
 from easypicture.ui.about_dialog import AboutDialog
 from easypicture.ui.ai_pixel_cleanup_panel import AiPixelCleanupPanel
 from easypicture.ui.ai_pixel_grid_overlay import AiPixelGridOverlay
@@ -611,6 +614,7 @@ class MainWindow(QMainWindow):
         self.tool_action_group.setExclusive(True)
         self._tools: dict[str, Tool] = {
             "object": ObjectTool(lambda: self.layer_panel.selection),
+            "raster_object": RasterObjectTool(),
             "brush": BrushTool(self.tool_options_panel.brush.settings),
             "eraser": BrushTool(self.tool_options_panel.brush.settings, eraser=True),
             "eyedropper": EyedropperTool(self.tool_options_panel.eyedropper.sample_merged),
@@ -663,6 +667,7 @@ class MainWindow(QMainWindow):
         self.tool_actions: dict[str, QAction] = {}
         for name, label, shortcut in (
             ("object", "对象选择和移动", "V"),
+            ("raster_object", "添加栅格对象", ""),
             ("brush", "画笔", "B"),
             ("eraser", "橡皮", "E"),
             ("eyedropper", "吸管", "I"),
@@ -686,6 +691,12 @@ class MainWindow(QMainWindow):
             self.tool_action_group.addAction(action)
             self.tools_toolbar.addAction(action)
             self.tool_actions[name] = action
+        self.edit_raster_action = QAction("编辑栅格像素", self)
+        self.edit_raster_action.triggered.connect(self._open_raster_editor)
+        self.tools_toolbar.addAction(self.edit_raster_action)
+        self.return_objects_action = QAction("返回对象画布", self)
+        self.return_objects_action.triggered.connect(self._return_object_canvas)
+        self.tools_toolbar.addAction(self.return_objects_action)
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tools_toolbar)
         self.tool_options_panel.brush_settings_changed.connect(self._save_brush_settings)
         self.tool_options_panel.bucket_settings_changed.connect(self._save_bucket_settings)
@@ -719,8 +730,9 @@ class MainWindow(QMainWindow):
         )
         self.tool_options_panel.shape_commit_requested.connect(self._shape_commit)
         self.tool_options_panel.shape_cancel_requested.connect(self._shape_cancel)
-        self.tool_actions["brush"].setChecked(True)
-        self._activate_tool("brush")
+        name = "object" if hasattr(self.controller, "open_raster_surface") else "brush"
+        self.tool_actions[name].setChecked(True)
+        self._activate_tool(name)
 
     def _create_docks(self) -> None:
         self.layer_panel = LayerPanel(self.controller.commands, self)
@@ -884,6 +896,7 @@ class MainWindow(QMainWindow):
         )
         self.layer_panel.node_selected.connect(self._on_layer_node_selected)
         self.layer_panel.local_canvas_requested.connect(self._show_object_canvas_dialog)
+        self.layer_panel.raster_edit_requested.connect(self._open_raster_editor)
         self.layer_panel.resolution_requested.connect(self._show_layer_scale_dialog)
         self.layer_panel.opacity_preview_changed.connect(
             self.canvas_view.render_coordinator.set_opacity_preview
@@ -1184,6 +1197,13 @@ class MainWindow(QMainWindow):
             for surface in session.open_surfaces:
                 if surface.kind == "source":
                     title = "源图"
+                elif surface.kind == "raster":
+                    try:
+                        owner = session.raster_owner(surface)
+                        assert surface.object_id is not None
+                        title = f"栅格：{owner.layer_by_id(surface.object_id).name}"
+                    except ValueError:
+                        continue
                 elif surface.kind == "frame":
                     assert surface.frame_id is not None
                     try:
@@ -1240,7 +1260,11 @@ class MainWindow(QMainWindow):
         surface = self.surface_tabs.tabData(index)
         if not isinstance(surface, EditingSurfaceRef):
             return
-        if surface.kind == "frame" and surface.frame_id is not None:
+        if surface.kind == "raster":
+            self._capture_canvas_state()
+            self.controller.close_raster_surface(surface)
+            self._restore_canvas_state()
+        elif surface.kind == "frame" and surface.frame_id is not None:
             self.controller.close_frame_surface(surface.frame_id)
         elif surface.kind == "animation" and surface.animation_id is not None:
             self.controller.close_animation_surface(surface.animation_id)
@@ -1801,8 +1825,27 @@ class MainWindow(QMainWindow):
         self._update_undo_actions()
         self._update_selection_actions()
         self._update_window_title()
+        self._configure_raster_surface()
 
     def _activate_tool(self, tool_name: str) -> None:
+        if hasattr(self.controller, "open_raster_surface"):
+            pixel = self._is_raster_editor()
+            if not pixel and tool_name == "transform" and not self._selected_vector_object:
+                tool_name = "object"
+                self.tool_actions["object"].setChecked(True)
+            pixel_tools = {"brush", "eraser", "bucket", "magic_wand", "rectangle_selection"}
+            if not pixel and tool_name in pixel_tools:
+                self._open_raster_editor()
+                if not self._is_raster_editor():
+                    return
+            if pixel and tool_name not in pixel_tools | {"eyedropper"}:
+                return
+            if tool_name == "shape":
+                self.tool_options_panel.shape.output_combo.setCurrentIndex(
+                    self.tool_options_panel.shape.output_combo.findData(
+                        ShapeOutputTarget.VECTOR.value
+                    )
+                )
         if interaction_coordinator(self).owner is not None:
             active = self.tool_controller.active_tool
             for name, candidate in self._tools.items():
@@ -1833,7 +1876,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "layer_panel"):
             mode = (
                 EditMode.OBJECT
-                if tool_name == "object"
+                if tool_name in {"object", "raster_object"}
                 else EditMode.VECTOR
                 if actual_tool_name in {"text_transform", "text"}
                 or tool_name == "shape"
@@ -1918,8 +1961,9 @@ class MainWindow(QMainWindow):
 
     def _cancel_sprite_slice(self) -> None:
         self._clear_slice_preview_reference()
-        self.tool_actions["brush"].setChecked(True)
-        self._activate_tool("brush")
+        name = "object" if hasattr(self.controller, "open_raster_surface") else "brush"
+        self.tool_actions[name].setChecked(True)
+        self._activate_tool(name)
 
     def _select_sprite_frame(self, frame_id: object) -> None:
         if frame_id is not None and not isinstance(frame_id, UUID):
@@ -3228,6 +3272,9 @@ class MainWindow(QMainWindow):
             )
             return
         mode = EditMode(self.edit_mode.itemData(index))
+        if hasattr(self.controller, "open_raster_surface") and mode == EditMode.PIXEL:
+            self._open_raster_editor()
+            return
         node = self.layer_panel.current_node()
         self.layer_panel.selection.set_mode(mode)
         if mode == EditMode.OBJECT:
@@ -3395,6 +3442,133 @@ class MainWindow(QMainWindow):
         ):
             action.setEnabled(allowed)
         self.layer_scale_action.setEnabled(allowed)
+        self._apply_surface_tool_policy()
+
+    def _is_raster_editor(self) -> bool:
+        return isinstance(self.controller.document, RasterEditDocument)
+
+    def _open_raster_editor(self) -> None:
+        if not hasattr(self.controller, "open_raster_surface") or self._is_raster_editor():
+            return
+        if interaction_coordinator(self).owner is not None:
+            return
+        node = self.layer_panel.current_node() if hasattr(self, "layer_panel") else None
+        document = self.controller.document
+        target = (
+            node.id
+            if isinstance(node, RasterObject)
+            else (document.active_layer_id if document else None)
+        )
+        if target is None:
+            self._show_operation_status("请先选择一个栅格对象", 4000)
+            return
+        self._capture_canvas_state()
+        if self.controller.open_raster_surface(target):
+            self._restore_canvas_state()
+            self.canvas_view.fit_document()
+
+    def _return_object_canvas(self) -> None:
+        session = getattr(self.controller, "active_session", None)
+        if session is None or session.active_surface.kind != "raster":
+            return
+        surface = session.active_surface
+        destination = (
+            EditingSurfaceRef("frame", surface.frame_id)
+            if surface.frame_id
+            else EditingSurfaceRef("source")
+        )
+        if destination not in session.open_surfaces:
+            session.open_surfaces.append(destination)
+        self._capture_canvas_state()
+        self.controller.set_active_surface(destination)
+        self._restore_canvas_state()
+
+    def _configure_raster_surface(self) -> None:
+        if not hasattr(self.controller, "open_raster_surface"):
+            return
+        pixel = self._is_raster_editor()
+        self.edit_mode.setVisible(not pixel)
+        self.object_properties.setEnabled(not pixel)
+        if pixel:
+            self.properties_dock.hide()
+        self.layer_panel.setEnabled(not pixel and not self._active_surface_is_read_only())
+        self.canvas_view.show_raster_frames = not pixel and not self._active_surface_is_read_only()
+        self.tool_options_panel.shape.output_combo.setVisible(False)
+        self._refresh_tool_actions(self.controller.document is not None)
+        active = next(
+            (name for name, action in self.tool_actions.items() if action.isChecked()), ""
+        )
+        if not active or not self.tool_actions[active].isVisible():
+            name = "brush" if pixel else "object"
+            self.tool_actions[name].setChecked(True)
+            self._activate_tool(name)
+        self._apply_surface_tool_policy()
+
+    def _apply_surface_tool_policy(self) -> None:
+        if not hasattr(self.controller, "open_raster_surface"):
+            return
+        pixel = self._is_raster_editor()
+        pixel_tools = {
+            "brush",
+            "eraser",
+            "bucket",
+            "magic_wand",
+            "rectangle_selection",
+            "eyedropper",
+        }
+        for name, action in self.tool_actions.items():
+            visible = name in pixel_tools if pixel else name not in pixel_tools - {"eyedropper"}
+            action.setVisible(visible)
+            if not visible:
+                action.setEnabled(False)
+        node = self.layer_panel.current_node()
+        document = self.controller.document
+        if node is not None and document is not None:
+            try:
+                node = document.node_by_id(node.id)
+            except ValueError:
+                node = None
+        self.edit_raster_action.setVisible(not pixel)
+        self.edit_raster_action.setEnabled(
+            isinstance(node, RasterObject)
+            and document is not None
+            and not document.is_locked(node.id)
+            and not self._editing_busy
+        )
+        self.return_objects_action.setVisible(pixel)
+        self.return_objects_action.setEnabled(not self._editing_busy)
+        for action in (*self.color_adjustment_actions.values(), self.clear_selected_pixels_action):
+            action.setEnabled(
+                pixel
+                and document is not None
+                and document.active_layer_id is not None
+                and not document.is_locked(document.active_layer_id)
+                and not self._editing_busy
+            )
+        for action in (
+            self.pixel_outline_action,
+            self.ai_pixel_cleanup_action,
+            self.layer_scale_action,
+            self.crop_to_selection_action,
+            self.transform_action,
+        ):
+            if pixel:
+                action.setEnabled(False)
+        if not pixel:
+            for action in (
+                self.select_all_action,
+                self.deselect_action,
+                self.invert_selection_action,
+                self.feather_selection_action,
+                self.grow_selection_action,
+                self.shrink_selection_action,
+                self.smooth_selection_action,
+            ):
+                action.setEnabled(False)
+        else:
+            self.layer_panel.setEnabled(False)
+            self.append_action.setEnabled(False)
+        self.canvas_view.viewport().update()
 
     def _active_surface_is_read_only(self) -> bool:
         session = getattr(self.controller, "active_session", None)
@@ -3492,16 +3666,18 @@ class MainWindow(QMainWindow):
     def _crop_cancel(self) -> None:
         if self.controller.document is None:
             return
-        self.tool_actions["brush"].setChecked(True)
-        self._activate_tool("brush")
+        name = "object" if hasattr(self.controller, "open_raster_surface") else "brush"
+        self.tool_actions[name].setChecked(True)
+        self._activate_tool(name)
 
     def _commit_crop_rect(self, rect: GeometryRect) -> None:
         document = self.controller.document
         if document is None or self._editing_busy:
             return
         request = CropDocumentRequest(DocumentSnapshot.capture(document), rect)
-        self.tool_actions["brush"].setChecked(True)
-        self._activate_tool("brush")
+        name = "object" if hasattr(self.controller, "open_raster_surface") else "brush"
+        self.tool_actions[name].setChecked(True)
+        self._activate_tool(name)
         self._start_geometry_job(
             lambda token, progress: calculate_crop_document(
                 request,
@@ -3883,6 +4059,8 @@ class MainWindow(QMainWindow):
         ):
             action.setEnabled(writable and active and not self._editing_busy)
 
+        self._apply_surface_tool_policy()
+
     def _update_undo_actions(self, *_args: object) -> None:
         if hasattr(self, "color_adjustment_controller") and self.color_adjustment_controller.active:
             self.undo_action.setEnabled(False)
@@ -3968,6 +4146,7 @@ class MainWindow(QMainWindow):
         for runner in runners:
             runner.shutdown()
         self.canvas_view.render_coordinator.dispose()
+        self.controller.dispose()
         event.accept()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

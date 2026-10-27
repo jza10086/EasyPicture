@@ -189,7 +189,7 @@ def test_text_property_change_does_not_report_structural_tree_reset() -> None:
     assert not any(isinstance(event, (GroupListChanged, GroupMembersChanged)) for event in events)
 
 
-def test_text_creation_uses_selected_group_or_creates_one(qapp) -> None:
+def test_text_creation_uses_selected_collection_or_object_parent(qapp) -> None:
     _ = qapp
     document = Document.create(320, 200)
     commands = DocumentCommandService()
@@ -205,18 +205,20 @@ def test_text_creation_uses_selected_group_or_creates_one(qapp) -> None:
     )
     tool = TextTool()
     tool._context = context  # type: ignore[assignment]
+    group = document.parent_of(document.active_layer_id)
+    assert group is not None
     tool._create_text_object(QRectF(10.0, 20.0, 120.0, 48.0))
     assert len(document.vector_groups) == 1
-    group = document.vector_groups[0]
-    assert len(group.children) == 1
+    assert document.vector_groups[0] is group
+    assert len(group.children) == 2
     selected[:] = [group]
     tool._create_text_object(QRectF(30.0, 40.0, 100.0, 40.0))
     assert len(document.vector_groups) == 1
-    assert len(group.children) == 2
+    assert len(group.children) == 3
     selected[:] = [group.children[-1]]
     selected_name = group.children[-1].name
     tool._create_text_object(QRectF(50.0, 60.0, 80.0, 32.0))
-    assert len(group.children) == 3
+    assert len(group.children) == 4
     assert group.children[-1].name == selected_name
     assert group.children[-2] is selected[-1]
 

@@ -644,6 +644,15 @@ class ApplicationController(QObject):
         self._clear_recovery()
         return True
 
+    def dispose(self) -> None:
+        """Disconnect domain listeners and history before their Qt signal sources disappear."""
+        self._recovery_timer.stop()
+        self._cancel_recovery_job()
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+        self.commands.attach_document(None)
+
     def _replace_document(self, document: Document | None) -> None:
         self._recovery_timer.stop()
         self._cancel_recovery_job()
