@@ -1,0 +1,142 @@
+[
+  {
+    "from": "src",
+    "to": "source/src",
+    "files": 278,
+    "bytes": 5517974,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "scripts",
+    "to": "source/scripts",
+    "files": 13,
+    "bytes": 9174,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "pyproject.toml",
+    "to": "source/pyproject.toml",
+    "files": 1,
+    "bytes": 1246,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "uv.lock",
+    "to": "source/uv.lock",
+    "files": 1,
+    "bytes": 57866,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "README.md",
+    "to": "archive/legacy-2026-10-26/README.md",
+    "files": 1,
+    "bytes": 8868,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "docs",
+    "to": "archive/legacy-2026-10-26/docs",
+    "files": 86,
+    "bytes": 384608,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "build",
+    "to": "archive/legacy-2026-10-26/build",
+    "files": 496,
+    "bytes": 760568970,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "tests",
+    "to": "archive/validation/tests",
+    "files": 141,
+    "bytes": 3690078,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "benchmarks",
+    "to": "archive/validation/benchmarks",
+    "files": 7,
+    "bytes": 43864,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "test-assets",
+    "to": "archive/validation/test-assets",
+    "files": 2,
+    "bytes": 2487123,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": ".venv",
+    "to": "archive/legacy-2026-10-26/environment/.venv",
+    "files": 9154,
+    "bytes": 951066673,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": ".cache",
+    "to": "archive/legacy-2026-10-26/caches/.cache",
+    "files": 19575,
+    "bytes": 2368008803,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": ".mypy_cache",
+    "to": "archive/legacy-2026-10-26/caches/.mypy_cache",
+    "files": 3,
+    "bytes": 29581541,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": ".pytest_cache",
+    "to": "archive/legacy-2026-10-26/caches/.pytest_cache",
+    "files": 5,
+    "bytes": 70051,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": ".ruff_cache",
+    "to": "archive/legacy-2026-10-26/caches/.ruff_cache",
+    "files": 8,
+    "bytes": 13054,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "interpreter-v4",
+    "to": "archive/legacy-2026-10-26/caches/interpreter-v4",
+    "files": 1,
+    "bytes": 1087,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "sdists-v9",
+    "to": "archive/legacy-2026-10-26/caches/sdists-v9",
+    "files": 2,
+    "bytes": 0,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": ".lock",
+    "to": "archive/legacy-2026-10-26/caches/.lock",
+    "files": 1,
+    "bytes": 0,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "CACHEDIR.TAG",
+    "to": "archive/legacy-2026-10-26/caches/CACHEDIR.TAG",
+    "files": 1,
+    "bytes": 43,
+    "paths_and_sizes_match": true
+  },
+  {
+    "from": "nuitka-crash-report.xml",
+    "to": "archive/legacy-2026-10-26/nuitka-crash-report.xml",
+    "files": 1,
+    "bytes": 936723,
+    "paths_and_sizes_match": true
+  }
+]

@@ -1,0 +1,29 @@
+{
+  "dependencies": {
+    "EasyPicture": "0.6.0",
+    "Python": "3.14.3",
+    "Qt": "6.11.1",
+    "PySide6": "6.11.1",
+    "NumPy": "2.5.1",
+    "Pillow": "12.3.0",
+    "OpenCV": "4.13.0"
+  },
+  "requested_backend": "opengl",
+  "active_backend": "software",
+  "vendor": "",
+  "renderer": "Qt QPainter full-frame compositor",
+  "version": "",
+  "frame_generation": 21,
+  "texture_bytes": 0,
+  "fallback_reason": "Qt offscreen platform does not support QOpenGLWidget",
+  "maximum_channel_error": 0,
+  "maximum_preview_channel_error": 0,
+  "maximum_replaced_preview_channel_error": 0,
+  "maximum_transient_vector_preview_channel_error": 0,
+  "maximum_tile_surface_channel_error": 0,
+  "maximum_tile_overlay_channel_error": 0,
+  "maximum_outline_preview_vs_committed_error": 0,
+  "maximum_ai_cleanup_preview_vs_committed_error": 0,
+  "maximum_channel_error_including_border": 0,
+  "border_comparison": "2 px document border excluded"
+}

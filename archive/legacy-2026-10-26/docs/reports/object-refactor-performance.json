@@ -1,0 +1,189 @@
+{
+  "stage": "unified objects, bounded caches and completed preview scheduling",
+  "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "backend": "Qt QPainter / offscreen",
+  "limitations": "Rendering only; not native input latency, OpenGL, algorithm preview latency, or a pre-change speed comparison. RSS is sampled; Windows peak working set is a process-lifetime high-water mark, not reset between scenes.",
+  "scenarios": [
+    {
+      "canvas": [
+        128,
+        128
+      ],
+      "raster_layers": 4,
+      "vector_objects": 0,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 0.324,
+      "render_p95_ms": 0.474,
+      "sampled_process_peak_rss_bytes": 77590528,
+      "os_process_peak_working_set_bytes": 81108992,
+      "counters": {
+        "domain_events": 0,
+        "change_sets": 0,
+        "snapshots": 0,
+        "frame_requests": 0,
+        "software_frames": 22,
+        "source_cache_hits": 84,
+        "source_cache_misses": 4,
+        "thumbnails": 0
+      },
+      "source_cache_bytes": 1048576,
+      "svg_cache": {
+        "hits": 0,
+        "misses": 0,
+        "evictions": 0,
+        "entries": 0,
+        "estimated_bytes": 0
+      },
+      "svg_hits_this_scene": 0,
+      "svg_misses_this_scene": 0,
+      "text_hits_this_scene": 0,
+      "text_misses_this_scene": 0
+    },
+    {
+      "canvas": [
+        2048,
+        2048
+      ],
+      "raster_layers": 8,
+      "vector_objects": 20,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 35.594,
+      "render_p95_ms": 39.814,
+      "sampled_process_peak_rss_bytes": 367243264,
+      "os_process_peak_working_set_bytes": 367247360,
+      "counters": {
+        "domain_events": 0,
+        "change_sets": 0,
+        "snapshots": 0,
+        "frame_requests": 0,
+        "software_frames": 22,
+        "source_cache_hits": 10752,
+        "source_cache_misses": 512,
+        "thumbnails": 0
+      },
+      "source_cache_bytes": 134217728,
+      "svg_cache": {
+        "hits": 420,
+        "misses": 20,
+        "evictions": 0,
+        "entries": 20,
+        "estimated_bytes": 131160
+      },
+      "svg_hits_this_scene": 420,
+      "svg_misses_this_scene": 20,
+      "text_hits_this_scene": 0,
+      "text_misses_this_scene": 0
+    },
+    {
+      "canvas": [
+        4096,
+        4096
+      ],
+      "raster_layers": 1,
+      "vector_objects": 0,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 28.19,
+      "render_p95_ms": 29.825,
+      "sampled_process_peak_rss_bytes": 281608192,
+      "os_process_peak_working_set_bytes": 367259648,
+      "counters": {
+        "domain_events": 0,
+        "change_sets": 0,
+        "snapshots": 0,
+        "frame_requests": 0,
+        "software_frames": 22,
+        "source_cache_hits": 5376,
+        "source_cache_misses": 256,
+        "thumbnails": 0
+      },
+      "source_cache_bytes": 67108864,
+      "svg_cache": {
+        "hits": 420,
+        "misses": 20,
+        "evictions": 0,
+        "entries": 0,
+        "estimated_bytes": 0
+      },
+      "svg_hits_this_scene": 0,
+      "svg_misses_this_scene": 0,
+      "text_hits_this_scene": 0,
+      "text_misses_this_scene": 0
+    },
+    {
+      "canvas": [
+        1024,
+        1024
+      ],
+      "raster_layers": 1,
+      "vector_objects": 100,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 5.013,
+      "render_p95_ms": 5.904,
+      "sampled_process_peak_rss_bytes": 93290496,
+      "os_process_peak_working_set_bytes": 367259648,
+      "counters": {
+        "domain_events": 0,
+        "change_sets": 0,
+        "snapshots": 0,
+        "frame_requests": 0,
+        "software_frames": 22,
+        "source_cache_hits": 336,
+        "source_cache_misses": 16,
+        "thumbnails": 0
+      },
+      "source_cache_bytes": 4194304,
+      "svg_cache": {
+        "hits": 2520,
+        "misses": 120,
+        "evictions": 0,
+        "entries": 100,
+        "estimated_bytes": 656384
+      },
+      "svg_hits_this_scene": 2100,
+      "svg_misses_this_scene": 100,
+      "text_hits_this_scene": 0,
+      "text_misses_this_scene": 0
+    },
+    {
+      "canvas": [
+        1024,
+        1024
+      ],
+      "raster_layers": 1,
+      "vector_objects": 1000,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 29.746,
+      "render_p95_ms": 30.761,
+      "sampled_process_peak_rss_bytes": 101048320,
+      "os_process_peak_working_set_bytes": 367259648,
+      "counters": {
+        "domain_events": 0,
+        "change_sets": 0,
+        "snapshots": 0,
+        "frame_requests": 0,
+        "software_frames": 22,
+        "source_cache_hits": 336,
+        "source_cache_misses": 16,
+        "thumbnails": 0
+      },
+      "source_cache_bytes": 4194304,
+      "svg_cache": {
+        "hits": 23520,
+        "misses": 1120,
+        "evictions": 0,
+        "entries": 1000,
+        "estimated_bytes": 6573440
+      },
+      "svg_hits_this_scene": 21000,
+      "svg_misses_this_scene": 1000,
+      "text_hits_this_scene": 0,
+      "text_misses_this_scene": 0
+    }
+  ]
+}

@@ -26,5 +26,13 @@ htmlcov/
 Thumbs.db
 .DS_Store
 
-# Local manual-test inputs and generated projects
-/test-assets/
+# Release binaries and reproducible/legacy machine data
+/release/*
+!/release/.gitkeep
+/archive/legacy-*/build/
+/archive/legacy-*/caches/
+/archive/legacy-*/environment/
+/archive/legacy-*/nuitka-crash-report.xml
+/archive/runs/
+/archive/releases/
+/archive/validation/test-assets/

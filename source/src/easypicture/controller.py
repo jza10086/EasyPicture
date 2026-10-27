@@ -1,0 +1,854 @@
+"""Single-document lifecycle, persistence, and recovery controller."""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
+import os
+import time
+from pathlib import Path
+from uuid import UUID
+
+from PySide6.QtCore import QEventLoop, QObject, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtWidgets import QProgressDialog, QWidget
+
+from easypicture.commands import DocumentCommandService
+from easypicture.domain import (
+    Document,
+    DocumentEvent,
+    DocumentModifiedChanged,
+    DocumentSizeChanged,
+    GroupListChanged,
+    GroupMembersChanged,
+    GroupPropertiesChanged,
+    LayerPixelsChanged,
+    LayerPropertiesChanged,
+    SelectionChanged,
+    SpriteFrameContentChanged,
+    SpriteWorkspaceChanged,
+    VectorObjectChanged,
+)
+from easypicture.domain.document import Unsubscribe
+from easypicture.jobs import JobHandle, JobOutcome, JobRunner, JobStatus
+from easypicture.jobs.runner import JobOperation
+from easypicture.persistence import (
+    DocumentSnapshot,
+    ImageExportReceipt,
+    ImageExportRequest,
+    ImportedImage,
+    LoadedProject,
+    PngExportReceipt,
+    SaveReceipt,
+    SpriteAtlasExportReceipt,
+    SpriteAtlasExportRequest,
+    SpriteFrameExportReceipt,
+    SpriteFrameExportRequest,
+    SvgImportResult,
+    export_image,
+    export_png,
+    export_sprite_atlas,
+    export_sprite_frame_png,
+    import_image,
+    import_svg,
+    load_project,
+    prepare_document_append,
+    save_project,
+)
+from easypicture.ui.dialogs import (
+    DialogService,
+    RecoveryDecision,
+    UnsavedDecision,
+)
+from easypicture.ui.notifications import NotificationService
+from easypicture.ui.settings import AppSettings
+
+DEFAULT_RECOVERY_INTERVAL_MS = 60_000
+
+
+class ApplicationController(QObject):
+    """Own the active document and keep all destructive flows transactional."""
+
+    document_changed = Signal(object)
+    document_event = Signal(object)
+    status_message = Signal(str)
+    recent_files_changed = Signal(object)
+
+    def __init__(
+        self,
+        settings: AppSettings,
+        dialogs: DialogService,
+        parent: QObject | None = None,
+        *,
+        recovery_dir: Path | None = None,
+        recovery_interval_ms: int = DEFAULT_RECOVERY_INTERVAL_MS,
+        recovery_enabled: bool = True,
+        job_runner: JobRunner | None = None,
+    ) -> None:
+        super().__init__(parent)
+        if recovery_interval_ms <= 0:
+            raise ValueError("recovery interval must be positive")
+        self.settings = settings
+        self.dialogs = dialogs
+        self.notifications = NotificationService(self)
+        self._logger = logging.getLogger("easypicture.controller")
+        self._document: Document | None = None
+        self._unsubscribe: Unsubscribe | None = None
+        self._dialog_parent: QWidget | None = None
+        self.jobs = job_runner if job_runner is not None else JobRunner(self)
+        self.preview_jobs = JobRunner(self)
+        self.commands = DocumentCommandService(
+            confirm_history_reset=self._confirm_undo_history_reset,
+            report_command_too_large=self._report_undo_command_too_large,
+        )
+        default_root = (
+            Path(
+                QStandardPaths.writableLocation(
+                    QStandardPaths.StandardLocation.AppLocalDataLocation
+                )
+            )
+            / "recovery"
+        )
+        self.recovery_dir = Path(recovery_dir) if recovery_dir is not None else default_root
+        self.recovery_enabled = recovery_enabled
+        self._recovery_timer = QTimer(self)
+        self._recovery_timer.setSingleShot(True)
+        self._recovery_timer.setInterval(recovery_interval_ms)
+        self._recovery_timer.timeout.connect(self._start_recovery_save)
+        self._recovery_handle: JobHandle | None = None
+        self._recovery_generation = 0
+
+    @property
+    def document(self) -> Document | None:
+        return self._document
+
+    @property
+    def project_document(self) -> Document | None:
+        return self._document
+
+    @property
+    def recovery_path(self) -> Path:
+        name = (
+            f"{self._document.id}.recovery.limg"
+            if self._document is not None
+            else "current.recovery.limg"
+        )
+        return self.recovery_dir / name
+
+    def discard_recovery(self) -> None:
+        self._clear_recovery()
+
+    def set_dialog_parent(self, parent: QWidget) -> None:
+        self._dialog_parent = parent
+
+    @property
+    def recent_files(self) -> tuple[Path, ...]:
+        return self.settings.recent_files()
+
+    def request_new_document(self, parent: QWidget) -> bool:
+        spec = self.dialogs.request_new_document(parent, self.settings.last_document_size())
+        if spec is None or not self._resolve_unsaved(parent):
+            return False
+        self.settings.set_last_document_size(spec.size)
+        self._replace_document(Document.create(spec.width, spec.height))
+        self._logger.info("created document %sx%s", spec.width, spec.height)
+        return True
+
+    def adopt_generated_document(self, document: Document) -> None:
+        """Install an already prepared unsaved result in a fresh controller only."""
+        if self._document is not None or document.project_path is not None:
+            raise ValueError("generated documents require a fresh controller and no project path")
+        self._replace_document(document)
+        if document.modified and self.recovery_enabled:
+            self._recovery_timer.start()
+
+    def request_open_document(self, parent: QWidget) -> bool:
+        path = self.dialogs.choose_project_open_file(parent)
+        return False if path is None else self.open_path(parent, path)
+
+    def open_path(self, parent: QWidget, path: Path) -> bool:
+        resolved_path = Path(path)
+        if resolved_path.suffix.lower() != ".limg":
+            self.dialogs.show_error(
+                parent,
+                "打开项目失败",
+                "“打开”仅支持 EasyPicture 的 .limg 项目；普通图片请使用“导入”。",
+            )
+            return False
+        document = self._load_project_candidate(parent, resolved_path)
+        if document is None or not self._resolve_unsaved(parent):
+            return False
+        self._replace_document(document)
+        self._record_recent_file(resolved_path)
+        self._logger.info("opened %s", resolved_path)
+        return True
+
+    def request_import_document(self, parent: QWidget) -> bool:
+        path = self.dialogs.choose_image_import_file(parent)
+        return False if path is None else self.import_path(parent, path)
+
+    def import_path(self, parent: QWidget, path: Path) -> bool:
+        resolved_path = Path(path)
+        if resolved_path.suffix.lower() == ".limg":
+            self.dialogs.show_error(
+                parent,
+                "导入失败",
+                ".limg 是项目文件，请使用“打开”。",
+            )
+            return False
+        candidate = self._load_import_candidate(parent, resolved_path)
+        if candidate is None or not self._resolve_unsaved(parent):
+            return False
+        document, notices = candidate
+        suggested_project_path = resolved_path.with_suffix(".limg")
+        project_path = self.dialogs.choose_project_save_file(
+            parent,
+            str(suggested_project_path),
+        )
+        if project_path is None:
+            return False
+        receipt = self._save_document_candidate(parent, document, project_path)
+        if receipt is None:
+            return False
+        document.set_project_path(receipt.path)
+        document.mark_clean()
+        self._replace_document(document)
+        self._clear_recovery()
+        self._record_recent_file(receipt.path)
+        self.status_message.emit(f"已导入并新建 {receipt.path.name}")
+        self._logger.info(
+            "imported %s as new project %s",
+            resolved_path,
+            receipt.path,
+        )
+        self.dialogs.show_warnings(parent, "导入提示", notices)
+        return True
+
+    def request_append_document(self, parent: QWidget) -> bool:
+        if self._document is None:
+            return False
+        path = self.dialogs.choose_append_file(parent)
+        return False if path is None else self.append_path(parent, path)
+
+    def append_path(self, parent: QWidget, path: Path) -> bool:
+        target = self._document
+        if target is None:
+            return False
+        resolved_path = Path(path)
+        notices: tuple[str, ...]
+        if resolved_path.suffix.lower() == ".limg":
+            source = self._load_project_candidate(parent, resolved_path)
+            notices = ()
+        else:
+            candidate = self._load_import_candidate(parent, resolved_path)
+            if candidate is None:
+                return False
+            source, notices = candidate
+        if source is None or self._document is not target:
+            return False
+        try:
+            payload = prepare_document_append(
+                source,
+                target,
+                include_empty_raster_groups=resolved_path.suffix.lower() != ".svg",
+            )
+        except (TypeError, ValueError) as error:
+            self.dialogs.show_error(parent, "追加失败", str(error))
+            return False
+        if not self.commands.append_groups(payload.groups):
+            self.dialogs.show_error(
+                parent,
+                "追加失败",
+                "追加内容超过图层数量或撤销内存限制，当前工程未发生变化。",
+            )
+            return False
+        self._record_recent_file(resolved_path)
+        self.status_message.emit(f"已追加 {resolved_path.name}")
+        self._logger.info("appended %s", resolved_path)
+        self.dialogs.show_warnings(parent, "追加提示", notices + payload.warnings)
+        return True
+
+    def open_recent_path(self, parent: QWidget, path: Path) -> bool:
+        candidate = Path(path)
+        if candidate.suffix.casefold() != ".limg":
+            self.settings.remove_recent_file(candidate)
+            self.recent_files_changed.emit(self.recent_files)
+            return False
+        if not candidate.exists():
+            self.settings.remove_recent_file(candidate)
+            self.recent_files_changed.emit(self.recent_files)
+            self.notifications.warning(
+                f"recent-missing:{candidate}",
+                f"最近文件已不存在，已从列表移除：{candidate.name}",
+                details=str(candidate),
+            )
+            return False
+        return self.open_path(parent, candidate)
+
+    def clear_recent_files(self) -> None:
+        self.settings.clear_recent_files()
+        self.recent_files_changed.emit(self.recent_files)
+        self.notifications.info("recent-cleared", "已清空最近文件")
+
+    def request_save(self, parent: QWidget) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        if document.project_path is None:
+            return self.request_save_as(parent)
+        return self._save_to(parent, document.project_path)
+
+    def request_save_as(self, parent: QWidget) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        suggested = (
+            document.project_path.name
+            if document.project_path is not None
+            else f"{Path(document.display_name).stem or 'Untitled'}.limg"
+        )
+        path = self.dialogs.choose_project_save_file(parent, suggested)
+        return False if path is None else self._save_to(parent, path)
+
+    def request_export_png(self, parent: QWidget) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        suggested = f"{Path(document.display_name).stem or 'Untitled'}.png"
+        path = self.dialogs.choose_png_export_file(parent, suggested)
+        if path is None:
+            return False
+        snapshot = DocumentSnapshot.capture(document)
+        outcome = self._run_foreground(
+            parent,
+            "导出 PNG",
+            lambda token, progress: export_png(snapshot, path, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            PngExportReceipt,
+        ):
+            self.status_message.emit(f"已导出 {outcome.value.path.name}")
+            self._logger.info("exported PNG %s", outcome.value.path)
+            return True
+        self._report_job_failure(parent, "导出失败", outcome)
+        return False
+
+    def request_export_image(self, parent: QWidget) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        suggested = Path(document.display_name).stem or "Untitled"
+        initial_directory = self.settings.last_export_directory()
+        if initial_directory is None and document.project_path is not None:
+            initial_directory = document.project_path.parent
+        if initial_directory is None:
+            pictures = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.PicturesLocation
+            )
+            initial_directory = Path(pictures) if pictures else Path.cwd()
+        spec = self.dialogs.request_image_export(
+            parent,
+            suggested,
+            initial_directory,
+        )
+        if spec is None:
+            return False
+        snapshot = DocumentSnapshot.capture(document)
+        request = ImageExportRequest(snapshot, spec.path, spec.options)
+        outcome = self._run_foreground(
+            parent,
+            "导出图片",
+            lambda token, progress: export_image(request, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            ImageExportReceipt,
+        ):
+            self.status_message.emit(f"已导出 {outcome.value.path.name}")
+            self._logger.info(
+                "exported %s %s",
+                outcome.value.format.value,
+                outcome.value.path,
+            )
+            return True
+        self._report_job_failure(parent, "导出失败", outcome)
+        return False
+
+    def request_export_sprite_frame(self, parent: QWidget, frame_id: UUID) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        try:
+            frame = document.sprite_workspace.frame_by_id(frame_id)
+        except ValueError:
+            return False
+        path = self.dialogs.choose_png_export_file(parent, f"{frame.name}.png")
+        if path is None:
+            return False
+        request = SpriteFrameExportRequest(
+            DocumentSnapshot.capture(document),
+            frame_id,
+            path,
+        )
+        outcome = self._run_foreground(
+            parent,
+            "导出精灵帧 PNG",
+            lambda token, progress: export_sprite_frame_png(request, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            SpriteFrameExportReceipt,
+        ):
+            self.status_message.emit(f"已导出 {outcome.value.path.name}")
+            return True
+        self._report_job_failure(parent, "导出精灵帧失败", outcome)
+        return False
+
+    def export_sprite_atlas_to(
+        self,
+        parent: QWidget,
+        path: Path,
+        *,
+        included_animation_ids: tuple[UUID, ...] | None = None,
+        include_ungrouped: bool = True,
+        horizontal_spacing: int = 0,
+        vertical_spacing: int = 0,
+        margin: int = 0,
+    ) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        request = SpriteAtlasExportRequest(
+            snapshot=DocumentSnapshot.capture(document),
+            path=path,
+            included_animation_ids=included_animation_ids,
+            include_ungrouped=include_ungrouped,
+            horizontal_spacing=horizontal_spacing,
+            vertical_spacing=vertical_spacing,
+            margin=margin,
+        )
+        outcome = self._run_foreground(
+            parent,
+            "导出完整精灵图",
+            lambda token, progress: export_sprite_atlas(request, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            SpriteAtlasExportReceipt,
+        ):
+            self.status_message.emit(
+                f"已导出 {outcome.value.png_path.name} 与 {outcome.value.json_path.name}"
+            )
+            return True
+        self._report_job_failure(parent, "导出精灵图失败", outcome)
+        return False
+
+    def close_document(self, parent: QWidget) -> bool:
+        if self._document is None:
+            return True
+        if not self._resolve_unsaved(parent):
+            return False
+        self._clear_recovery()
+        self._replace_document(None)
+        self._logger.info("closed document")
+        return True
+
+    def request_exit(self, parent: QWidget) -> bool:
+        return self.close_document(parent)
+
+    def offer_recovery(self, parent: QWidget, path: Path | None = None) -> bool:
+        recovery_path = self.recovery_path if path is None else Path(path)
+        if path is None and not recovery_path.exists():
+            candidates = tuple(self.recovery_dir.glob("*.recovery.limg"))
+            if candidates:
+                recovery_path = max(candidates, key=lambda candidate: candidate.stat().st_mtime)
+        if not self.recovery_enabled or not recovery_path.exists():
+            return False
+        outcome = self._run_foreground(
+            parent,
+            "检查恢复草稿",
+            lambda token, progress: load_project(recovery_path, token, progress),
+        )
+        if outcome.status is JobStatus.CANCELLED:
+            return False
+        if outcome.status is not JobStatus.SUCCESS or not isinstance(
+            outcome.value,
+            LoadedProject,
+        ):
+            self._quarantine_recovery_path(recovery_path)
+            self._report_job_failure(parent, "恢复草稿损坏", outcome)
+            return False
+        loaded = outcome.value
+        if not loaded.is_recovery:
+            self._quarantine_recovery_path(recovery_path)
+            self.dialogs.show_error(parent, "恢复草稿损坏", "该文件不是自动恢复草稿。")
+            return False
+        display_name = loaded.snapshot.source_name or (
+            loaded.original_project_path.name
+            if loaded.original_project_path is not None
+            else "Untitled"
+        )
+        decision = self.dialogs.confirm_recovery(parent, display_name)
+        if decision is RecoveryDecision.DISCARD:
+            recovery_path.unlink(missing_ok=True)
+            return False
+        if decision is RecoveryDecision.KEEP:
+            return False
+        document = loaded.snapshot.to_document(
+            project_path=loaded.original_project_path,
+            modified=True,
+        )
+        self._replace_document(document)
+        self.status_message.emit("已恢复自动保存草稿")
+        self._logger.info("restored recovery draft %s", recovery_path)
+        return True
+
+    def _quarantine_recovery_path(self, path: Path) -> None:
+        timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        corrupt = path.with_name(f"{path.name}.{timestamp}.corrupt")
+        try:
+            os.replace(path, corrupt)
+        except OSError:
+            self._logger.exception("failed to quarantine recovery draft %s", path)
+
+    def _load_project_candidate(
+        self,
+        parent: QWidget,
+        path: Path,
+    ) -> Document | None:
+        outcome = self._run_foreground(
+            parent,
+            "打开项目",
+            lambda token, progress: load_project(path, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(
+            outcome.value,
+            LoadedProject,
+        ):
+            loaded = outcome.value
+            if loaded.is_recovery:
+                self.dialogs.show_error(
+                    parent,
+                    "打开项目失败",
+                    "自动恢复草稿只能通过启动恢复流程打开。",
+                )
+                return None
+            return loaded.snapshot.to_document(project_path=path)
+        self._report_job_failure(parent, "打开项目失败", outcome)
+        return None
+
+    def _load_import_candidate(
+        self,
+        parent: QWidget,
+        path: Path,
+    ) -> tuple[Document, tuple[str, ...]] | None:
+        if path.suffix.lower() == ".svg":
+            outcome = self._run_foreground(
+                parent,
+                "导入 SVG",
+                lambda token, progress: import_svg(path, token, progress),
+            )
+            if outcome.status is JobStatus.SUCCESS and isinstance(
+                outcome.value,
+                SvgImportResult,
+            ):
+                imported_svg = outcome.value
+                notices = tuple(
+                    f"{item.element_id or 'SVG'}：{item.message}"
+                    for item in imported_svg.warnings[:20]
+                )
+                if len(imported_svg.warnings) > 20:
+                    notices += (f"另有 {len(imported_svg.warnings) - 20} 条警告已写入日志。",)
+                for warning in imported_svg.warnings:
+                    self._logger.warning(
+                        "SVG import %s [%s]: %s",
+                        warning.element_id or "document",
+                        warning.category,
+                        warning.message,
+                    )
+                return imported_svg.document, notices
+            self._report_job_failure(parent, "导入 SVG 失败", outcome)
+            return None
+
+        outcome = self._run_foreground(
+            parent,
+            "导入图片",
+            lambda token, progress: import_image(path, token, progress),
+        )
+        if outcome.status is JobStatus.SUCCESS and isinstance(outcome.value, ImportedImage):
+            imported = outcome.value
+            return imported.document, imported.warnings
+        self._report_job_failure(parent, "导入图片失败", outcome)
+        return None
+
+    def _save_to(self, parent: QWidget, path: Path) -> bool:
+        document = self._document
+        if document is None:
+            return False
+        snapshot = DocumentSnapshot.capture(document)
+        outcome = self._run_foreground(
+            parent,
+            "保存项目",
+            lambda token, progress: save_project(snapshot, path, token, progress),
+        )
+        if outcome.status is not JobStatus.SUCCESS or not isinstance(
+            outcome.value,
+            SaveReceipt,
+        ):
+            self._report_job_failure(parent, "保存项目失败", outcome)
+            return False
+        receipt = outcome.value
+        if self._document is not document:
+            return False
+        document.set_project_path(receipt.path)
+        if not self.commands.mark_saved(receipt.document_id, receipt.revision):
+            self.status_message.emit("项目快照已写入，但文档已有更新，仍保持未保存状态")
+            return False
+        self._clear_recovery()
+        self.status_message.emit(f"已保存 {receipt.path.name}")
+        self._record_recent_file(receipt.path)
+        self._logger.info("saved project %s", receipt.path)
+        return True
+
+    def _save_document_candidate(
+        self,
+        parent: QWidget,
+        document: Document,
+        path: Path,
+    ) -> SaveReceipt | None:
+        """Persist an imported candidate before exposing it as the active project."""
+
+        snapshot = DocumentSnapshot.capture(document)
+        outcome = self._run_foreground(
+            parent,
+            "新建导入项目",
+            lambda token, progress: save_project(snapshot, path, token, progress),
+        )
+        if outcome.status is not JobStatus.SUCCESS or not isinstance(
+            outcome.value,
+            SaveReceipt,
+        ):
+            self._report_job_failure(parent, "新建导入项目失败", outcome)
+            return None
+        return outcome.value
+
+    def _resolve_unsaved(self, parent: QWidget) -> bool:
+        document = self._document
+        if document is None or not document.modified:
+            return True
+        decision = self.dialogs.confirm_unsaved(parent, document)
+        if decision is UnsavedDecision.CANCEL:
+            return False
+        if decision is UnsavedDecision.SAVE:
+            return self.request_save(parent)
+        self._clear_recovery()
+        return True
+
+    def _replace_document(self, document: Document | None) -> None:
+        self._recovery_timer.stop()
+        self._cancel_recovery_job()
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+        self._unsubscribe = None
+        self._document = document
+        self.commands.attach_document(document)
+        if document is not None:
+            self._unsubscribe = document.subscribe(self._forward_document_event)
+        self.document_changed.emit(document)
+
+    def _forward_document_event(self, event: DocumentEvent) -> None:
+        self.document_event.emit(event)
+        if (
+            self.recovery_enabled
+            and self._document is not None
+            and self._document.modified
+            and isinstance(
+                event,
+                (
+                    DocumentModifiedChanged,
+                    DocumentSizeChanged,
+                    GroupListChanged,
+                    GroupMembersChanged,
+                    GroupPropertiesChanged,
+                    LayerPixelsChanged,
+                    LayerPropertiesChanged,
+                    SelectionChanged,
+                    SpriteFrameContentChanged,
+                    SpriteWorkspaceChanged,
+                    VectorObjectChanged,
+                ),
+            )
+        ):
+            self._recovery_timer.start()
+
+    def _start_recovery_save(self) -> None:
+        document = self._document
+        if (
+            not self.recovery_enabled
+            or document is None
+            or not document.modified
+            or self._recovery_handle is not None
+        ):
+            return
+        self.recovery_dir.mkdir(parents=True, exist_ok=True)
+        snapshot = DocumentSnapshot.capture(document)
+        generation = self._recovery_generation
+        handle = self.jobs.submit(
+            lambda token, progress: save_project(
+                snapshot,
+                self.recovery_path,
+                token,
+                progress,
+                recovery=True,
+            )
+        )
+        self._recovery_handle = handle
+        handle.finished.connect(
+            lambda outcome: self._on_recovery_finished(
+                outcome,
+                generation,
+                snapshot.document_id,
+                snapshot.revision,
+            )
+        )
+
+    def _on_recovery_finished(
+        self,
+        outcome: JobOutcome,
+        generation: int,
+        document_id: UUID,
+        revision: int,
+    ) -> None:
+        self._recovery_handle = None
+        if generation != self._recovery_generation:
+            self.recovery_path.unlink(missing_ok=True)
+            return
+        if outcome.status is JobStatus.FAILED:
+            error = str(outcome.error) if outcome.error is not None else "未知错误"
+            self.notifications.warning(
+                "recovery-save-failed",
+                "自动恢复草稿保存失败；可继续编辑，详情已写入日志",
+                details=error,
+            )
+        document = self._document
+        if (
+            document is not None
+            and document.id == document_id
+            and document.modified
+            and document.revision != revision
+        ):
+            self._recovery_timer.start()
+
+    def _clear_recovery(self) -> None:
+        self._recovery_generation += 1
+        self._recovery_timer.stop()
+        self._cancel_recovery_job()
+        self.recovery_path.unlink(missing_ok=True)
+
+    def _cancel_recovery_job(self) -> None:
+        if self._recovery_handle is not None:
+            self._recovery_handle.cancel()
+
+    def _quarantine_corrupt_recovery(self) -> None:
+        if not self.recovery_path.exists():
+            return
+        stamp = dt.datetime.now(tz=dt.UTC).strftime("%Y%m%dT%H%M%SZ")
+        target = self.recovery_path.with_name(f"current.recovery.corrupt-{stamp}.limg")
+        try:
+            os.replace(self.recovery_path, target)
+        except OSError:
+            self._logger.exception("failed to quarantine corrupt recovery draft")
+            return
+        self._logger.warning("quarantined corrupt recovery draft as %s", target)
+
+    def _run_foreground(
+        self,
+        parent: QWidget,
+        title: str,
+        operation: JobOperation,
+    ) -> JobOutcome:
+        started = time.perf_counter()
+        self._logger.info("job started: %s", title)
+        dialog = QProgressDialog("准备中…", "取消", 0, 0, parent)
+        dialog.setWindowTitle(title)
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        loop = QEventLoop()
+        outcome_box: list[JobOutcome] = []
+        handle = self.jobs.submit(operation)
+
+        def update_progress(completed: int, total: int, message: str) -> None:
+            dialog.setLabelText(message)
+            if total > 0:
+                dialog.setRange(0, total)
+                dialog.setValue(min(completed, total))
+
+        def finish(outcome: JobOutcome) -> None:
+            outcome_box.append(outcome)
+            loop.quit()
+
+        handle.progress.connect(update_progress)
+        handle.finished.connect(finish)
+        dialog.canceled.connect(handle.cancel)
+        dialog.open()
+        loop.exec()
+        dialog.close()
+        self.jobs.wait_for_idle()
+        outcome = (
+            JobOutcome(handle.job_id, JobStatus.CANCELLED) if not outcome_box else outcome_box[0]
+        )
+        self._logger.info(
+            "job finished: %s status=%s elapsed=%.3fs",
+            title,
+            outcome.status.value,
+            time.perf_counter() - started,
+        )
+        return outcome
+
+    def _report_job_failure(
+        self,
+        parent: QWidget,
+        title: str,
+        outcome: JobOutcome,
+    ) -> None:
+        if outcome.status is JobStatus.CANCELLED:
+            self.status_message.emit(f"{title.removesuffix('失败')}已取消")
+            return
+        error = outcome.error
+        message = str(error) if error is not None else "未知错误"
+        self._logger.error(
+            "%s: %s",
+            title,
+            message,
+            exc_info=((type(error), error, error.__traceback__) if error is not None else None),
+        )
+        self.dialogs.show_error(parent, title, message)
+
+    def _record_recent_file(self, path: Path) -> None:
+        if path.suffix.casefold() != ".limg":
+            return
+        recent = self.settings.add_recent_file(path)
+        self.recent_files_changed.emit(recent)
+
+    def _confirm_undo_history_reset(self, required_bytes: int, budget_bytes: int) -> bool:
+        if self._dialog_parent is None:
+            return False
+        return self.dialogs.confirm_undo_history_reset(
+            self._dialog_parent,
+            required_bytes,
+            budget_bytes,
+        )
+
+    def _report_undo_command_too_large(self, required_bytes: int, budget_bytes: int) -> None:
+        if self._dialog_parent is None:
+            return
+        self.dialogs.show_undo_command_too_large(
+            self._dialog_parent,
+            required_bytes,
+            budget_bytes,
+        )
+
+
+__all__ = ["ApplicationController", "DEFAULT_RECOVERY_INTERVAL_MS"]

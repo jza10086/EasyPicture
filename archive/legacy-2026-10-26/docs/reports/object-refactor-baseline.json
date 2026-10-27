@@ -1,0 +1,79 @@
+{
+  "stage": "incremental-refresh baseline; object-model refactor still pending",
+  "python": "3.14.3 (tags/v3.14.3:323c59a, Feb  3 2026, 16:04:56) [MSC v.1944 64 bit (AMD64)]",
+  "platform": "Windows-10-10.0.19045-SP0",
+  "backend": "Qt QPainter / offscreen",
+  "limitations": "Rendering only; not native input latency, OpenGL, algorithm preview latency, or a pre-change speed comparison. RSS is sampled, not an OS peak counter.",
+  "scenarios": [
+    {
+      "canvas": [
+        128,
+        128
+      ],
+      "raster_layers": 4,
+      "vector_objects": 0,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 0.25,
+      "render_p95_ms": 0.404,
+      "sampled_process_peak_rss_bytes": 77074432,
+      "source_cache_bytes": 1048576
+    },
+    {
+      "canvas": [
+        2048,
+        2048
+      ],
+      "raster_layers": 8,
+      "vector_objects": 20,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 37.692,
+      "render_p95_ms": 48.823,
+      "sampled_process_peak_rss_bytes": 366555136,
+      "source_cache_bytes": 134217728
+    },
+    {
+      "canvas": [
+        4096,
+        4096
+      ],
+      "raster_layers": 1,
+      "vector_objects": 0,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 28.461,
+      "render_p95_ms": 29.548,
+      "sampled_process_peak_rss_bytes": 280854528,
+      "source_cache_bytes": 67108864
+    },
+    {
+      "canvas": [
+        1024,
+        1024
+      ],
+      "raster_layers": 1,
+      "vector_objects": 100,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 7.415,
+      "render_p95_ms": 8.58,
+      "sampled_process_peak_rss_bytes": 92090368,
+      "source_cache_bytes": 4194304
+    },
+    {
+      "canvas": [
+        1024,
+        1024
+      ],
+      "raster_layers": 1,
+      "vector_objects": 1000,
+      "warmups": 2,
+      "samples": 20,
+      "render_p50_ms": 57.06,
+      "render_p95_ms": 62.905,
+      "sampled_process_peak_rss_bytes": 93237248,
+      "source_cache_bytes": 4194304
+    }
+  ]
+}

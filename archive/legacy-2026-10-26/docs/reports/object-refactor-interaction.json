@@ -1,0 +1,160 @@
+{
+  "backend": "offscreen virtual pointer + QPainter",
+  "warmups": 2,
+  "scenarios": [
+    {
+      "size": 128,
+      "vectors": 0,
+      "input": {
+        "p50_ms": 0.081,
+        "p95_ms": 0.684,
+        "samples": 20
+      },
+      "input_to_software_preview": {
+        "p50_ms": 1.333,
+        "p95_ms": 2.3,
+        "samples": 20
+      },
+      "selection": {
+        "p50_ms": 0.007,
+        "p95_ms": 0.008,
+        "samples": 20
+      },
+      "rename": {
+        "p50_ms": 0.171,
+        "p95_ms": 0.2,
+        "samples": 20
+      },
+      "counters": {
+        "domain_events": 47,
+        "change_sets": 23,
+        "snapshots": 0,
+        "frame_requests": 10,
+        "software_frames": 22,
+        "source_cache_hits": 0,
+        "source_cache_misses": 0,
+        "thumbnails": 0
+      },
+      "sampled_rss_bytes": 91918336,
+      "os_process_peak_working_set_bytes": 91922432
+    },
+    {
+      "size": 2048,
+      "vectors": 20,
+      "input": {
+        "p50_ms": 0.116,
+        "p95_ms": 0.783,
+        "samples": 20
+      },
+      "input_to_software_preview": {
+        "p50_ms": 2.145,
+        "p95_ms": 2.8,
+        "samples": 20
+      },
+      "selection": {
+        "p50_ms": 0.373,
+        "p95_ms": 0.663,
+        "samples": 20
+      },
+      "rename": {
+        "p50_ms": 0.343,
+        "p95_ms": 0.466,
+        "samples": 20
+      },
+      "counters": {
+        "domain_events": 48,
+        "change_sets": 23,
+        "snapshots": 0,
+        "frame_requests": 10,
+        "software_frames": 22,
+        "source_cache_hits": 0,
+        "source_cache_misses": 0,
+        "thumbnails": 0
+      },
+      "sampled_rss_bytes": 93974528,
+      "os_process_peak_working_set_bytes": 93978624
+    },
+    {
+      "size": 1024,
+      "vectors": 100,
+      "input": {
+        "p50_ms": 0.103,
+        "p95_ms": 0.86,
+        "samples": 20
+      },
+      "input_to_software_preview": {
+        "p50_ms": 4.538,
+        "p95_ms": 5.971,
+        "samples": 20
+      },
+      "selection": {
+        "p50_ms": 0.381,
+        "p95_ms": 0.501,
+        "samples": 20
+      },
+      "rename": {
+        "p50_ms": 0.403,
+        "p95_ms": 0.547,
+        "samples": 20
+      },
+      "counters": {
+        "domain_events": 46,
+        "change_sets": 23,
+        "snapshots": 0,
+        "frame_requests": 10,
+        "software_frames": 22,
+        "source_cache_hits": 0,
+        "source_cache_misses": 0,
+        "thumbnails": 0
+      },
+      "sampled_rss_bytes": 96825344,
+      "os_process_peak_working_set_bytes": 96829440
+    },
+    {
+      "size": 1024,
+      "vectors": 1000,
+      "input": {
+        "p50_ms": 0.119,
+        "p95_ms": 0.862,
+        "samples": 20
+      },
+      "input_to_software_preview": {
+        "p50_ms": 29.729,
+        "p95_ms": 43.167,
+        "samples": 20
+      },
+      "selection": {
+        "p50_ms": 0.408,
+        "p95_ms": 0.597,
+        "samples": 20
+      },
+      "rename": {
+        "p50_ms": 1.082,
+        "p95_ms": 1.38,
+        "samples": 20
+      },
+      "counters": {
+        "domain_events": 46,
+        "change_sets": 23,
+        "snapshots": 0,
+        "frame_requests": 10,
+        "software_frames": 22,
+        "source_cache_hits": 0,
+        "source_cache_misses": 0,
+        "thumbnails": 0
+      },
+      "sampled_rss_bytes": 107626496,
+      "os_process_peak_working_set_bytes": 107630592
+    }
+  ],
+  "4096_color": {
+    "cpu_preview": {
+      "p50_ms": 42.126,
+      "p95_ms": 43.641,
+      "samples": 20
+    },
+    "sampled_rss_bytes": 274964480,
+    "os_process_peak_working_set_bytes": 279166976
+  },
+  "limits": "Input processing and synchronous software paint; color CPU excludes queue wait and display. RSS sampled; Windows peak working set is a process high-water mark. Native input is unmeasured."
+}

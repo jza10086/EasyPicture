@@ -1,0 +1,20 @@
+[
+  {
+    "from": ".cache",
+    "to": "archive/legacy-2026-10-26/cleanup-caches/root-cache",
+    "files": 4,
+    "bytes": 806
+  },
+  {
+    "from": ".ruff_cache",
+    "to": "archive/legacy-2026-10-26/cleanup-caches/root-ruff",
+    "files": 4,
+    "bytes": 806
+  },
+  {
+    "from": "source/.ruff_cache",
+    "to": "archive/legacy-2026-10-26/cleanup-caches/source-ruff",
+    "files": 9,
+    "bytes": 13386
+  }
+]
