@@ -80,6 +80,7 @@ def main() -> None:
         f"--output-dir={output}",
         f"--report={run / 'compilation.xml'}",
         f"--include-data-dir={licenses}=licenses",
+        f"--include-data-dir={SOURCE / 'src/easypicture/resources'}=easypicture/resources",
         "--company-name=EasyPicture contributors",
         "--product-name=EasyPicture",
         f"--product-version={__version__}",

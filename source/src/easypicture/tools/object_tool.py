@@ -21,15 +21,21 @@ from easypicture.domain import (
 )
 from easypicture.domain.coordinates import RasterMapping, validate_object_transform
 from easypicture.domain.effective import iter_effective_leaves
+from easypicture.tools.object_hit_test import opaque_at
 from easypicture.tools.protocol import NullTool, ToolContext
 from easypicture.ui.property_binding import interaction_coordinator
 from easypicture.ui.selection_state import SelectionCoordinator
 
 
 class ObjectTool(NullTool):
-    def __init__(self, selection: Callable[[], SelectionCoordinator]) -> None:
+    def __init__(
+        self,
+        selection: Callable[[], SelectionCoordinator],
+        ignore_transparent: Callable[[], bool] = lambda: False,
+    ) -> None:
         super().__init__()
         self._selection = selection
+        self._ignore_transparent = ignore_transparent
         self._start: Point | None = None
         self._revision = -1
         self._ids: tuple[UUID, ...] = ()
@@ -88,6 +94,10 @@ class ObjectTool(NullTool):
                     point
                 ):
                     continue
+            if self._ignore_transparent() and (
+                entry.opacity <= 0 or isinstance(node, Collection) or not opaque_at(node, point)
+            ):
+                continue
             hit = node.id
             break
         selection = self._selection()

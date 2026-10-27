@@ -45,7 +45,7 @@ MIN_NUMERIC_DRAG_SENSITIVITY = 0.0001
 MAX_NUMERIC_DRAG_SENSITIVITY = 0.1
 MAX_RECENT_FILES = 10
 SPRITE_THUMBNAIL_SIZES = (48, 64, 96)
-WINDOW_STATE_VERSION = 2
+WINDOW_STATE_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +79,12 @@ class AppSettings:
 
     def __init__(self, settings: QSettings | None = None) -> None:
         self._settings = settings if settings is not None else QSettings()
+
+    def ignore_transparent_objects(self) -> bool:
+        return self._settings.value("selection/ignore_transparent", False, type=bool) is True
+
+    def set_ignore_transparent_objects(self, enabled: bool) -> None:
+        self._settings.setValue("selection/ignore_transparent", enabled)
 
     def last_document_size(self) -> Size:
         width = self._int_value("new_document/width", DEFAULT_DOCUMENT_SIZE.width)

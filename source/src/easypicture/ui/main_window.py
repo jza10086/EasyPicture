@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 from uuid import UUID
 
-from PySide6.QtCore import QEvent, QModelIndex, QObject, Qt, QTimer, QUrl
+from PySide6.QtCore import QEvent, QModelIndex, QObject, QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QStackedWidget,
     QTabBar,
+    QTabWidget,
     QToolBar,
     QVBoxLayout,
     QWidget,
@@ -154,6 +155,7 @@ from easypicture.ui.color_adjustment_panel import ColorAdjustmentPanel
 from easypicture.ui.color_panel import ColorPanel
 from easypicture.ui.drag_value_spinbox import configure_numeric_drag_sensitivity
 from easypicture.ui.geometry_dialogs import CanvasSizeDialog, ScaleGeometryDialog
+from easypicture.ui.icons import TOOL_ICONS, icon
 from easypicture.ui.layer_panel import LayerPanel
 from easypicture.ui.notifications import NoticeSeverity, UserNotice
 from easypicture.ui.object_properties import ObjectTransformBlock
@@ -592,6 +594,28 @@ class MainWindow(QMainWindow):
         help_menu.addAction(self.about_action)
 
     def _create_toolbars(self) -> None:
+        self.studio_toolbar = QToolBar("编辑工作区", self)
+        self.studio_toolbar.setObjectName("StudioToolbar")
+        self.studio_toolbar.setMovable(False)
+        self.studio_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.studio_group = QActionGroup(self)
+        self.studio_actions: dict[str, QAction] = {}
+        for key, title, glyph in (
+            ("vector", "矢量编辑", "pen-tool"),
+            ("pixel", "位图编辑", "image"),
+        ):
+            action = QAction(icon(glyph), title, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, mode=key: self._switch_studio(mode))
+            self.studio_group.addAction(action)
+            self.studio_toolbar.addAction(action)
+            self.studio_actions[key] = action
+        self.studio_actions["vector"].setChecked(True)
+        self.studio_label = QLabel("对象画布", self)
+        self.studio_toolbar.addSeparator()
+        self.studio_toolbar.addWidget(self.studio_label)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.studio_toolbar)
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
         self.tool_options = QToolBar("工具选项", self)
         self.tool_options.setObjectName("ToolOptionsToolbar")
         self.tool_options_panel = ToolOptionsPanel(self.settings, self.tool_options)
@@ -603,17 +627,22 @@ class MainWindow(QMainWindow):
             ("矢量内容编辑", EditMode.VECTOR),
         ):
             self.edit_mode.addItem(title, mode.value)
-        self.tool_options.addWidget(self.edit_mode)
+        self.edit_mode_action = self.tool_options.addWidget(self.edit_mode)
         self.edit_mode.activated.connect(self._activate_edit_mode)
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.tool_options)
 
         self.tools_toolbar = QToolBar("工具", self)
         self.tools_toolbar.setObjectName("ToolsToolbar")
         self.tools_toolbar.setOrientation(Qt.Orientation.Vertical)
+        self.tools_toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        self.tools_toolbar.setIconSize(QSize(24, 24))
+        self.tools_toolbar.setMovable(False)
         self.tool_action_group = QActionGroup(self)
         self.tool_action_group.setExclusive(True)
         self._tools: dict[str, Tool] = {
-            "object": ObjectTool(lambda: self.layer_panel.selection),
+            "object": ObjectTool(
+                lambda: self.layer_panel.selection, self.settings.ignore_transparent_objects
+            ),
             "raster_object": RasterObjectTool(),
             "brush": BrushTool(self.tool_options_panel.brush.settings),
             "eraser": BrushTool(self.tool_options_panel.brush.settings, eraser=True),
@@ -681,6 +710,8 @@ class MainWindow(QMainWindow):
             ("sprite_slice", "精灵切片", ""),
         ):
             action = QAction(label, self)
+            action.setIcon(icon(TOOL_ICONS[name]))
+            action.setToolTip(f"{label} ({shortcut})" if shortcut else label)
             action.setCheckable(True)
             if shortcut:
                 action.setShortcut(QKeySequence(shortcut))
@@ -692,9 +723,11 @@ class MainWindow(QMainWindow):
             self.tools_toolbar.addAction(action)
             self.tool_actions[name] = action
         self.edit_raster_action = QAction("编辑栅格像素", self)
+        self.edit_raster_action.setIcon(icon("image"))
         self.edit_raster_action.triggered.connect(self._open_raster_editor)
         self.tools_toolbar.addAction(self.edit_raster_action)
         self.return_objects_action = QAction("返回对象画布", self)
+        self.return_objects_action.setIcon(icon("pen-tool"))
         self.return_objects_action.triggered.connect(self._return_object_canvas)
         self.tools_toolbar.addAction(self.return_objects_action)
         self.addToolBar(Qt.ToolBarArea.LeftToolBarArea, self.tools_toolbar)
@@ -749,11 +782,27 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.layers_dock)
 
         self.color_panel = ColorPanel(self.settings, self.controller.dialogs, self)
-        self.color_dock = self._make_dock("颜色", "ColorDock", self.color_panel)
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.color_dock)
+
+        self.tool_details_stack = QStackedWidget(self)
+        self.tool_details_toolbar = QToolBar("详细工具设置", self)
+        self.tool_details_toolbar.setObjectName("ToolDetailsToolbar")
+        self.tool_details_toolbar.setMovable(False)
+        self.tool_details_scroll = QScrollArea(self)
+        self.tool_details_scroll.setWidgetResizable(True)
+        self.tool_details_scroll.setMaximumHeight(220)
+        self.tool_details_scroll.setMinimumWidth(640)
+        self.tool_details_scroll.setWidget(self.tool_details_stack)
+        self.tool_details_toolbar.addWidget(self.tool_details_scroll)
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.tool_details_toolbar)
+        self.tool_details_action = self.tool_details_toolbar.toggleViewAction()
+        self.tool_details_action.setText("详细设置")
+        self.tool_details_action.setIcon(icon("settings-2"))
+        self.tool_options.addAction(self.tool_details_action)
+        self.tool_details_toolbar.hide()
 
         self.properties_stack = QStackedWidget(self)
-        properties_placeholder = QLabel("选择自由变换工具以编辑角点坐标", self)
+        properties_placeholder = QLabel("在大纲或画布选择对象以编辑属性", self)
         properties_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         properties_placeholder.setWordWrap(True)
         self.transform_properties = TransformPropertiesPanel(self)
@@ -783,27 +832,26 @@ class MainWindow(QMainWindow):
         self.object_properties.preview_cleared.connect(
             self.canvas_view.render_coordinator.clear_object_transform_preview
         )
-        self.properties_stack.addWidget(self.object_properties)
-        self.properties_stack.addWidget(self.transform_properties)
-        self.properties_stack.addWidget(self.shape_properties)
+        self.tool_details_stack.addWidget(self.transform_properties)
+        self.tool_details_stack.addWidget(self.shape_properties)
         self.text_properties = TextPropertiesPanel(self.controller.commands, self)
         self.properties_stack.addWidget(self.text_properties)
         self.svg_properties = SvgPropertiesPanel(self.controller.commands, self)
         self.properties_stack.addWidget(self.svg_properties)
         self.sprite_properties = SpriteWorkspacePanel(self)
         self.sprite_properties.set_pivot_marker_radius(self._sprite_pivot_marker_radius)
-        self.properties_stack.addWidget(self.sprite_properties)
+        self.tool_details_stack.addWidget(self.sprite_properties)
         self.tile_properties = TileWorkspacePanel(self.settings.tile_workspace_settings(), self)
-        self.properties_stack.addWidget(self.tile_properties)
-        self.properties_stack.addWidget(self.color_adjustment_panel)
+        self.tool_details_stack.addWidget(self.tile_properties)
+        self.tool_details_stack.addWidget(self.color_adjustment_panel)
         self.pixel_outline_panel = PixelOutlinePanel(
             self.settings, self.controller.dialogs, self._foreground_rgba, self
         )
-        self.properties_stack.addWidget(self.pixel_outline_panel)
+        self.tool_details_stack.addWidget(self.pixel_outline_panel)
         self.ai_pixel_cleanup_panel = AiPixelCleanupPanel(
             self.settings, self.controller.dialogs, self
         )
-        self.properties_stack.addWidget(self.ai_pixel_cleanup_panel)
+        self.tool_details_stack.addWidget(self.ai_pixel_cleanup_panel)
         self._ai_grid_overlay: AiPixelGridOverlay | None = None
         self.color_adjustment_controller = ColorAdjustmentController(
             self.canvas_view,
@@ -904,18 +952,33 @@ class MainWindow(QMainWindow):
         self.layer_panel.opacity_preview_cleared.connect(
             self.canvas_view.render_coordinator.clear_opacity_preview
         )
-        self.properties_dock = self._make_dock(
-            "属性",
-            "PropertiesDock",
-            self.properties_stack,
-        )
+        inspector = QWidget(self)
+        inspector_layout = QVBoxLayout(inspector)
+        inspector_layout.setContentsMargins(0, 0, 0, 0)
+        self.inspector_heading = QLabel("未选择对象", inspector)
+        self.inspector_heading.setWordWrap(True)
+        inspector_layout.addWidget(self.inspector_heading)
+        inspector_layout.addWidget(self.layer_panel.object_controls)
+        inspector_layout.addWidget(self.object_properties)
+        inspector_layout.addWidget(self.properties_stack)
+        self.inspector_tabs = QTabWidget(self)
+        self.inspector_tabs.addTab(inspector, icon("settings-2"), "对象")
+        self.inspector_tabs.addTab(self.color_panel, icon("palette"), "颜色")
+        self.properties_dock = self._make_dock("对象属性", "PropertiesDock", self.inspector_tabs)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
-        self.tabifyDockWidget(self.color_dock, self.properties_dock)
+        self.splitDockWidget(self.layers_dock, self.properties_dock, Qt.Orientation.Vertical)
+        self.resizeDocks(
+            [self.layers_dock, self.properties_dock], [260, 400], Qt.Orientation.Vertical
+        )
 
         self.sprite_frame_panel = SpriteFramePanel(self.settings, self)
         self.sprite_frames_dock = QDockWidget("精灵帧", self)
         self.sprite_frames_dock.setObjectName("SpriteFramesDock")
-        self.sprite_frames_dock.setWidget(self.sprite_frame_panel)
+        sprite_scroll = QScrollArea(self.sprite_frames_dock)
+        sprite_scroll.setWidgetResizable(True)
+        sprite_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        sprite_scroll.setWidget(self.sprite_frame_panel)
+        self.sprite_frames_dock.setWidget(sprite_scroll)
         self.sprite_frames_dock.setMinimumHeight(140)
         self.setCorner(
             Qt.Corner.BottomRightCorner,
@@ -992,7 +1055,12 @@ class MainWindow(QMainWindow):
 
     def _create_status_bar(self) -> None:
         self._status_message_generation = 0
-        self.shortcut_hint_label = QLabel("B 画笔 · 中键/Space 平移 · Ctrl+滚轮缩放", self)
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(
+            lambda: self._clear_operation_status(self._status_message_generation)
+        )
+        self.shortcut_hint_label = QLabel("中键/Space 平移 · 滚轮缩放", self)
         status_bar = self.statusBar()
         self.operation_status_label = QLabel("就绪", status_bar)
         self.coordinate_label = QLabel("x: —  y: —", self)
@@ -1012,6 +1080,11 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(self.coordinate_label)
         status_bar.addPermanentWidget(self.zoom_label)
         status_bar.installEventFilter(self)
+        self._update_shortcut_hint(
+            next(
+                (name for name, action in self.tool_actions.items() if action.isChecked()), "object"
+            )
+        )
         QTimer.singleShot(0, self._position_operation_status)
 
     def _position_operation_status(self) -> None:
@@ -1039,14 +1112,11 @@ class MainWindow(QMainWindow):
 
     def _show_operation_status(self, message: str, timeout: int = 0) -> None:
         self._status_message_generation += 1
-        generation = self._status_message_generation
+        self._status_timer.stop()
         self.operation_status_label.setText(message or "就绪")
         self._position_operation_status()
         if timeout > 0:
-            QTimer.singleShot(
-                timeout,
-                lambda: self._clear_operation_status(generation),
-            )
+            self._status_timer.start(timeout)
 
     def _clear_operation_status(self, generation: int) -> None:
         if generation == self._status_message_generation:
@@ -1066,7 +1136,7 @@ class MainWindow(QMainWindow):
             "text": "文字 · 拖动创建文本框 · 右键取消",
             "sprite_slice": "精灵切片 · 拖动定位 · Enter 确定 · F2 重命名",
         }
-        self.shortcut_hint_label.setText(hints.get(tool_name, "中键/Space 平移 · Ctrl+滚轮缩放"))
+        self.shortcut_hint_label.setText(hints.get(tool_name, "中键/Space 平移 · 滚轮缩放"))
 
     def _connect_signals(self) -> None:
         self.empty_state.new_button.clicked.connect(self._request_new_document)
@@ -1335,6 +1405,7 @@ class MainWindow(QMainWindow):
 
         dock.setWidget(sidebar)
         dock.setMinimumHeight(48)
+        dock.setMinimumWidth(320)
         return dock
 
     def _request_new_document(self) -> None:
@@ -1893,30 +1964,12 @@ class MainWindow(QMainWindow):
         else:
             self.tool_controller.set_tool(tool)
         self.tool_options_panel.show_tool(tool_name)
-        if tool_name == "object" and hasattr(self, "properties_stack"):
-            self.properties_stack.setCurrentWidget(self.object_properties)
-            self.properties_dock.show()
-        elif tool_name == "transform" and hasattr(self, "properties_stack"):
-            self.properties_stack.setCurrentWidget(
-                self.text_properties if self._selected_vector_object else self.transform_properties
-            )
-            self.properties_dock.show()
-            self.properties_dock.raise_()
-        elif tool_name == "shape" and hasattr(self, "properties_stack"):
-            self.properties_stack.setCurrentWidget(self.shape_properties)
-            self.properties_dock.show()
-            self.properties_dock.raise_()
-        elif tool_name == "sprite_slice" and hasattr(self, "properties_stack"):
-            self.properties_stack.setCurrentWidget(self.sprite_properties)
-            self.properties_dock.show()
-            self.properties_dock.raise_()
-            if not self.sprite_frames_dock.isVisible():
-                self.sprite_frames_dock.show()
-            self.sprite_frames_dock.raise_()
+        if hasattr(self, "tool_details_stack"):
+            self._show_properties_for_tool(tool_name)
+        if tool_name == "sprite_slice" and hasattr(self, "sprite_frames_dock"):
+            self.sprite_frames_dock.show()
             self._resize_sprite_frame_dock()
             QTimer.singleShot(0, self._resize_sprite_frame_dock)
-        elif hasattr(self, "properties_stack"):
-            self.properties_stack.setCurrentIndex(0)
 
     def _activate_transform_command(self) -> None:
         if self.controller.document is None or self._editing_busy:
@@ -2229,7 +2282,7 @@ class MainWindow(QMainWindow):
             )
         self._configure_animation_surface()
         self._refresh_tile_workspace(open_surface=True)
-        self.properties_stack.setCurrentWidget(self.tile_properties)
+        self._show_tool_details(self.tile_properties)
         self.properties_dock.show()
 
     def _configure_tile_surface(self) -> None:
@@ -2238,7 +2291,7 @@ class MainWindow(QMainWindow):
             self._cancel_tile_work()
             self.canvas_view.clear_tile_heatmap()
             return
-        self.properties_stack.setCurrentWidget(self.tile_properties)
+        self._show_tool_details(self.tile_properties)
         self.properties_dock.show()
         self.properties_dock.raise_()
         self._refresh_tile_workspace(open_surface=False)
@@ -2374,7 +2427,7 @@ class MainWindow(QMainWindow):
         self._tile_heatmap_segments = result.segments
         if open_surface:
             self.controller.open_tile_surface(result.document)
-            self.properties_stack.setCurrentWidget(self.tile_properties)
+            self._show_tool_details(self.tile_properties)
             self.properties_dock.show()
             self.properties_dock.raise_()
         else:
@@ -2551,7 +2604,7 @@ class MainWindow(QMainWindow):
             self._animation_timer.stop()
         self.animation_toolbar.show()
         if hasattr(self, "properties_stack"):
-            self.properties_stack.setCurrentWidget(self.sprite_properties)
+            self._show_tool_details(self.sprite_properties)
             self.properties_dock.show()
         self._update_animation_toolbar()
         self._render_active_animation_frame()
@@ -3187,7 +3240,7 @@ class MainWindow(QMainWindow):
             params = self.color_adjustment_controller.parameters
             document = self.controller.document
             if isinstance(params, AiPixelCleanupParameters) and document is not None:
-                self.properties_stack.setCurrentWidget(self.ai_pixel_cleanup_panel)
+                self._show_tool_details(self.ai_pixel_cleanup_panel)
                 self._ai_grid_overlay = AiPixelGridOverlay(document.size, params)
                 self._ai_grid_overlay.setVisible(
                     self.ai_pixel_cleanup_panel.grid_visible.isChecked()
@@ -3196,7 +3249,7 @@ class MainWindow(QMainWindow):
                 self.properties_dock.show()
                 self.properties_dock.raise_()
                 return
-            self.properties_stack.setCurrentWidget(
+            self._show_tool_details(
                 self.pixel_outline_panel
                 if isinstance(self.color_adjustment_controller.parameters, PixelOutlineParameters)
                 else self.color_adjustment_panel
@@ -3229,29 +3282,36 @@ class MainWindow(QMainWindow):
         elif hasattr(self, "properties_stack"):
             self.properties_stack.setCurrentIndex(0)
 
+    def _show_tool_details(self, widget: QWidget, *, expand: bool = True) -> None:
+        self.tool_details_stack.setCurrentWidget(widget)
+        self.tool_details_action.setEnabled(True)
+        if expand:
+            self.tool_details_toolbar.show()
+
     def _show_properties_for_tool(self, tool_name: str) -> None:
-        if tool_name == "transform":
-            self.properties_stack.setCurrentWidget(
-                self.text_properties if self._selected_vector_object else self.transform_properties
-            )
-        elif tool_name == "shape":
-            self.properties_stack.setCurrentWidget(self.shape_properties)
-        elif tool_name == "text":
-            self.properties_stack.setCurrentWidget(self.text_properties)
+        detail = {
+            "shape": self.shape_properties,
+            "sprite_slice": self.sprite_properties,
+            "transform": self.transform_properties if not self._selected_vector_object else None,
+        }.get(tool_name)
+        if detail is not None:
+            self._show_tool_details(detail, expand=False)
         else:
-            self.properties_stack.setCurrentIndex(0)
+            self.tool_details_toolbar.hide()
+            self.tool_details_action.setEnabled(False)
 
     def _on_layer_node_selected(self, node: object) -> None:
         from easypicture.domain import TextObject
 
         self._selected_vector_object = isinstance(node, (TextObject, SvgObject))
+        if hasattr(self, "inspector_heading"):
+            self.inspector_heading.setText(getattr(node, "name", "未选择对象"))
         if (
             len(self.layer_panel.selection.state.selected_ids) > 1
-            or isinstance(self.tool_controller.active_tool, ObjectTool)
             or node is not None
             and not self._selected_vector_object
         ):
-            self.properties_stack.setCurrentWidget(self.object_properties)
+            self.properties_stack.setCurrentIndex(0)
         elif isinstance(node, TextObject):
             self.text_properties.set_object(node)
             self.properties_stack.setCurrentWidget(self.text_properties)
@@ -3263,6 +3323,10 @@ class MainWindow(QMainWindow):
             self.properties_stack.setCurrentWidget(self.svg_properties)
             self.properties_dock.show()
             self.properties_dock.raise_()
+        elif node is None:
+            self.text_properties.set_object(None)
+            self.svg_properties.set_object(None)
+            self.properties_stack.setCurrentIndex(0)
         self._refresh_tool_actions(self.controller.document is not None)
 
     def _activate_edit_mode(self, index: int) -> None:
@@ -3444,6 +3508,15 @@ class MainWindow(QMainWindow):
         self.layer_scale_action.setEnabled(allowed)
         self._apply_surface_tool_policy()
 
+    def _switch_studio(self, mode: str) -> None:
+        if interaction_coordinator(self).owner is not None:
+            interaction_coordinator(self).cancel()
+        if mode == "pixel":
+            self._open_raster_editor()
+        else:
+            self._return_object_canvas()
+        self.studio_actions["pixel" if self._is_raster_editor() else "vector"].setChecked(True)
+
     def _is_raster_editor(self) -> bool:
         return isinstance(self.controller.document, RasterEditDocument)
 
@@ -3487,10 +3560,15 @@ class MainWindow(QMainWindow):
         if not hasattr(self.controller, "open_raster_surface"):
             return
         pixel = self._is_raster_editor()
-        self.edit_mode.setVisible(not pixel)
+        self.edit_mode_action.setVisible(not pixel)
         self.object_properties.setEnabled(not pixel)
-        if pixel:
-            self.properties_dock.hide()
+        self.object_properties.setVisible(not pixel)
+        self.layer_panel.object_controls.setVisible(not pixel)
+        self.properties_dock.show()
+        self.layers_dock.setVisible(not pixel)
+        self.studio_actions["pixel" if pixel else "vector"].setChecked(True)
+        self.studio_label.setText("对象局部像素" if pixel else "对象画布")
+        self.inspector_tabs.setCurrentIndex(1 if pixel else 0)
         self.layer_panel.setEnabled(not pixel and not self._active_surface_is_read_only())
         self.canvas_view.show_raster_frames = not pixel and not self._active_surface_is_read_only()
         self.tool_options_panel.shape.output_combo.setVisible(False)
@@ -3505,6 +3583,13 @@ class MainWindow(QMainWindow):
         self._apply_surface_tool_policy()
 
     def _apply_surface_tool_policy(self) -> None:
+        if hasattr(self, "layer_panel"):
+            self.layer_panel.object_controls.setEnabled(
+                not self._editing_busy
+                and not self._active_surface_is_read_only()
+                and not self._is_raster_editor()
+                and self.controller.document is not None
+            )
         if not hasattr(self.controller, "open_raster_surface"):
             return
         pixel = self._is_raster_editor()
@@ -3535,6 +3620,8 @@ class MainWindow(QMainWindow):
             and not document.is_locked(node.id)
             and not self._editing_busy
         )
+        self.studio_actions["pixel"].setEnabled(pixel or self.edit_raster_action.isEnabled())
+        self.studio_actions["vector"].setEnabled(not self._editing_busy)
         self.return_objects_action.setVisible(pixel)
         self.return_objects_action.setEnabled(not self._editing_busy)
         for action in (*self.color_adjustment_actions.values(), self.clear_selected_pixels_action):
@@ -4139,6 +4226,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.settings.save_window(self)
+        self._status_timer.stop()
         self.tool_controller.active_tool.deactivate()
         runners = {self.controller.jobs, self.controller.preview_jobs}
         for session in getattr(self.controller, "sessions", ()):
@@ -4146,6 +4234,7 @@ class MainWindow(QMainWindow):
         for runner in runners:
             runner.shutdown()
         self.canvas_view.render_coordinator.dispose()
+        self.canvas_view.viewport().removeEventFilter(self.color_adjustment_controller)
         self.controller.dispose()
         event.accept()
 

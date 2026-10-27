@@ -39,6 +39,9 @@ version = { attr = "easypicture.version.__version__" }
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+easypicture = ["resources/icons/*.svg", "resources/icons/LICENSE.txt"]
+
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
 testpaths = ["../archive/validation/tests"]

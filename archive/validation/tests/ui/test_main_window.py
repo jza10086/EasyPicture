@@ -42,7 +42,7 @@ def test_right_docks_have_sidebar_background_spacing_and_cards(qtbot, tmp_path) 
     window = MainWindow(controller, settings)
     qtbot.addWidget(window)
 
-    for dock in (window.layers_dock, window.color_dock, window.properties_dock):
+    for dock in (window.layers_dock, window.properties_dock):
         assert dock.property("panelRole") == "right"
         assert "background-color: #292929" in dock.styleSheet()
         assert "border: 1px solid #151515" in dock.styleSheet()

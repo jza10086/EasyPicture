@@ -491,12 +491,11 @@ class CanvasView(QGraphicsView):
         self._apply_interaction_cursor()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            factor = self.ZOOM_STEP if event.angleDelta().y() > 0 else 1.0 / self.ZOOM_STEP
+        delta = event.angleDelta().y() or event.pixelDelta().y()
+        if delta:
+            factor = self.ZOOM_STEP ** (delta / 120.0)
             self.set_zoom(self._zoom * factor, event.position().toPoint())
-            event.accept()
-            return
-        super().wheelEvent(event)
+        event.accept()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)

@@ -276,7 +276,7 @@ class ColorAdjustmentController(QObject):
         self.sampling_changed.emit(False)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is not self._canvas.viewport() or not self._sampling:
+        if not self._sampling or watched is not self._canvas.viewport():
             return super().eventFilter(watched, event)
         if event.type() == QEvent.Type.KeyPress:
             key_event = cast(QKeyEvent, event)

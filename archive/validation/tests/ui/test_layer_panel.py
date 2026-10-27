@@ -110,7 +110,7 @@ def test_layer_edit_visibility_opacity_and_locks_round_trip(qtbot, tmp_path) -> 
     assert not document.modified
 
 
-def test_layer_rows_show_cached_pixel_preview_and_refresh_precisely(
+def test_layer_rows_show_type_icons_unaffected_by_pixels(
     qtbot,
     tmp_path,
 ) -> None:
@@ -123,7 +123,7 @@ def test_layer_rows_show_cached_pixel_preview_and_refresh_precisely(
     before = panel.model.data(index, Qt.ItemDataRole.DecorationRole)
     assert isinstance(before, QIcon)
     assert not before.isNull()
-    assert panel.list_view.iconSize() == QSize(48, 48)
+    assert panel.list_view.iconSize() == QSize(20, 20)
 
     pixels = np.zeros((256, 256, 4), dtype=np.uint8)
     pixels[:] = (230, 20, 30, 255)
@@ -134,11 +134,7 @@ def test_layer_rows_show_cached_pixel_preview_and_refresh_precisely(
     )
     after = panel.model.data(index, Qt.ItemDataRole.DecorationRole)
     assert isinstance(after, QIcon)
-    assert after.cacheKey() != before.cacheKey()
-    image = after.pixmap(QSize(48, 48)).toImage()
-    sampled = image.pixelColor(3, 8)
-    assert sampled.red() > 200
-    assert sampled.green() < 50
+    assert after.cacheKey() == before.cacheKey()
 
 
 def test_layer_buttons_and_drag_drop_reorder(qtbot, tmp_path) -> None:

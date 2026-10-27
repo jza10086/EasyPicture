@@ -73,7 +73,7 @@ def test_apply_new_layer_hides_source_one_undo_and_restores_opacity(qtbot, tmp_p
     revision = doc.revision
     window.canvas_view.set_zoom(3)
     window.ai_pixel_cleanup_action.trigger()
-    assert window.properties_stack.currentWidget() is window.ai_pixel_cleanup_panel
+    assert window.tool_details_stack.currentWidget() is window.ai_pixel_cleanup_panel
     black_palette(window)
     session = window.color_adjustment_controller
     qtbot.waitUntil(lambda: session.has_exact_result)

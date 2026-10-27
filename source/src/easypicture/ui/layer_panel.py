@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import replace
 from typing import Any
 from uuid import UUID
 
-import numpy as np
 from PySide6.QtCore import (
     QAbstractItemModel,
     QAbstractListModel,
@@ -26,11 +23,9 @@ from PySide6.QtGui import (
     QColor,
     QFocusEvent,
     QIcon,
-    QImage,
     QMouseEvent,
     QPainter,
     QPen,
-    QPixmap,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -50,31 +45,24 @@ from PySide6.QtWidgets import (
 )
 
 from easypicture.commands import DocumentCommandService
-from easypicture.diagnostics import performance_counters
 from easypicture.domain import (
     ActiveLayerChanged,
-    AffineTransform,
     Collection,
     Document,
     DocumentEvent,
     DocumentNode,
-    DocumentSizeChanged,
-    FloatRect,
     GroupListChanged,
     GroupMembersChanged,
     GroupPropertiesChanged,
-    LayerPixelsChanged,
     LayerPropertiesChanged,
-    Point,
     RasterObject,
     SvgObject,
     TextObject,
-    VectorObject,
     VectorObjectChanged,
     walk_nodes,
 )
-from easypicture.render import paint_vector_objects, rgba_tile_to_qimage
 from easypicture.ui.drag_value_spinbox import DragValueSpinBox
+from easypicture.ui.icons import icon, object_icon
 from easypicture.ui.property_binding import (
     EditTarget,
     PropertyEditSession,
@@ -83,168 +71,9 @@ from easypicture.ui.property_binding import (
 from easypicture.ui.selection_state import SelectionCoordinator, SelectionState
 
 LAYER_MIME_TYPE = "application/x-easypicture-layer-id"
-LAYER_THUMBNAIL_SIZE = 48
-_THUMBNAIL_CONTENT_SIZE = 44
+OBJECT_ICON_SIZE = 20
 _INVALID_INDEX = QModelIndex()
 type ModelIndex = QModelIndex | QPersistentModelIndex
-type ThumbnailKey = tuple[object, ...]
-
-
-def _render_layer_thumbnail(
-    layer: RasterObject,
-    document_width: int,
-    document_height: int,
-) -> QIcon:
-    performance_counters.thumbnails += 1
-    scale = min(
-        _THUMBNAIL_CONTENT_SIZE / document_width,
-        _THUMBNAIL_CONTENT_SIZE / document_height,
-    )
-    content_width = max(1, round(document_width * scale))
-    content_height = max(1, round(document_height * scale))
-    sampled = np.zeros((content_height, content_width, 4), dtype=np.uint8)
-    tile_size = layer.pixels.tile_size
-    inverse = layer.world_transform.inverse()
-    for target_y in range(content_height):
-        for target_x in range(content_width):
-            point = inverse.map_point(
-                Point(
-                    (target_x + 0.5) * document_width / content_width,
-                    (target_y + 0.5) * document_height / content_height,
-                )
-            )
-            if not 0 <= point.x < layer.size.width or not 0 <= point.y < layer.size.height:
-                continue
-            local_x, local_y = int(point.x), int(point.y)
-            tile = layer.pixels.read_tile(local_x // tile_size, local_y // tile_size)
-            sampled[target_y, target_x] = tile[local_y % tile_size, local_x % tile_size]
-
-    thumbnail = QImage(
-        LAYER_THUMBNAIL_SIZE,
-        LAYER_THUMBNAIL_SIZE,
-        QImage.Format.Format_RGBA8888_Premultiplied,
-    )
-    thumbnail.fill(QColor("#1b1b1b"))
-    left = (LAYER_THUMBNAIL_SIZE - content_width) // 2
-    top = (LAYER_THUMBNAIL_SIZE - content_height) // 2
-    painter = QPainter(thumbnail)
-    checker_size = 4
-    for y in range(0, content_height, checker_size):
-        for x in range(0, content_width, checker_size):
-            shade = 104 if (x // checker_size + y // checker_size) % 2 == 0 else 74
-            painter.fillRect(
-                left + x,
-                top + y,
-                min(checker_size, content_width - x),
-                min(checker_size, content_height - y),
-                QColor(shade, shade, shade),
-            )
-    painter.drawImage(left, top, rgba_tile_to_qimage(sampled))
-    painter.setPen(QPen(QColor("#151515"), 1.0))
-    painter.drawRect(left, top, content_width - 1, content_height - 1)
-    painter.end()
-    return QIcon(QPixmap.fromImage(thumbnail))
-
-
-def _render_raster_group_thumbnail(
-    group: Collection,
-    document_width: int,
-    document_height: int,
-) -> QIcon:
-    """Sample a mixed subtree in its authoritative order with inherited opacity."""
-    performance_counters.thumbnails += 1
-    image = QImage(
-        LAYER_THUMBNAIL_SIZE, LAYER_THUMBNAIL_SIZE, QImage.Format.Format_RGBA8888_Premultiplied
-    )
-    image.fill(QColor("#1b1b1b"))
-    painter = QPainter(image)
-    scale = min(
-        _THUMBNAIL_CONTENT_SIZE / max(1, document_width),
-        _THUMBNAIL_CONTENT_SIZE / max(1, document_height),
-    )
-    painter.translate(
-        (LAYER_THUMBNAIL_SIZE - document_width * scale) / 2,
-        (LAYER_THUMBNAIL_SIZE - document_height * scale) / 2,
-    )
-    painter.scale(scale, scale)
-
-    def draw(node: DocumentNode, opacity: float) -> None:
-        if not node.visible or node.opacity <= 0:
-            return
-        if isinstance(node, Collection):
-            for child in node.children:
-                draw(child, opacity * node.opacity)
-        elif isinstance(node, RasterObject):
-            from easypicture.render.raster_renderer import paint_raster_object
-
-            paint_raster_object(painter, node, opacity=opacity * node.opacity)
-        else:
-            paint_vector_objects(painter, (node,), group_opacity=opacity)
-
-    draw(group, 1.0)
-    painter.end()
-    return QIcon(QPixmap.fromImage(image))
-
-
-def _render_text_thumbnail(
-    objects: Sequence[VectorObject],
-    document_width: int,
-    document_height: int,
-    *,
-    group_opacity: float = 1.0,
-    normalize_single: bool = False,
-) -> QIcon:
-    thumbnail = QImage(
-        LAYER_THUMBNAIL_SIZE,
-        LAYER_THUMBNAIL_SIZE,
-        QImage.Format.Format_RGBA8888_Premultiplied,
-    )
-    thumbnail.fill(QColor("#1b1b1b"))
-    if normalize_single and len(objects) == 1 and isinstance(objects[0], TextObject):
-        source_width = max(1.0, objects[0].frame.width)
-        source_height = max(1.0, objects[0].frame.height)
-    else:
-        source_width = float(max(1, document_width))
-        source_height = float(max(1, document_height))
-    scale = min(
-        _THUMBNAIL_CONTENT_SIZE / source_width,
-        _THUMBNAIL_CONTENT_SIZE / source_height,
-    )
-    content_width = max(1, round(source_width * scale))
-    content_height = max(1, round(source_height * scale))
-    left = (LAYER_THUMBNAIL_SIZE - content_width) // 2
-    top = (LAYER_THUMBNAIL_SIZE - content_height) // 2
-    painter = QPainter(thumbnail)
-    checker_size = 4
-    for y in range(0, content_height, checker_size):
-        for x in range(0, content_width, checker_size):
-            shade = 104 if (x // checker_size + y // checker_size) % 2 == 0 else 74
-            painter.fillRect(
-                left + x,
-                top + y,
-                min(checker_size, content_width - x),
-                min(checker_size, content_height - y),
-                QColor(shade, shade, shade),
-            )
-    painter.save()
-    painter.setClipRect(left, top, content_width, content_height)
-    painter.translate(left, top)
-    painter.scale(scale, scale)
-    if normalize_single and len(objects) == 1 and isinstance(objects[0], TextObject):
-        source = objects[0]
-        normalized = replace(
-            source,
-            frame=FloatRect(0.0, 0.0, source.frame.width, source.frame.height),
-            transform=AffineTransform(),
-        )
-        paint_vector_objects(painter, (normalized,), group_opacity=group_opacity)
-    else:
-        paint_vector_objects(painter, objects, group_opacity=group_opacity)
-    painter.restore()
-    painter.setPen(QPen(QColor("#151515"), 1.0))
-    painter.drawRect(left, top, content_width - 1, content_height - 1)
-    painter.end()
-    return QIcon(QPixmap.fromImage(thumbnail))
 
 
 class LayerListModel(QAbstractListModel):
@@ -261,7 +90,6 @@ class LayerListModel(QAbstractListModel):
         super().__init__(parent)
         self.commands = commands
         self._document: Document | None = None
-        self._thumbnail_cache: OrderedDict[UUID, tuple[ThumbnailKey, QIcon]] = OrderedDict()
 
     @property
     def document(self) -> Document | None:
@@ -270,7 +98,6 @@ class LayerListModel(QAbstractListModel):
     def set_document(self, document: Document | None) -> None:
         self.beginResetModel()
         self._document = document
-        self._thumbnail_cache.clear()
         self.endResetModel()
 
     def rowCount(self, parent: ModelIndex = _INVALID_INDEX) -> int:
@@ -285,7 +112,7 @@ class LayerListModel(QAbstractListModel):
         if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
             return layer.name
         if role == Qt.ItemDataRole.DecorationRole:
-            return self._thumbnail(layer)
+            return self._type_icon(layer)
         if role == Qt.ItemDataRole.CheckStateRole:
             return Qt.CheckState.Checked if layer.visible else Qt.CheckState.Unchecked
         if role == Qt.ItemDataRole.ToolTipRole:
@@ -405,73 +232,18 @@ class LayerListModel(QAbstractListModel):
         if document is None or event.document_id != document.id:
             return
         if isinstance(event, (GroupListChanged, GroupMembersChanged)):
-            self._thumbnail_cache.clear()
             self.beginResetModel()
             self.endResetModel()
-            return
-        if isinstance(event, DocumentSizeChanged):
-            self._thumbnail_cache.clear()
-            if self.rowCount() > 0:
-                self.dataChanged.emit(
-                    self.index(0, 0),
-                    self.index(self.rowCount() - 1, 0),
-                    [Qt.ItemDataRole.DecorationRole],
-                )
-            return
-        if isinstance(event, LayerPixelsChanged) and self._document is not None:
-            self._invalidate_thumbnail(event.layer_id)
-            return
-        if isinstance(event, LayerPropertiesChanged) and self._document is not None:
+        elif isinstance(event, LayerPropertiesChanged):
             try:
-                layer = self._document.layer_by_id(event.layer_id)
+                layer = document.layer_by_id(event.layer_id)
             except ValueError:
                 return
-            if event.properties & {"size", "origin"}:
-                self._thumbnail_cache.pop(layer.id, None)
-            row = self.row_for_layer(layer)
-            index = self.index(row, 0)
+            index = self.index(self.row_for_layer(layer), 0)
             self.dataChanged.emit(index, index)
 
-    def _invalidate_thumbnail(self, layer_id: UUID) -> None:
-        if self._document is None:
-            return
-        try:
-            layer = self._document.layer_by_id(layer_id)
-        except ValueError:
-            return
-        self._thumbnail_cache.pop(layer_id, None)
-        row = self.row_for_layer(layer)
-        index = self.index(row, 0)
-        self.dataChanged.emit(
-            index,
-            index,
-            [Qt.ItemDataRole.DecorationRole],
-        )
-
-    def _thumbnail(self, layer: RasterObject) -> QIcon:
-        document = self._document
-        if document is None:
-            return QIcon()
-        key: ThumbnailKey = (
-            layer.pixels.generation,
-            document.width,
-            document.height,
-            layer.size.width,
-            layer.size.height,
-            layer.origin.x,
-            layer.origin.y,
-            layer.transform,
-        )
-        cached = self._thumbnail_cache.get(layer.id)
-        if cached is not None and cached[0] == key:
-            self._thumbnail_cache.move_to_end(layer.id)
-            return cached[1]
-        icon = _render_layer_thumbnail(layer, document.width, document.height)
-        self._thumbnail_cache[layer.id] = (key, icon)
-        self._thumbnail_cache.move_to_end(layer.id)
-        while len(self._thumbnail_cache) > 512:
-            self._thumbnail_cache.popitem(last=False)
-        return icon
+    def _type_icon(self, layer: RasterObject) -> QIcon:
+        return object_icon(layer)
 
 
 class LayerTreeModel(QAbstractItemModel):
@@ -489,7 +261,6 @@ class LayerTreeModel(QAbstractItemModel):
         super().__init__(parent)
         self.commands = commands
         self._document: Document | None = None
-        self._thumbnail_cache: OrderedDict[UUID, QIcon] = OrderedDict()
         self._root_rows: list[Any] = []
         self._child_rows: dict[UUID, list[Any]] = {}
         self._locations: dict[UUID, tuple[int, DocumentNode, UUID | None]] = {}
@@ -510,7 +281,6 @@ class LayerTreeModel(QAbstractItemModel):
             for node in walk_nodes(self._root_rows)
             if isinstance(node, Collection)
         }
-        self._thumbnail_cache.clear()
         self._reindex_rows()
         self.endResetModel()
 
@@ -551,7 +321,6 @@ class LayerTreeModel(QAbstractItemModel):
         for index in range(len(rows) - 1, -1, -1):
             if rows[index].id not in wanted:
                 self.beginRemoveRows(parent, index, index)
-                self._thumbnail_cache.pop(rows[index].id, None)
                 rows.pop(index)
                 self._reindex_rows()
                 self.endRemoveRows()
@@ -574,7 +343,6 @@ class LayerTreeModel(QAbstractItemModel):
                 self._reindex_rows()
                 new_index = self._node_index(index, node.id)
                 self.changePersistentIndex(old_index, new_index)
-                self._thumbnail_cache.pop(node.id, None)
                 self.dataChanged.emit(new_index, new_index)
 
     def _sync_structure(self) -> None:
@@ -675,7 +443,7 @@ class LayerTreeModel(QAbstractItemModel):
                 return "raster"
             return "svg" if isinstance(node, SvgObject) else "text"
         if role == Qt.ItemDataRole.DecorationRole:
-            return self._thumbnail(node)
+            return self._type_icon(node)
         if role == Qt.ItemDataRole.ToolTipRole:
             kind = (
                 "集合"
@@ -799,106 +567,41 @@ class LayerTreeModel(QAbstractItemModel):
         document = self._document
         if document is None or event.document_id != document.id:
             return
-        decoration: list[int] = [Qt.ItemDataRole.DecorationRole]
         if isinstance(event, (GroupListChanged, GroupMembersChanged)):
             self._sync_structure()
-            if isinstance(event, GroupMembersChanged):
-                self._thumbnail_cache.pop(event.group_id, None)
-                self._notify_node(event.group_id, decoration)
             return
-        if isinstance(event, DocumentSizeChanged):
-            self._thumbnail_cache.clear()
-            for root in self._roots():
-                self._notify_node(root.id, decoration)
-                for child in self._children(root):
-                    self._notify_node(child.id, decoration)
-            return
-        if isinstance(event, LayerPixelsChanged):
+        if isinstance(event, LayerPropertiesChanged):
             target_id = event.layer_id
-            appearance = True
-        elif isinstance(
-            event,
-            (LayerPropertiesChanged, VectorObjectChanged, GroupPropertiesChanged),
-        ):
-            target_id = (
-                event.layer_id
-                if isinstance(event, LayerPropertiesChanged)
-                else event.object_id
-                if isinstance(event, VectorObjectChanged)
-                else event.group_id
-            )
-            appearance = bool(event.properties - {"name", "locked", "alpha_locked"})
+        elif isinstance(event, VectorObjectChanged):
+            target_id = event.object_id
+        elif isinstance(event, GroupPropertiesChanged):
+            target_id = event.group_id
         else:
             return
-        if appearance:
-            self._thumbnail_cache.pop(target_id, None)
         self._notify_node(target_id, [])
         if isinstance(event, GroupPropertiesChanged) and "locked" in event.properties:
             try:
                 group = document.node_by_id(target_id)
             except ValueError:
-                group = None
+                return
             if isinstance(group, Collection):
                 for child in walk_nodes(group.children):
                     self._notify_node(child.id, [self.LockedRole, Qt.ItemDataRole.ToolTipRole])
-        if appearance:
-            document = self._document
-            try:
-                parent = document.parent_of(target_id) if document is not None else None
-            except ValueError:
-                parent = None
-            while parent is not None and document is not None:
-                self._thumbnail_cache.pop(parent.id, None)
-                self._notify_node(parent.id, decoration)
-                parent = document.parent_of(parent.id)
 
-    def _thumbnail(
-        self,
-        node: DocumentNode,
-    ) -> QIcon:
-        cached = self._thumbnail_cache.get(node.id)
-        if cached is not None:
-            self._thumbnail_cache.move_to_end(node.id)
-            return cached
-        document = self._document
-        if document is None:
-            return QIcon()
-        if isinstance(node, Collection):
-            icon = _render_raster_group_thumbnail(node, document.width, document.height)
-        elif isinstance(node, RasterObject):
-            icon = _render_layer_thumbnail(node, document.width, document.height)
-        else:
-            icon = _render_text_thumbnail(
-                (node,),
-                document.width,
-                document.height,
-                normalize_single=True,
-            )
-        self._thumbnail_cache[node.id] = icon
-        while len(self._thumbnail_cache) > 512:
-            self._thumbnail_cache.popitem(last=False)
-        return icon
+    def _type_icon(self, node: DocumentNode) -> QIcon:
+        return object_icon(node)
 
 
 class ObjectItemDelegate(QStyledItemDelegate):
-    """Type and inherited-lock marks are UI metadata, separate from thumbnails."""
+    """Object type icons and inherited lock marks, independent of rendered content."""
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: ModelIndex) -> None:
         content = QStyleOptionViewItem(option)
-        content.rect.adjust(0, 0, -62, 0)
+        content.rect.adjust(0, 0, -24, 0)
         super().paint(painter, content, index)
-        painter.save()
-        painter.setPen(QColor("#c0c8d2"))
-        badge = {"collection": "▱", "raster": "▦", "text": "T", "svg": "◇"}.get(
-            index.data(LayerTreeModel.NodeKindRole), ""
-        )
-        rect = QRect(option.rect.right() - 58, option.rect.y(), 28, option.rect.height())
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, badge)
         if index.data(LayerTreeModel.LockedRole):
-            lock = QRect(option.rect.right() - 24, option.rect.center().y() - 2, 9, 8)
-            painter.drawRect(lock)
-            painter.drawArc(lock.adjusted(2, -5, -2, -5), 0, 180 * 16)
-        painter.restore()
+            rect = QRect(option.rect.right() - 22, option.rect.center().y() - 8, 16, 16)
+            icon("lock").paint(painter, rect)
 
 
 class LayerTreeView(QTreeView):
@@ -1149,7 +852,7 @@ class LayerPanel(QWidget):
         self.list_view = LayerListView(commands, self)
         self.list_view.setObjectName("LayerList")
         self.list_view.setModel(self.model)
-        self.list_view.setIconSize(QSize(LAYER_THUMBNAIL_SIZE, LAYER_THUMBNAIL_SIZE))
+        self.list_view.setIconSize(QSize(OBJECT_ICON_SIZE, OBJECT_ICON_SIZE))
         self.list_view.setSpacing(2)
         self.list_view.setUniformItemSizes(True)
         self.list_view.setEditTriggers(
@@ -1162,7 +865,7 @@ class LayerPanel(QWidget):
         self.tree_model = LayerTreeModel(commands, self)
         self.tree_view = LayerTreeView(self)
         self.tree_view.setModel(self.tree_model)
-        self.tree_view.setIconSize(QSize(LAYER_THUMBNAIL_SIZE, LAYER_THUMBNAIL_SIZE))
+        self.tree_view.setIconSize(QSize(OBJECT_ICON_SIZE, OBJECT_ICON_SIZE))
         self.tree_view.hide()
 
         self.new_button = QPushButton("新建", self)
@@ -1190,9 +893,10 @@ class LayerPanel(QWidget):
 
         self.opacity_spin = DragValueSpinBox(0, 100, 100, suffix="%", parent=self)
         self.opacity_spin.setObjectName("LayerOpacity")
-        self.locked_check = QCheckBox("锁定图层", self)
+        self.locked_check = QCheckBox("锁定对象", self)
         self.alpha_locked_check = QCheckBox("锁定透明像素", self)
-        properties = QFormLayout()
+        self.object_controls = QWidget(self)
+        properties = QFormLayout(self.object_controls)
         properties.addRow("不透明度", self.opacity_spin)
         properties.addRow(self.locked_check)
         properties.addRow(self.alpha_locked_check)
@@ -1203,7 +907,7 @@ class LayerPanel(QWidget):
         layout.addWidget(self.list_view, 1)
         layout.addWidget(self.tree_view, 1)
         layout.addLayout(button_layout)
-        layout.addLayout(properties)
+        layout.addWidget(self.object_controls)
 
         self._syncing = False
         self._controls_target_id: UUID | None = None
@@ -1433,6 +1137,7 @@ class LayerPanel(QWidget):
             self.opacity_spin.setEnabled(editable)
             self.locked_check.setEnabled(node is not None and not parent_locked)
             self.alpha_locked_check.setEnabled(isinstance(node, RasterObject) and editable)
+            self.alpha_locked_check.setVisible(isinstance(node, RasterObject))
         finally:
             self._syncing = was_syncing
 

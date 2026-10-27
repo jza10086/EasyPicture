@@ -77,7 +77,7 @@ def test_outline_preview_apply_undo_and_zoom(qtbot, tmp_path):
     window.canvas_view.set_zoom(3)
     window.pixel_outline_action.trigger()
     panel, session = window.pixel_outline_panel, window.color_adjustment_controller
-    assert window.properties_stack.currentWidget() is panel
+    assert window.tool_details_stack.currentWidget() is panel
     assert session.active
     panel.outline_width.setValue(3)
     qtbot.waitUntil(lambda: session.has_exact_result)

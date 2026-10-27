@@ -861,6 +861,13 @@ class ToolOptionsPanel(QStackedWidget):
         self.object_options = QWidget(self)
         object_layout = QHBoxLayout(self.object_options)
         object_layout.setContentsMargins(4, 0, 4, 0)
+        self.ignore_transparent = QCheckBox("忽略透明像素", self.object_options)
+        self.ignore_transparent.setToolTip(
+            "点选时穿过透明区域；关闭后按对象范围选择，空栅格也可选中"
+        )
+        self.ignore_transparent.setChecked(settings.ignore_transparent_objects())
+        self.ignore_transparent.toggled.connect(settings.set_ignore_transparent_objects)
+        object_layout.addWidget(self.ignore_transparent)
         object_layout.addWidget(
             QLabel("点选或框选对象；拖动移动；Shift / Ctrl 多选", self.object_options)
         )

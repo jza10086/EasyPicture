@@ -103,7 +103,7 @@ def test_adjustment_preview_is_non_destructive_and_applies_one_command(
     assert document.revision == revision
     assert np.array_equal(document.active_layer.pixels.read_tile(0, 0), before)
     assert window.canvas_view.render_coordinator.preview_tile_count == 1
-    assert window.properties_stack.currentWidget() is panel
+    assert window.tool_details_stack.currentWidget() is panel
     assert not window.layer_panel.isEnabled()
     assert not window.undo_action.isEnabled()
     assert not window.save_action.isEnabled()
@@ -193,7 +193,7 @@ def test_all_adjustment_actions_open_right_panel_and_finish_exact_preview(
         window.color_adjustment_actions[kind].trigger()
         assert window.color_adjustment_controller.active
         assert window.color_adjustment_panel.kind is kind
-        assert window.properties_stack.currentWidget() is window.color_adjustment_panel
+        assert window.tool_details_stack.currentWidget() is window.color_adjustment_panel
         qtbot.waitUntil(
             lambda: window.color_adjustment_controller.has_exact_result,
             timeout=3000,
