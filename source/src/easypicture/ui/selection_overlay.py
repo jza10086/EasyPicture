@@ -17,9 +17,9 @@ from easypicture.domain import (
 )
 from easypicture.pixels import Rect, TileCoord
 from easypicture.ui.selection_style import (
-    DEFAULT_SELECTION_OUTLINE_COLOR,
-    DEFAULT_SELECTION_OUTLINE_WIDTH,
-    MAX_SELECTION_OUTLINE_WIDTH,
+    DEFAULT_HIGHLIGHT_OUTLINE_COLOR,
+    DEFAULT_HIGHLIGHT_OUTLINE_WIDTH,
+    MAX_HIGHLIGHT_OUTLINE_WIDTH,
 )
 
 
@@ -31,7 +31,7 @@ class SelectionOverlayItem(QGraphicsRectItem):
         document: Document,
         timer_parent: QObject,
         color: QColor | None = None,
-        width: float = DEFAULT_SELECTION_OUTLINE_WIDTH,
+        width: float = DEFAULT_HIGHLIGHT_OUTLINE_WIDTH,
     ) -> None:
         super().__init__(
             0.0,
@@ -41,9 +41,9 @@ class SelectionOverlayItem(QGraphicsRectItem):
         )
         _ = timer_parent
         self.document = document
-        self._color = QColor(color or DEFAULT_SELECTION_OUTLINE_COLOR)
+        self._color = QColor(color or DEFAULT_HIGHLIGHT_OUTLINE_COLOR)
         self._color.setAlpha(255)
-        self._width = min(float(MAX_SELECTION_OUTLINE_WIDTH), max(1.0, width))
+        self._width = min(float(MAX_HIGHLIGHT_OUTLINE_WIDTH), max(1.0, width))
         self.setZValue(9_000.0)
         self.setFlag(
             QGraphicsRectItem.GraphicsItemFlag.ItemUsesExtendedStyleOption,
@@ -102,7 +102,7 @@ class SelectionOverlayItem(QGraphicsRectItem):
     def set_style(self, color: QColor, width: float) -> None:
         resolved_color = QColor(color)
         resolved_color.setAlpha(255)
-        resolved_width = min(float(MAX_SELECTION_OUTLINE_WIDTH), max(1.0, width))
+        resolved_width = min(float(MAX_HIGHLIGHT_OUTLINE_WIDTH), max(1.0, width))
         if resolved_color == self._color and resolved_width == self._width:
             return
         self._color = resolved_color

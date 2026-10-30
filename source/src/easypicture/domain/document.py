@@ -1162,7 +1162,9 @@ class Document:
         self._emit(DocumentRevisionChanged(self.id, revision))
         return True
 
-    def apply_object_transforms(self, matrices: Mapping[UUID, AffineTransform]) -> bool:
+    def apply_object_transforms(
+        self, matrices: Mapping[UUID, AffineTransform], pivots: Mapping[UUID, Point | None]
+    ) -> bool:
         from easypicture.domain.coordinates import validate_object_transform
 
         changes: list[tuple[RasterObject | VectorObject, AffineTransform]] = []
@@ -1180,6 +1182,7 @@ class Document:
         if not changes:
             return False
         for node, matrix in changes:
+            node.transform_pivot = pivots[node.id]
             node.transform = matrix
             if not isinstance(node, RasterObject):
                 node.record_change()

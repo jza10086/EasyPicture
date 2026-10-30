@@ -16,7 +16,6 @@ from PySide6.QtGui import (
     QKeyEvent,
     QMouseEvent,
     QPainterPath,
-    QPen,
     QPolygonF,
 )
 from PySide6.QtWidgets import (
@@ -896,9 +895,7 @@ class TransformTool:
         polygon = QGraphicsPolygonItem(
             QPolygonF([QPointF(point.x, point.y) for point in session.corners])
         )
-        pen = QPen(QColor("#f28c28"))
-        pen.setCosmetic(True)
-        pen.setWidthF(1.25)
+        pen = context.canvas.highlight_pen()
         polygon.setPen(pen)
         polygon.setBrush(Qt.BrushStyle.NoBrush)
         context.overlays.add(polygon)
@@ -933,12 +930,13 @@ class TransformTool:
                 + 135.0
             )
             context.overlays.add(arrow)
-        pivot_item = QGraphicsEllipseItem(-5.0, -5.0, 10.0, 10.0)
+        radius = context.canvas.center_marker_radius
+        pivot_item = QGraphicsEllipseItem(-radius, -radius, radius * 2, radius * 2)
         pivot_item.setFlag(
             QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations,
             True,
         )
-        pivot_item.setPen(pen)
+        pivot_item.setPen(context.canvas.center_marker_pen())
         pivot_item.setBrush(Qt.BrushStyle.NoBrush)
         pivot_item.setPos(session.pivot.x, session.pivot.y)
         context.overlays.add(pivot_item)

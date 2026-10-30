@@ -1218,9 +1218,7 @@ class ShapeTool:
         if self._context is None:
             return
         item = QGraphicsPathItem(path)
-        pen = QPen(_ORANGE)
-        pen.setCosmetic(True)
-        pen.setWidthF(1.0)
+        pen = self._context.canvas.highlight_pen()
         if miter_join:
             pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         item.setPen(pen)

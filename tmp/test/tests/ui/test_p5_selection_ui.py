@@ -103,14 +103,14 @@ def test_selection_menu_actions_and_enablement(qtbot, tmp_path) -> None:
     assert not window.tool_options_panel.rectangle_selection.deselect_button.isEnabled()
 
 
-def test_selection_outline_style_updates_without_modifying_document(qtbot, tmp_path) -> None:
+def test_highlight_outline_style_updates_without_modifying_document(qtbot, tmp_path) -> None:
     controller, window = _window(qtbot, tmp_path)
     document = controller.document
     overlay = window.canvas_view._selection_overlay
     assert document is not None
     assert overlay is not None
 
-    window.canvas_view.set_selection_outline_style(QColor("#35a7ff"), 5)
+    window.canvas_view.set_highlight_outline_style(QColor("#35a7ff"), 5)
 
     assert overlay.outline_color.name() == "#35a7ff"
     assert overlay.outline_width == 5.0
@@ -128,10 +128,10 @@ def test_selection_preferences_use_drag_value_input(qtbot) -> None:
     )
     qtbot.addWidget(dialog)
 
-    assert isinstance(dialog.selection_width_spin, DragValueSpinBox)
-    assert dialog.selection_width_spin.drag_minimum == 1
-    assert dialog.selection_width_spin.drag_maximum == 8
-    assert dialog.selection_width == 3
+    assert isinstance(dialog.highlight_width_spin, DragValueSpinBox)
+    assert dialog.highlight_width_spin.drag_minimum == 1
+    assert dialog.highlight_width_spin.drag_maximum == 8
+    assert dialog.highlight_width == 3
     assert dialog.render_backend is RenderBackendKind.SOFTWARE
     assert dialog.numeric_drag_sensitivity == pytest.approx(0.02)
     assert dialog.numeric_fine_drag_sensitivity == pytest.approx(0.0005)
@@ -232,7 +232,7 @@ def test_magic_wand_settings_round_trip(tmp_path) -> None:
     assert restored.selection_combine_mode() is SelectionCombineMode.INTERSECT
 
 
-def test_full_canvas_selection_outline_has_no_internal_tile_seams(qtbot) -> None:
+def test_full_canvas_highlight_outline_has_no_internal_tile_seams(qtbot) -> None:
     _ = qtbot
     document = Document.create(600, 600)
     for coord, tile in select_all_candidate(document.size).items():

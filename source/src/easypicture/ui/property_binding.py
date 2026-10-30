@@ -76,6 +76,10 @@ class PropertyEditSession[T]:
             return self._commit(candidate)
         return False
 
+    def reject(self) -> None:
+        """Keep the last valid preview, but refuse to commit invalid current input."""
+        self._valid = False
+
     def cancel(self) -> None:
         self._reset()
         self._clear()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import numpy as np
@@ -20,6 +20,7 @@ from easypicture.domain import (
     DocumentNode,
     FloatRect,
     PixelPoint,
+    Point,
     RasterObject,
     Size,
     SpriteAnimation,
@@ -239,15 +240,23 @@ class _ObjectTransformsCommand(_DocumentCommand):
         document: Document,
         before: dict[UUID, AffineTransform],
         after: dict[UUID, AffineTransform],
+        delta: AffineTransform,
     ) -> None:
         super().__init__(document, "变换对象")
         self.before, self.after = before, after
+        self.before_pivots: dict[UUID, Point | None] = {}
+        self.after_pivots: dict[UUID, Point | None] = {}
+        for key in before:
+            node = cast(RasterObject | VectorObject, document.node_by_id(key))
+            pivot = node.transform_pivot
+            self.before_pivots[key] = pivot
+            self.after_pivots[key] = None if pivot is None else delta.map_point(pivot)
 
     def redo(self) -> None:
-        self.document.apply_object_transforms(self.after)
+        self.document.apply_object_transforms(self.after, self.after_pivots)
 
     def undo(self) -> None:
-        self.document.apply_object_transforms(self.before)
+        self.document.apply_object_transforms(self.before, self.before_pivots)
 
 
 class _MoveNodeCommand(_DocumentCommand):
@@ -1945,7 +1954,9 @@ class DocumentCommandService:
                     after[node.id] = matrix
         except ValueError:
             return False
-        return before != after and self._push(_ObjectTransformsCommand(document, before, after))
+        return before != after and self._push(
+            _ObjectTransformsCommand(document, before, after, delta)
+        )
 
     def move_node(self, node_id: UUID, parent_id: UUID | None, index: int) -> bool:
         document = self._require_document()

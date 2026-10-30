@@ -50,9 +50,9 @@ from easypicture.ui.canvas_item import CanvasBoundsItem
 from easypicture.ui.pointer_backend import pointer_backend
 from easypicture.ui.selection_overlay import SelectionOverlayItem
 from easypicture.ui.selection_style import (
-    DEFAULT_SELECTION_OUTLINE_COLOR,
-    DEFAULT_SELECTION_OUTLINE_WIDTH,
-    MAX_SELECTION_OUTLINE_WIDTH,
+    DEFAULT_HIGHLIGHT_OUTLINE_COLOR,
+    DEFAULT_HIGHLIGHT_OUTLINE_WIDTH,
+    MAX_HIGHLIGHT_OUTLINE_WIDTH,
 )
 from easypicture.ui.sprite_grid_overlay import SpriteGridOverlayItem
 
@@ -123,8 +123,12 @@ class CanvasView(QGraphicsView):
         self._sprite_grid_overlay: SpriteGridOverlayItem | None = None
         self._pixel_grid_visible = False
         self._sprite_grid_visible = False
-        self._selection_outline_color = QColor(DEFAULT_SELECTION_OUTLINE_COLOR)
-        self._selection_outline_width = float(DEFAULT_SELECTION_OUTLINE_WIDTH)
+        self._highlight_outline_color = QColor(DEFAULT_HIGHLIGHT_OUTLINE_COLOR)
+        self._highlight_outline_width = float(DEFAULT_HIGHLIGHT_OUTLINE_WIDTH)
+        self._center_marker_color = QColor(DEFAULT_HIGHLIGHT_OUTLINE_COLOR)
+        self._center_marker_radius = 7.5
+        self._selection_pivot: Point | None = None
+        self._transform_axes: tuple[Point, AffineTransform, str | None] | None = None
         self._zoom = 1.0
         self._space_pressed = False
         self._panning = False
@@ -159,19 +163,48 @@ class CanvasView(QGraphicsView):
     def set_tool_controller(self, controller: ToolController) -> None:
         self._tool_controller = controller
 
-    def set_selection_outline_style(self, color: QColor, width: float) -> None:
+    def set_highlight_outline_style(self, color: QColor, width: float) -> None:
         resolved_color = QColor(color)
         resolved_color.setAlpha(255)
-        self._selection_outline_color = resolved_color
-        self._selection_outline_width = min(
-            float(MAX_SELECTION_OUTLINE_WIDTH),
+        self._highlight_outline_color = resolved_color
+        self._highlight_outline_width = min(
+            float(MAX_HIGHLIGHT_OUTLINE_WIDTH),
             max(1.0, width),
         )
         if self._selection_overlay is not None:
             self._selection_overlay.set_style(
-                self._selection_outline_color,
-                self._selection_outline_width,
+                self._highlight_outline_color,
+                self._highlight_outline_width,
             )
+        self.viewport().update()
+
+    def highlight_pen(self) -> QPen:
+        pen = QPen(self._highlight_outline_color, self._highlight_outline_width)
+        pen.setCosmetic(True)
+        pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+        return pen
+
+    def set_center_marker_style(self, color: QColor, radius: float) -> None:
+        self._center_marker_color = QColor(color)
+        self._center_marker_radius = radius
+        self.viewport().update()
+
+    @property
+    def center_marker_radius(self) -> float:
+        return self._center_marker_radius
+
+    def center_marker_pen(self) -> QPen:
+        pen = QPen(self._center_marker_color, 1.0)
+        pen.setCosmetic(True)
+        return pen
+
+    def set_selection_pivot(self, pivot: Point | None) -> None:
+        self._selection_pivot = pivot
+        self.viewport().update()
+
+    def set_transform_axes(self, axes: tuple[Point, AffineTransform, str | None] | None) -> None:
+        self._transform_axes = axes
+        self.viewport().update()
 
     def set_sprite_grid_visibility(self, *, pixel_grid: bool, cell_grid: bool) -> None:
         self._pixel_grid_visible = bool(pixel_grid)
@@ -378,8 +411,8 @@ class CanvasView(QGraphicsView):
         self._selection_overlay = SelectionOverlayItem(
             document,
             self,
-            self._selection_outline_color,
-            self._selection_outline_width,
+            self._highlight_outline_color,
+            self._highlight_outline_width,
         )
         self.scene().addItem(self._selection_overlay)
         self._sprite_grid_overlay = SpriteGridOverlayItem(document, lambda: self._zoom)
@@ -672,13 +705,39 @@ class CanvasView(QGraphicsView):
             painter.restore()
         if self._object_selection:
             painter.save()
-            pen = QPen(QColor("#ff9b38"), 1)
-            pen.setCosmetic(True)
-            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
-            painter.setPen(pen)
+            painter.setPen(self.highlight_pen())
             painter.setBrush(Qt.BrushStyle.NoBrush)
             for path in self.render_coordinator.selection_paths(self._object_selection):
                 painter.drawPath(path)
+            mapping = painter.worldTransform()
+            painter.resetTransform()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+            painter.setPen(QPen(self._center_marker_color, 1.0))
+            centers = list(self.render_coordinator.selection_centers(self._object_selection))
+            if len(centers) > 1 and self._selection_pivot is not None:
+                centers.append(self._selection_pivot)
+            for center in centers:
+                painter.drawEllipse(
+                    mapping.map(QPointF(center.x, center.y)),
+                    self._center_marker_radius,
+                    self._center_marker_radius,
+                )
+            if self._transform_axes is not None:
+                pivot, basis, axis = self._transform_axes
+                origin = mapping.map(QPointF(pivot.x, pivot.y))
+                for name, direction, color in (
+                    ("x", Point(basis.a, basis.b), QColor("#e86363")),
+                    ("y", Point(basis.c, basis.d), QColor("#75c878")),
+                ):
+                    if axis is not None and name != axis:
+                        continue
+                    painter.setPen(QPen(color, 1.5))
+                    vector = (
+                        mapping.map(QPointF(pivot.x + direction.x, pivot.y + direction.y)) - origin
+                    )
+                    length = (vector.x() ** 2 + vector.y() ** 2) ** 0.5
+                    vector *= 100.0 / length
+                    painter.drawLine(origin - vector, origin + vector)
             painter.restore()
         if self._tile_heatmap_segments:
             painter.save()

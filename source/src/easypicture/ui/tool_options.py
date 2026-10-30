@@ -39,6 +39,7 @@ from easypicture.ui.numeric_ranges import (
     SIGNED_COORDINATE_RANGE,
     STROKE_WIDTH_RANGE,
     TRANSFORM_DIMENSION_RANGE,
+    sync_spatial_range,
 )
 from easypicture.ui.property_blocks import FillStrokeFields, choose_property_color
 from easypicture.ui.settings import AppSettings
@@ -936,6 +937,29 @@ class ToolOptionsPanel(QStackedWidget):
             self.setCurrentWidget(self.shape)
         elif tool_name == "text":
             self.setCurrentWidget(self.text)
+
+    def set_canvas_size(self, width: int, height: int) -> None:
+        for field, extent, dimension in (
+            (self.crop.x_spin, width, False),
+            (self.crop.y_spin, height, False),
+            (self.crop.width_spin, width, True),
+            (self.crop.height_spin, height, True),
+        ):
+            field.syncPropertyRange(
+                1 if dimension else -extent,
+                extent,
+                manual_minimum=1 if dimension else -32768,
+                manual_maximum=8192 if dimension else 32768,
+            )
+        for dimension_field, extent in (
+            (self.transform.width_spin, width),
+            (self.transform.height_spin, height),
+        ):
+            sync_spatial_range(dimension_field, extent, dimension=True)
+        edge = max(1.0, min(width, height) / 4)
+        self.shape.stroke_width_spin.syncPropertyRange(
+            0, edge, manual_minimum=0, manual_maximum=8192
+        )
 
     def set_selection_active(self, active: bool) -> None:
         self.rectangle_selection.deselect_button.setEnabled(active)

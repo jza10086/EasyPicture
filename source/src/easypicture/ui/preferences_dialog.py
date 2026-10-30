@@ -22,8 +22,8 @@ from easypicture.ui.drag_value_spinbox import (
     DragValueSpinBox,
 )
 from easypicture.ui.selection_style import (
-    DEFAULT_SELECTION_OUTLINE_WIDTH,
-    MAX_SELECTION_OUTLINE_WIDTH,
+    DEFAULT_HIGHLIGHT_OUTLINE_WIDTH,
+    MAX_HIGHLIGHT_OUTLINE_WIDTH,
 )
 from easypicture.ui.settings import (
     DEFAULT_NUMERIC_DRAG_SENSITIVITY,
@@ -38,8 +38,8 @@ class PreferencesDialog(QDialog):
 
     def __init__(
         self,
-        selection_color: QColor,
-        selection_width: int,
+        highlight_color: QColor,
+        highlight_width: int,
         render_backend: RenderBackendKind = RenderBackendKind.AUTO,
         render_diagnostics: CanvasRenderDiagnostics | None = None,
         parent: QWidget | None = None,
@@ -47,27 +47,49 @@ class PreferencesDialog(QDialog):
         numeric_drag_sensitivity: float = DEFAULT_NUMERIC_DRAG_SENSITIVITY,
         numeric_fine_drag_sensitivity: float = DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY,
         pixel_exact_coordinates: bool = False,
+        center_color: QColor | None = None,
+        center_radius: float = 7.5,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("全局设置")
         self.setModal(True)
-        self._selection_color = QColor(selection_color)
-        self._selection_color.setAlpha(255)
+        self._highlight_color = QColor(highlight_color)
+        self._highlight_color.setAlpha(255)
 
-        self.selection_color_button = QPushButton(self)
-        self.selection_color_button.setToolTip("设置选区轮廓颜色")
-        self.selection_color_button.clicked.connect(self._choose_selection_color)
+        self.highlight_color_button = QPushButton(self)
+        self.highlight_color_button.setToolTip("设置高亮边框颜色")
+        self.highlight_color_button.clicked.connect(self._choose_highlight_color)
         self._refresh_color_button()
 
-        self.selection_width_spin = DragValueSpinBox(
+        self.highlight_width_spin = DragValueSpinBox(
             1,
-            MAX_SELECTION_OUTLINE_WIDTH,
-            selection_width,
-            default_value=DEFAULT_SELECTION_OUTLINE_WIDTH,
+            MAX_HIGHLIGHT_OUTLINE_WIDTH,
+            highlight_width,
+            default_value=DEFAULT_HIGHLIGHT_OUTLINE_WIDTH,
             suffix=" px",
             parent=self,
         )
-        self.selection_width_spin.setMinimumWidth(120)
+        self.highlight_width_spin.setMinimumWidth(120)
+        self._center_color = QColor(center_color or highlight_color)
+        self.center_color_button = QPushButton("选择中心颜色", self)
+        self.center_color_button.setText(self._center_color.name().upper())
+        self.center_color_button.clicked.connect(self._choose_center_color)
+        self.center_color_link = QCheckBox("跟随高亮边框颜色", self)
+        self.center_color_link.setChecked(center_color is None)
+        self.center_color_button.setEnabled(center_color is not None)
+        self.center_color_link.toggled.connect(
+            lambda linked: self.center_color_button.setEnabled(not linked)
+        )
+        self.center_radius_spin = DragValueDoubleSpinBox(
+            0.5,
+            30.0,
+            center_radius,
+            manual_minimum=0.5,
+            manual_maximum=100.0,
+            default_value=7.5,
+            suffix=" px",
+            parent=self,
+        )
         sensitivity_minimum = MIN_NUMERIC_DRAG_SENSITIVITY * 100.0
         sensitivity_maximum = MAX_NUMERIC_DRAG_SENSITIVITY * 100.0
         self.numeric_drag_sensitivity_spin = DragValueDoubleSpinBox(
@@ -127,8 +149,11 @@ class PreferencesDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("像素精确坐标", self.pixel_exact_coordinates_check)
-        form.addRow("选区颜色", self.selection_color_button)
-        form.addRow("选区粗细", self.selection_width_spin)
+        form.addRow("高亮边框颜色", self.highlight_color_button)
+        form.addRow("高亮边框粗细", self.highlight_width_spin)
+        form.addRow("中心颜色", self.center_color_button)
+        form.addRow(self.center_color_link)
+        form.addRow("中心圆半径", self.center_radius_spin)
         form.addRow("数值拖动灵敏度", self.numeric_drag_sensitivity_spin)
         form.addRow("Shift 精细灵敏度", self.numeric_fine_drag_sensitivity_spin)
         form.addRow("渲染后端", self.render_backend_combo)
@@ -147,12 +172,12 @@ class PreferencesDialog(QDialog):
         layout.addWidget(buttons)
 
     @property
-    def selection_color(self) -> QColor:
-        return QColor(self._selection_color)
+    def highlight_color(self) -> QColor:
+        return QColor(self._highlight_color)
 
     @property
-    def selection_width(self) -> int:
-        return self.selection_width_spin.value()
+    def highlight_width(self) -> int:
+        return self.highlight_width_spin.value()
 
     @property
     def render_backend(self) -> RenderBackendKind:
@@ -174,23 +199,37 @@ class PreferencesDialog(QDialog):
     def pixel_exact_coordinates(self) -> bool:
         return self.pixel_exact_coordinates_check.isChecked()
 
-    def _choose_selection_color(self) -> None:
+    @property
+    def center_color(self) -> QColor | None:
+        return None if self.center_color_link.isChecked() else QColor(self._center_color)
+
+    @property
+    def center_radius(self) -> float:
+        return self.center_radius_spin.value()
+
+    def _choose_center_color(self) -> None:
+        color = QColorDialog.getColor(self._center_color, self, "选择中心颜色")
+        if color.isValid():
+            self._center_color = color
+            self.center_color_button.setText(color.name().upper())
+
+    def _choose_highlight_color(self) -> None:
         color = QColorDialog.getColor(
-            self._selection_color,
+            self._highlight_color,
             self,
-            "选择选区轮廓颜色",
+            "选择高亮边框颜色",
         )
         if not color.isValid():
             return
         color.setAlpha(255)
-        self._selection_color = color
+        self._highlight_color = color
         self._refresh_color_button()
 
     def _refresh_color_button(self) -> None:
-        value = self._selection_color.name(QColor.NameFormat.HexRgb).upper()
-        foreground = "#111111" if self._selection_color.lightness() >= 145 else "#F2F2F2"
-        self.selection_color_button.setText(value)
-        self.selection_color_button.setStyleSheet(
+        value = self._highlight_color.name(QColor.NameFormat.HexRgb).upper()
+        foreground = "#111111" if self._highlight_color.lightness() >= 145 else "#F2F2F2"
+        self.highlight_color_button.setText(value)
+        self.highlight_color_button.setStyleSheet(
             "QPushButton {"
             f"background-color: {value};"
             f"color: {foreground};"

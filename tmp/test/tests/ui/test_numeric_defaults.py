@@ -146,10 +146,18 @@ def test_svg_default_change_is_exactly_one_undoable_edit(qtbot):
         qtbot,
         SvgRectGeometry(8, 5, 20, 10),
     )
+    from easypicture.ui.object_properties import ObjectTransformBlock
+    from easypicture.ui.selection_state import SelectionCoordinator
+
+    selection = SelectionCoordinator()
+    selection.bind(document)
+    selection.select((live.id,), live.id)
+    block = ObjectTransformBlock(commands, lambda: document, selection)
+    qtbot.addWidget(block)
     initial = live.transform
-    panel.x_spin.resetToDefault()
+    block.fields["x"].resetToDefault()
     assert commands.undo_stack.count() == 1
-    assert panel.x_spin.value() == 0
+    assert block.fields["x"].value() == 0
     commands.undo_stack.undo()
     assert document.vector_object_by_id(live.id)[1].transform == initial
 

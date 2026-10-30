@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import ceil
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPen
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QGraphicsRectItem
 
 from easypicture.domain import AffineTransform, RasterObject, Size
@@ -59,8 +59,7 @@ class RasterObjectTool(NullTool):
         self._start = QPointF(point.x, point.y)
         self._document_id, self._revision = document.id, document.revision
         self._rect = QGraphicsRectItem()
-        pen = QPen(QColor("#69b9ff"))
-        pen.setCosmetic(True)
+        pen = context.canvas.highlight_pen()
         self._rect.setPen(pen)
         context.overlays.add(self._rect)
         return True

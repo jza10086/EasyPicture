@@ -19,7 +19,7 @@ def test_settings_round_trip_size_and_colors(tmp_path) -> None:
     first.set_last_document_size(Size(1234, 567))
     first.set_foreground_color(QColor("#123456"))
     first.set_background_color(QColor("#abcdef"))
-    first.set_selection_outline_style(QColor("#35a7ff"), 4)
+    first.set_highlight_outline_style(QColor("#35a7ff"), 4)
     first.set_render_backend(RenderBackendKind.SOFTWARE)
     first.set_numeric_drag_sensitivity(0.02, 0.0005)
     first.sync()
@@ -29,8 +29,8 @@ def test_settings_round_trip_size_and_colors(tmp_path) -> None:
     assert second.last_document_size() == Size(1234, 567)
     assert second.foreground_color().name() == "#123456"
     assert second.background_color().name() == "#abcdef"
-    assert second.selection_outline_color().name() == "#35a7ff"
-    assert second.selection_outline_width() == 4
+    assert second.highlight_outline_color().name() == "#35a7ff"
+    assert second.highlight_outline_width() == 4
     assert second.render_backend() is RenderBackendKind.SOFTWARE
     assert second.numeric_drag_sensitivity() == 0.02
     assert second.numeric_fine_drag_sensitivity() == 0.0005
@@ -80,8 +80,8 @@ def test_invalid_settings_fall_back_to_defaults(tmp_path) -> None:
     settings._settings.setValue("new_document/width", 0)  # noqa: SLF001
     settings._settings.setValue("new_document/height", 9000)  # noqa: SLF001
     settings._settings.setValue("colors/foreground", "invalid")  # noqa: SLF001
-    settings._settings.setValue("selection/outline_color", "invalid")  # noqa: SLF001
-    settings._settings.setValue("selection/outline_width", 99)  # noqa: SLF001
+    settings._settings.setValue("highlight/outline_color", "invalid")  # noqa: SLF001
+    settings._settings.setValue("highlight/outline_width", 99)  # noqa: SLF001
     settings._settings.setValue("render/backend", "unknown")  # noqa: SLF001
     settings._settings.setValue("ui/numeric_drag_sensitivity", 99)  # noqa: SLF001
     settings._settings.setValue(  # noqa: SLF001
@@ -91,8 +91,8 @@ def test_invalid_settings_fall_back_to_defaults(tmp_path) -> None:
 
     assert settings.last_document_size() == Size(1920, 1080)
     assert settings.foreground_color().name() == "#000000"
-    assert settings.selection_outline_color().name() == "#f28c28"
-    assert settings.selection_outline_width() == 8
+    assert settings.highlight_outline_color().name() == "#f28c28"
+    assert settings.highlight_outline_width() == 8
     assert settings.render_backend() is RenderBackendKind.AUTO
     assert settings.numeric_drag_sensitivity() == 0.1
     assert settings.numeric_fine_drag_sensitivity() == 0.0001
@@ -240,3 +240,20 @@ def test_window_restore_clamps_tiny_offscreen_geometry(qtbot, tmp_path) -> None:
     assert second.width() >= 800
     assert second.height() >= 600
     assert available.contains(second.frameGeometry().center())
+
+
+def test_center_marker_settings_follow_outline_until_color_override(tmp_path):
+    path = str(tmp_path / "center-settings.ini")
+    settings = make_settings(path)
+    assert settings.center_marker_radius() == 7.5
+    assert settings.center_color_linked()
+    settings.set_highlight_outline_style(QColor("#2468ab"), 3)
+    assert settings.center_marker_color().name() == "#2468ab"
+    settings.set_center_marker_style(QColor("#aabbcc"), 12.5)
+    settings.sync()
+    restored = make_settings(path)
+    assert restored.center_marker_radius() == 12.5
+    assert restored.center_marker_color().name() == "#aabbcc"
+    assert not restored.center_color_linked()
+    restored.set_center_marker_style(None, 7.5)
+    assert restored.center_marker_color() == restored.highlight_outline_color()

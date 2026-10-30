@@ -51,6 +51,7 @@ from easypicture.domain import (
     Document,
     DocumentEvent,
     DocumentKind,
+    DocumentSizeChanged,
     GroupListChanged,
     GroupMembersChanged,
     PixelPoint,
@@ -313,9 +314,13 @@ class MainWindow(QMainWindow):
             self,
             render_backend=render_backend or self.settings.render_backend(),
         )
-        self.canvas_view.set_selection_outline_style(
-            self.settings.selection_outline_color(),
-            self.settings.selection_outline_width(),
+        self.canvas_view.set_highlight_outline_style(
+            self.settings.highlight_outline_color(),
+            self.settings.highlight_outline_width(),
+        )
+        self.canvas_view.set_center_marker_style(
+            self.settings.center_marker_color(),
+            self.settings.center_marker_radius(),
         )
         self.canvas_view.set_sprite_grid_visibility(
             pixel_grid=self.settings.pixel_grid_visible(),
@@ -627,6 +632,13 @@ class MainWindow(QMainWindow):
         self.tool_options.setObjectName("ToolOptionsToolbar")
         self.tool_options_panel = ToolOptionsPanel(self.settings, self.tool_options)
         self.tool_options.addWidget(self.tool_options_panel)
+        self.transform_orientation = QComboBox(self.tool_options)
+        self.transform_orientation.addItem("全局坐标", "global")
+        self.transform_orientation.addItem("局部坐标", "local")
+        self.transform_orientation.setToolTip(
+            "G/S/R 的坐标轴方向；局部方向取活动对象。X/Y 连按切换另一坐标系，L 切换全局/局部。"
+        )
+        self.transform_orientation_action = self.tool_options.addWidget(self.transform_orientation)
         self.edit_mode = QComboBox(self.tool_options)
         for title, mode in (
             ("对象操作", EditMode.OBJECT),
@@ -856,6 +868,10 @@ class MainWindow(QMainWindow):
         self.object_properties.preview_changed.connect(
             self.canvas_view.render_coordinator.set_object_transform_preview
         )
+        self.object_properties.center_preview_changed.connect(
+            self.canvas_view.render_coordinator.set_object_center_preview
+        )
+        self.object_properties.pivot_changed.connect(self.canvas_view.set_selection_pivot)
         self.object_properties.preview_cleared.connect(
             self.canvas_view.render_coordinator.clear_object_transform_preview
         )
@@ -1203,7 +1219,12 @@ class MainWindow(QMainWindow):
         point = self.canvas_view.viewport_to_document(
             self.canvas_view.viewport().mapFromGlobal(pointer_backend().position())
         )
-        if tool.begin_transform(mode, point, self.object_properties.transform_pivot()):
+        if tool.begin_transform(
+            mode,
+            point,
+            self.object_properties.transform_pivot(),
+            str(self.transform_orientation.currentData()),
+        ):
             self.canvas_view.setFocus()
             self._show_operation_status(
                 "G 移动 / S 缩放 / R 旋转 · X/Y 轴约束 · Shift 精调 · "
@@ -1892,7 +1913,15 @@ class MainWindow(QMainWindow):
             self._geometry_progress.deleteLater()
             self._geometry_progress = None
 
+    def _sync_canvas_numeric_ranges(self, document: Document) -> None:
+        self.shape_properties.set_canvas_size(document.width, document.height)
+        self.transform_properties.set_canvas_size(document.width, document.height)
+        self.tool_options_panel.set_canvas_size(document.width, document.height)
+        self.object_properties.refresh()
+
     def _on_document_changed(self, document: Document | None) -> None:
+        if document is not None:
+            self._sync_canvas_numeric_ranges(document)
         interaction_coordinator(self).cancel()
         if hasattr(self, "text_properties"):
             self.text_properties.set_object(None)
@@ -3402,6 +3431,7 @@ class MainWindow(QMainWindow):
             self.tool_details_action.setEnabled(False)
 
     def _on_layer_node_selected(self, node: object) -> None:
+        self.object_properties.refresh()
         from easypicture.domain import TextObject
 
         self._selected_vector_object = isinstance(node, (TextObject, SvgObject))
@@ -3664,6 +3694,7 @@ class MainWindow(QMainWindow):
         self.edit_mode_action.setVisible(not pixel)
         self.object_properties.setEnabled(not pixel)
         self.object_properties.setVisible(not pixel)
+        self.transform_orientation_action.setVisible(not pixel)
         self.layer_panel.object_controls.setVisible(not pixel)
         self.properties_dock.show()
         self.layers_dock.setVisible(not pixel)
@@ -3884,20 +3915,28 @@ class MainWindow(QMainWindow):
 
     def _show_preferences(self) -> None:
         dialog = PreferencesDialog(
-            self.settings.selection_outline_color(),
-            self.settings.selection_outline_width(),
+            self.settings.highlight_outline_color(),
+            self.settings.highlight_outline_width(),
             self.settings.render_backend(),
             self.canvas_view.render_coordinator.diagnostics,
             self,
             numeric_drag_sensitivity=self.settings.numeric_drag_sensitivity(),
             numeric_fine_drag_sensitivity=(self.settings.numeric_fine_drag_sensitivity()),
             pixel_exact_coordinates=self.settings.pixel_exact_coordinates(),
+            center_color=None
+            if self.settings.center_color_linked()
+            else self.settings.center_marker_color(),
+            center_radius=self.settings.center_marker_radius(),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        self.settings.set_selection_outline_style(
-            dialog.selection_color,
-            dialog.selection_width,
+        self.settings.set_highlight_outline_style(
+            dialog.highlight_color,
+            dialog.highlight_width,
+        )
+        self.settings.set_center_marker_style(dialog.center_color, dialog.center_radius)
+        self.canvas_view.set_center_marker_style(
+            dialog.center_color or dialog.highlight_color, dialog.center_radius
         )
         self.settings.set_render_backend(dialog.render_backend)
         self.settings.set_numeric_drag_sensitivity(
@@ -3911,9 +3950,9 @@ class MainWindow(QMainWindow):
             dialog.numeric_drag_sensitivity,
             dialog.numeric_fine_drag_sensitivity,
         )
-        self.canvas_view.set_selection_outline_style(
-            dialog.selection_color,
-            dialog.selection_width,
+        self.canvas_view.set_highlight_outline_style(
+            dialog.highlight_color,
+            dialog.highlight_width,
         )
 
     def _show_about(self) -> None:
@@ -3998,6 +4037,8 @@ class MainWindow(QMainWindow):
             else None
         )
         self.layer_panel.handle_event(event)
+        if isinstance(event, DocumentSizeChanged) and self.controller.document is not None:
+            self._sync_canvas_numeric_ranges(self.controller.document)
         if tree_reset_event:
             # Restore once in the same call stack so the reset cannot be
             # painted as a collapsed frame, then repeat on the next event
@@ -4345,6 +4386,8 @@ class MainWindow(QMainWindow):
             runner.shutdown()
         self.canvas_view.render_coordinator.dispose()
         self.canvas_view.viewport().removeEventFilter(self.color_adjustment_controller)
+        self.text_properties.set_object(None)
+        self.svg_properties.set_object(None)
         self.controller.dispose()
         event.accept()
 

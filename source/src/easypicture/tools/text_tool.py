@@ -14,7 +14,6 @@ from PySide6.QtGui import (
     QKeyEvent,
     QMouseEvent,
     QPainterPath,
-    QPen,
     QPolygonF,
 )
 from PySide6.QtWidgets import (
@@ -280,7 +279,7 @@ class TextTool:
             return
         if self._overlay_rect is None:
             self._overlay_rect = QGraphicsRectItem()
-            pen = QPen(QColor("#ff8a00"), 1.0)
+            pen = self._context.canvas.highlight_pen()
             pen.setCosmetic(True)
             self._overlay_rect.setPen(pen)
             self._context.overlays.add(self._overlay_rect)
@@ -633,7 +632,7 @@ class TextTransformTool:
         points = self._frame_handle_points(text_object)
         if self._outline is None:
             self._outline = QGraphicsPolygonItem()
-            outline_pen = QPen(QColor("#ff8a00"), 1.0)
+            outline_pen = context.canvas.highlight_pen()
             outline_pen.setCosmetic(True)
             self._outline.setPen(outline_pen)
             self._outline.setBrush(Qt.BrushStyle.NoBrush)
@@ -643,7 +642,7 @@ class TextTransformTool:
         )
         while len(self._handles) < 8:
             handle = QGraphicsRectItem(-4.0, -4.0, 8.0, 8.0)
-            handle.setPen(QPen(QColor("#ff8a00"), 1.0))
+            handle.setPen(context.canvas.highlight_pen())
             handle.setBrush(QColor("#1b1b1b"))
             handle.setFlag(
                 QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations,
@@ -655,8 +654,9 @@ class TextTransformTool:
             handle.setPos(point.x, point.y)
         center = self._center(text_object)
         if self._pivot is None:
-            self._pivot = QGraphicsEllipseItem(-4.0, -4.0, 8.0, 8.0)
-            pivot_pen = QPen(QColor("#ff8a00"), 1.0)
+            radius = context.canvas.center_marker_radius
+            self._pivot = QGraphicsEllipseItem(-radius, -radius, radius * 2, radius * 2)
+            pivot_pen = context.canvas.center_marker_pen()
             pivot_pen.setCosmetic(True)
             self._pivot.setPen(pivot_pen)
             self._pivot.setBrush(Qt.BrushStyle.NoBrush)
@@ -666,7 +666,7 @@ class TextTransformTool:
             )
             context.overlays.add(self._pivot)
         self._pivot.setPos(center.x, center.y)
-        rotation_pen = QPen(QColor("#ff8a00"), 1.0)
+        rotation_pen = context.canvas.highlight_pen()
         rotation_pen.setCosmetic(True)
         while len(self._rotation_handles) < 4:
             arrow = QGraphicsPathItem(_rotation_arrow_path())
@@ -768,12 +768,9 @@ class TextTransformTool:
 
     @staticmethod
     def _effective_pivot(text_object: TextObject) -> Point:
-        if text_object.transform_pivot is not None:
-            return text_object.transform_pivot
-        frame = text_object.frame
-        return text_object.transform.map_point(
-            Point(frame.x + frame.width / 2.0, frame.y + frame.height / 2.0)
-        )
+        from easypicture.domain.object_operations import object_pivot
+
+        return object_pivot(text_object)
 
     @staticmethod
     def _frame_handle_points(text_object: TextObject) -> tuple[Point, ...]:

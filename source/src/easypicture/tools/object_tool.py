@@ -8,7 +8,7 @@ from typing import cast
 from uuid import UUID
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPen
+from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QGraphicsRectItem
 
 from easypicture.domain import (
@@ -25,7 +25,7 @@ from easypicture.domain import (
 )
 from easypicture.domain.coordinates import RasterMapping
 from easypicture.domain.effective import iter_effective_leaves
-from easypicture.domain.object_operations import transformed_object_matrices
+from easypicture.domain.object_operations import object_basis, transformed_object_matrices
 from easypicture.tools.object_hit_test import opaque_at, opaque_in_rect
 from easypicture.tools.protocol import NullTool, ToolContext
 from easypicture.ui.property_binding import interaction_coordinator
@@ -54,6 +54,10 @@ class ObjectTool(NullTool):
         self._pivot = Point(0, 0)
         self._axis: str | None = None
         self._last_point = Point(0, 0)
+        self._orientation = "global"
+        self._basis = AffineTransform()
+        self._axis_step = 0
+        self._default_orientation = "global"
 
     def activate(self, context: ToolContext) -> None:
         super().activate(context)
@@ -62,6 +66,7 @@ class ObjectTool(NullTool):
     def deactivate(self) -> None:
         self._cancel()
         if self._context:
+            self._context.canvas.set_transform_axes(None)
             self._context.canvas.set_tool_cursor(None)
         super().deactivate()
 
@@ -70,6 +75,7 @@ class ObjectTool(NullTool):
             self._unsubscribe()
             self._unsubscribe = None
         if self._context:
+            self._context.canvas.set_transform_axes(None)
             self._context.canvas.render_coordinator.clear_object_transform_preview()
             self._context.overlays.clear()
             interaction_coordinator(self._context.canvas).release(self)
@@ -80,7 +86,9 @@ class ObjectTool(NullTool):
         self._mode = None
         self._axis = None
 
-    def begin_transform(self, mode: str, point: Point, pivot: Point) -> bool:
+    def begin_transform(
+        self, mode: str, point: Point, pivot: Point, orientation: str = "global"
+    ) -> bool:
         context = self._context
         document = context.document_provider() if context else None
         if context is None or document is None or self._start is not None:
@@ -98,11 +106,28 @@ class ObjectTool(NullTool):
             return False
         self._ids, self._start, self._last_point = ids, point, point
         self._pivot, self._mode = pivot, mode
+        self._orientation = self._default_orientation = orientation
+        self._axis_step = 0
+        active = self._selection().state.active_id
+        node = document.node_by_id(active if active is not None else ids[0])
+        leaves = [item for item in walk_nodes((node,)) if not isinstance(item, Collection)]
+        self._basis = object_basis(leaves[0]) if leaves else AffineTransform()
         self._revision = document.revision
         self._unsubscribe = document.subscribe(self._document_changed)
-        if context.status:
-            context.status("移动" if mode == "g" else "缩放" if mode == "s" else "旋转")
+        self._show_axes()
         return True
+
+    def _show_axes(self) -> None:
+        if self._context is None:
+            return
+        basis = self._basis if self._orientation == "local" else AffineTransform()
+        self._context.canvas.set_transform_axes((self._pivot, basis, self._axis))
+        if self._context.status:
+            orientation = "局部" if self._orientation == "local" else "全局"
+            self._context.status(
+                f"{self._mode.upper() if self._mode else ''} · {orientation} {self._axis or 'XY'}"
+                " · X/Y 切换轴与坐标系 · L 切换坐标系 · Enter 确认 · Esc 取消"
+            )
 
     def _finish(self) -> None:
         context, ids, delta = self._context, self._ids, self._delta
@@ -177,9 +202,7 @@ class ObjectTool(NullTool):
             if not self._extend:
                 selection.select(())
             self._box = QGraphicsRectItem()
-            pen = QPen(QColor("#ff9b38"))
-            pen.setCosmetic(True)
-            self._box.setPen(pen)
+            self._box.setPen(context.canvas.highlight_pen())
             context.overlays.add(self._box)
         self._start = point
         self._revision = document.revision
@@ -216,6 +239,7 @@ class ObjectTool(NullTool):
             return
         factor = 0.1 if modifiers & Qt.KeyboardModifier.ShiftModifier else 1.0
         dx, dy = point.x - self._start.x, point.y - self._start.y
+        basis = self._basis if self._orientation == "local" and self._mode else AffineTransform()
         if self._mode == "r":
             angle = degrees(
                 atan2(point.y - self._pivot.y, point.x - self._pivot.x)
@@ -234,10 +258,18 @@ class ObjectTool(NullTool):
             delta = AffineTransform.scale(
                 1 if self._axis == "y" else scale, 1 if self._axis == "x" else scale
             )
+            delta = basis.inverse().then(delta).then(basis)
         else:
+            local = basis.inverse().map_point(Point(dx, dy))
+            movement = basis.map_point(
+                Point(
+                    0 if self._axis == "y" else local.x * factor,
+                    0 if self._axis == "x" else local.y * factor,
+                )
+            )
             delta = AffineTransform.translation(
-                0 if self._axis == "y" else dx * factor,
-                0 if self._axis == "x" else dy * factor,
+                movement.x,
+                movement.y,
             )
         if self._mode in {"s", "r"}:
             delta = (
@@ -296,10 +328,24 @@ class ObjectTool(NullTool):
         return True
 
     def key_press(self, event: QKeyEvent) -> bool:
+        if self._mode is not None and event.key() == Qt.Key.Key_L:
+            self._consumed_keys.add(event.key())
+            if not event.isAutoRepeat():
+                self._orientation = "local" if self._orientation == "global" else "global"
+                self._show_axes()
+                self._preview_transform(self._last_point, event.modifiers())
+            return True
         if self._mode is not None and event.key() in (Qt.Key.Key_X, Qt.Key.Key_Y):
             self._consumed_keys.add(event.key())
+            if event.isAutoRepeat():
+                return True
             axis = "x" if event.key() == Qt.Key.Key_X else "y"
-            self._axis = None if self._axis == axis else axis
+            self._axis_step = (self._axis_step + 1) % 3 if self._axis == axis else 1
+            self._axis = axis if self._axis_step else None
+            self._orientation = self._default_orientation
+            if self._axis_step == 2:
+                self._orientation = "local" if self._orientation == "global" else "global"
+            self._show_axes()
             self._preview_transform(self._last_point, event.modifiers())
             return True
         if self._start is not None and event.key() in (

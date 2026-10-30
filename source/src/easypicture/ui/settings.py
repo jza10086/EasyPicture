@@ -31,9 +31,9 @@ from easypicture.persistence import ExportFormat
 from easypicture.render import RenderBackendKind
 from easypicture.tools import BucketSettings, MagicWandSettings
 from easypicture.ui.selection_style import (
-    DEFAULT_SELECTION_OUTLINE_COLOR,
-    DEFAULT_SELECTION_OUTLINE_WIDTH,
-    MAX_SELECTION_OUTLINE_WIDTH,
+    DEFAULT_HIGHLIGHT_OUTLINE_COLOR,
+    DEFAULT_HIGHLIGHT_OUTLINE_WIDTH,
+    MAX_HIGHLIGHT_OUTLINE_WIDTH,
 )
 
 DEFAULT_DOCUMENT_SIZE = Size(1920, 1080)
@@ -123,33 +123,49 @@ class AppSettings:
             bool(expanded),
         )
 
-    def selection_outline_color(self) -> QColor:
+    def highlight_outline_color(self) -> QColor:
         color = self._color_value(
-            "selection/outline_color",
-            DEFAULT_SELECTION_OUTLINE_COLOR,
+            "highlight/outline_color",
+            DEFAULT_HIGHLIGHT_OUTLINE_COLOR,
         )
         color.setAlpha(255)
         return color
 
-    def selection_outline_width(self) -> int:
+    def highlight_outline_width(self) -> int:
         return self._bounded_int(
-            "selection/outline_width",
-            DEFAULT_SELECTION_OUTLINE_WIDTH,
+            "highlight/outline_width",
+            DEFAULT_HIGHLIGHT_OUTLINE_WIDTH,
             1,
-            MAX_SELECTION_OUTLINE_WIDTH,
+            MAX_HIGHLIGHT_OUTLINE_WIDTH,
         )
 
-    def set_selection_outline_style(self, color: QColor, width: int) -> None:
+    def set_highlight_outline_style(self, color: QColor, width: int) -> None:
         opaque = QColor(color)
         opaque.setAlpha(255)
         self._settings.setValue(
-            "selection/outline_color",
+            "highlight/outline_color",
             opaque.name(QColor.NameFormat.HexRgb),
         )
         self._settings.setValue(
-            "selection/outline_width",
-            min(MAX_SELECTION_OUTLINE_WIDTH, max(1, width)),
+            "highlight/outline_width",
+            min(MAX_HIGHLIGHT_OUTLINE_WIDTH, max(1, width)),
         )
+
+    def center_marker_color(self) -> QColor:
+        return self._color_value("highlight/center_color", self.highlight_outline_color())
+
+    def center_marker_radius(self) -> float:
+        return self._bounded_float("highlight/center_radius", 7.5, 0.5, 100.0)
+
+    def center_color_linked(self) -> bool:
+        return not self._settings.contains("highlight/center_color")
+
+    def set_center_marker_style(self, color: QColor | None, radius: float) -> None:
+        if color is None:
+            self._settings.remove("highlight/center_color")
+        else:
+            self._settings.setValue("highlight/center_color", color.name(QColor.NameFormat.HexRgb))
+        self._settings.setValue("highlight/center_radius", min(100.0, max(0.5, radius)))
 
     def render_backend(self) -> RenderBackendKind:
         value = str(
@@ -724,9 +740,9 @@ __all__ = [
     "DEFAULT_FOREGROUND",
     "DEFAULT_NUMERIC_DRAG_SENSITIVITY",
     "DEFAULT_NUMERIC_FINE_DRAG_SENSITIVITY",
-    "DEFAULT_SELECTION_OUTLINE_COLOR",
-    "DEFAULT_SELECTION_OUTLINE_WIDTH",
-    "MAX_SELECTION_OUTLINE_WIDTH",
+    "DEFAULT_HIGHLIGHT_OUTLINE_COLOR",
+    "DEFAULT_HIGHLIGHT_OUTLINE_WIDTH",
+    "MAX_HIGHLIGHT_OUTLINE_WIDTH",
     "MAX_NUMERIC_DRAG_SENSITIVITY",
     "MAX_RECENT_FILES",
     "MIN_NUMERIC_DRAG_SENSITIVITY",

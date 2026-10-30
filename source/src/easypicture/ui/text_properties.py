@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import replace
 from typing import Any
 
@@ -21,14 +20,12 @@ from PySide6.QtWidgets import (
 )
 
 from easypicture.commands import DocumentCommandService
-from easypicture.domain import AffineTransform, FloatRect, Point, TextObject
+from easypicture.domain import AffineTransform, FloatRect, TextObject
 from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.drag_value_spinbox import DragValueDoubleSpinBox
 from easypicture.ui.numeric_ranges import (
     DOCUMENT_DIMENSION_RANGE,
     FONT_SIZE_RANGE,
-    ROTATION_DEGREES_RANGE,
-    SIGNED_COORDINATE_RANGE,
 )
 from easypicture.ui.property_binding import (
     EditTarget,
@@ -88,24 +85,6 @@ class TextPropertiesPanel(QWidget):
             suffix=" px",
             parent=self,
         )
-        self.x_spin = DragValueDoubleSpinBox(
-            SIGNED_COORDINATE_RANGE.soft_minimum,
-            SIGNED_COORDINATE_RANGE.soft_maximum,
-            0.0,
-            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
-            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
-            decimals=2,
-            parent=self,
-        )
-        self.y_spin = DragValueDoubleSpinBox(
-            SIGNED_COORDINATE_RANGE.soft_minimum,
-            SIGNED_COORDINATE_RANGE.soft_maximum,
-            0.0,
-            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
-            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
-            decimals=2,
-            parent=self,
-        )
         self.width_spin = DragValueDoubleSpinBox(
             DOCUMENT_DIMENSION_RANGE.soft_minimum,
             DOCUMENT_DIMENSION_RANGE.soft_maximum,
@@ -121,34 +100,6 @@ class TextPropertiesPanel(QWidget):
             64.0,
             manual_minimum=DOCUMENT_DIMENSION_RANGE.hard_minimum,
             manual_maximum=DOCUMENT_DIMENSION_RANGE.hard_maximum,
-            decimals=2,
-            parent=self,
-        )
-        self.rotation_spin = DragValueDoubleSpinBox(
-            ROTATION_DEGREES_RANGE.soft_minimum,
-            ROTATION_DEGREES_RANGE.soft_maximum,
-            0.0,
-            manual_minimum=ROTATION_DEGREES_RANGE.hard_minimum,
-            manual_maximum=ROTATION_DEGREES_RANGE.hard_maximum,
-            decimals=2,
-            suffix="°",
-            parent=self,
-        )
-        self.pivot_x_spin = DragValueDoubleSpinBox(
-            SIGNED_COORDINATE_RANGE.soft_minimum,
-            SIGNED_COORDINATE_RANGE.soft_maximum,
-            0.0,
-            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
-            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
-            decimals=2,
-            parent=self,
-        )
-        self.pivot_y_spin = DragValueDoubleSpinBox(
-            SIGNED_COORDINATE_RANGE.soft_minimum,
-            SIGNED_COORDINATE_RANGE.soft_maximum,
-            0.0,
-            manual_minimum=SIGNED_COORDINATE_RANGE.hard_minimum,
-            manual_maximum=SIGNED_COORDINATE_RANGE.hard_maximum,
             decimals=2,
             parent=self,
         )
@@ -194,13 +145,8 @@ class TextPropertiesPanel(QWidget):
         text_form.addRow("不透明度", self.opacity_spin)
         text_form.addRow(self.locked_check)
         transform_form = QFormLayout()
-        transform_form.addRow("X", self.x_spin)
-        transform_form.addRow("Y", self.y_spin)
-        transform_form.addRow("宽度", self.width_spin)
-        transform_form.addRow("高度", self.height_spin)
-        transform_form.addRow("旋转", self.rotation_spin)
-        transform_form.addRow("中心 X", self.pivot_x_spin)
-        transform_form.addRow("中心 Y", self.pivot_y_spin)
+        transform_form.addRow("排版宽度", self.width_spin)
+        transform_form.addRow("排版高度", self.height_spin)
         self.apply_button.hide()
         self.cancel_button.hide()
         layout = QVBoxLayout(self)
@@ -210,7 +156,7 @@ class TextPropertiesPanel(QWidget):
         layout.addWidget(QLabel("文本属性", self))
         layout.addLayout(text_form)
         layout.addWidget(self.validation_label)
-        layout.addWidget(QLabel("矩形自由变换", self))
+        layout.addWidget(QLabel("文字排版框（局部像素）", self))
         layout.addLayout(transform_form)
         layout.addStretch(1)
         self.color_button.clicked.connect(self._pick_color)
@@ -225,13 +171,8 @@ class TextPropertiesPanel(QWidget):
         for field in (
             self.stroke_width_spin,
             self.size_spin,
-            self.x_spin,
-            self.y_spin,
             self.width_spin,
             self.height_spin,
-            self.rotation_spin,
-            self.pivot_x_spin,
-            self.pivot_y_spin,
             self.line_spacing_spin,
             self.opacity_spin,
         ):
@@ -276,17 +217,22 @@ class TextPropertiesPanel(QWidget):
             self._set_stroke_color(QColor(*text_object.stroke_color))
             self._sync_numeric(self.stroke_width_spin, text_object.stroke_width)
             self._sync_numeric(self.size_spin, text_object.font_size)
-            self._sync_numeric(self.x_spin, text_object.frame.x)
-            self._sync_numeric(self.y_spin, text_object.frame.y)
+            document = self.commands.document
+            if document is not None:
+                self.width_spin.syncPropertyRange(
+                    1, document.width, manual_minimum=1, manual_maximum=8192
+                )
+                self.height_spin.syncPropertyRange(
+                    1, document.height, manual_minimum=1, manual_maximum=8192
+                )
+            self.size_spin.syncPropertyRange(
+                1,
+                min(1024, max(1, text_object.frame.height)),
+                manual_minimum=1,
+                manual_maximum=1024,
+            )
             self._sync_numeric(self.width_spin, text_object.frame.width)
             self._sync_numeric(self.height_spin, text_object.frame.height)
-            self._sync_numeric(
-                self.rotation_spin,
-                math.degrees(math.atan2(text_object.transform.b, text_object.transform.a)),
-            )
-            pivot = self._effective_pivot(text_object)
-            self._sync_numeric(self.pivot_x_spin, pivot.x)
-            self._sync_numeric(self.pivot_y_spin, pivot.y)
             self._sync_numeric(self.line_spacing_spin, text_object.line_spacing)
             self._sync_numeric(self.opacity_spin, text_object.opacity * 100.0)
             self.locked_check.setChecked(text_object.locked)
@@ -312,17 +258,22 @@ class TextPropertiesPanel(QWidget):
             return
         self._syncing = True
         try:
-            self._sync_numeric(self.x_spin, text_object.frame.x)
-            self._sync_numeric(self.y_spin, text_object.frame.y)
+            document = self.commands.document
+            if document is not None:
+                self.width_spin.syncPropertyRange(
+                    1, document.width, manual_minimum=1, manual_maximum=8192
+                )
+                self.height_spin.syncPropertyRange(
+                    1, document.height, manual_minimum=1, manual_maximum=8192
+                )
+            self.size_spin.syncPropertyRange(
+                1,
+                min(1024, max(1, text_object.frame.height)),
+                manual_minimum=1,
+                manual_maximum=1024,
+            )
             self._sync_numeric(self.width_spin, text_object.frame.width)
             self._sync_numeric(self.height_spin, text_object.frame.height)
-            self._sync_numeric(
-                self.rotation_spin,
-                math.degrees(math.atan2(text_object.transform.b, text_object.transform.a)),
-            )
-            pivot = self._effective_pivot(text_object)
-            self._sync_numeric(self.pivot_x_spin, pivot.x)
-            self._sync_numeric(self.pivot_y_spin, pivot.y)
         finally:
             self._syncing = False
 
@@ -336,7 +287,6 @@ class TextPropertiesPanel(QWidget):
             TextWrapMode,
         )
 
-        pivot = Point(self.pivot_x_spin.value(), self.pivot_y_spin.value())
         values = {
             "name": self.name_edit.text(),
             "text": self.text_edit.toPlainText(),
@@ -344,17 +294,11 @@ class TextPropertiesPanel(QWidget):
             "font_weight": 700 if self.bold_check.isChecked() else 400,
             "font_size": self.size_spin.value(),
             "frame": FloatRect(
-                self.x_spin.value(),
-                self.y_spin.value(),
+                text_object.frame.x,
+                text_object.frame.y,
                 self.width_spin.value(),
                 self.height_spin.value(),
             ),
-            "transform": self._transform_with_rotation(
-                text_object.transform,
-                self.rotation_spin.value(),
-                self._effective_pivot(text_object),
-            ),
-            "transform_pivot": pivot,
             "horizontal_alignment": TextHorizontalAlignment(
                 str(self.horizontal_combo.currentData())
             ),
@@ -536,32 +480,6 @@ class TextPropertiesPanel(QWidget):
     def hideEvent(self, event: QHideEvent) -> None:
         self._cancel_edit()
         super().hideEvent(event)
-
-    @staticmethod
-    def _transform_with_rotation(
-        transform: AffineTransform,
-        degrees: float,
-        pivot: Point,
-    ) -> AffineTransform:
-        current = math.degrees(math.atan2(transform.b, transform.a))
-        delta = degrees - current
-        if math.isclose(delta, 0.0, abs_tol=1e-9):
-            return transform
-        around_pivot = (
-            AffineTransform.translation(-pivot.x, -pivot.y)
-            .then(AffineTransform.rotation(delta))
-            .then(AffineTransform.translation(pivot.x, pivot.y))
-        )
-        return transform.then(around_pivot)
-
-    @staticmethod
-    def _effective_pivot(text_object: TextObject) -> Point:
-        if text_object.transform_pivot is not None:
-            return text_object.transform_pivot
-        frame = text_object.frame
-        return text_object.transform.map_point(
-            Point(frame.x + frame.width / 2.0, frame.y + frame.height / 2.0)
-        )
 
     def _pick_color(self) -> None:
         color = self._choose_color(self._color, "文字颜色")

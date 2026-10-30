@@ -23,6 +23,7 @@ from easypicture.domain import (
     GroupListChanged,
     GroupMembersChanged,
     LayerPixelsChanged,
+    Point,
     RasterObject,
     Size,
     SvgObject,
@@ -133,6 +134,7 @@ class CanvasRenderCoordinator(QObject):
         self._visible_object_ids: frozenset[UUID] | None = None
         self._opacity_preview: tuple[UUID, float] | None = None
         self._object_transform_preview: dict[UUID, AffineTransform] = {}
+        self._object_center_preview: dict[UUID, Point | None] = {}
         self._outside_opacity = 1.0
         self._display_passes_key: tuple[object, ...] | None = None
         self._display_passes: tuple[Collection, ...] = ()
@@ -213,6 +215,7 @@ class CanvasRenderCoordinator(QObject):
     def set_document(self, document: Document | None) -> None:
         self._display_passes_key = None
         self._display_passes = ()
+        self._object_center_preview.clear()
         self._object_transform_preview.clear()
         if self.document is not document:
             self._release_vector_content()
@@ -330,18 +333,20 @@ class CanvasRenderCoordinator(QObject):
         self.request_frame()
 
     def clear_object_transform_preview(self) -> None:
-        if self._object_transform_preview:
+        if self._object_transform_preview or self._object_center_preview:
+            self._object_center_preview.clear()
             self._object_transform_preview.clear()
             self.request_frame()
 
-    def selection_paths(self, ids: tuple[UUID, ...]) -> tuple[QPainterPath, ...]:
+    def selection_nodes(
+        self, ids: tuple[UUID, ...]
+    ) -> tuple[RasterObject | TextObject | SvgObject, ...]:
         from easypicture.domain import walk_nodes
-        from easypicture.render.shape_path import object_selection_path
 
         document = self.document
         if document is None:
             return ()
-        paths: dict[UUID, QPainterPath] = {}
+        nodes: dict[UUID, RasterObject | TextObject | SvgObject] = {}
         for key in ids:
             try:
                 root = document.node_by_id(key)
@@ -356,8 +361,27 @@ class CanvasRenderCoordinator(QObject):
                     visible &= parent.visible
                     parent = document.parent_of(parent.id)
                 if visible:
-                    paths[node.id] = object_selection_path(self._with_opacity_preview(node))
-        return tuple(paths.values())
+                    if self._vector_preview is not None:
+                        node = next(
+                            (item for item in self._vector_preview.objects if item.id == node.id),
+                            node,
+                        )
+                    nodes[node.id] = self._with_opacity_preview(node)
+        return tuple(nodes.values())
+
+    def selection_paths(self, ids: tuple[UUID, ...]) -> tuple[QPainterPath, ...]:
+        from easypicture.render.shape_path import object_selection_path
+
+        return tuple(object_selection_path(node) for node in self.selection_nodes(ids))
+
+    def set_object_center_preview(self, pivots: Mapping[UUID, Point | None]) -> None:
+        self._object_center_preview = dict(pivots)
+        self.request_frame()
+
+    def selection_centers(self, ids: tuple[UUID, ...]) -> tuple[Point, ...]:
+        from easypicture.domain.object_operations import object_pivot
+
+        return tuple(object_pivot(node) for node in self.selection_nodes(ids))
 
     def _with_opacity_preview[T: DocumentNode](
         self,
@@ -368,7 +392,17 @@ class CanvasRenderCoordinator(QObject):
             node = replace(node, opacity=preview[1])
         matrix = self._object_transform_preview.get(node.id)
         if matrix is not None and not isinstance(node, Collection):
+            from easypicture.domain.object_operations import object_world_transform
+
+            pivot = node.transform_pivot
+            if pivot is not None:
+                pivot = object_world_transform(replace(node, transform=matrix)).map_point(
+                    object_world_transform(node).inverse().map_point(pivot)
+                )
+            node = replace(node, transform_pivot=pivot)
             node = replace(node, transform=matrix)
+        if node.id in self._object_center_preview and not isinstance(node, Collection):
+            node = replace(node, transform_pivot=self._object_center_preview[node.id])
         return node
 
     def raster_display_transform(self, node: RasterObject) -> AffineTransform:

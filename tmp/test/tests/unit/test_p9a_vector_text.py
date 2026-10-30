@@ -5,12 +5,11 @@ from types import SimpleNamespace
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtGui import QColor, QIcon, QPen
 from PySide6.QtWidgets import QScrollArea
 
 from easypicture.commands import DocumentCommandService
 from easypicture.domain import (
-    AffineTransform,
     Document,
     FloatRect,
     GroupListChanged,
@@ -232,6 +231,9 @@ def test_text_transform_preview_keeps_unselected_siblings(qapp) -> None:
     previews: list[tuple[object, ...]] = []
     canvas = SimpleNamespace(
         zoom=1.0,
+        highlight_pen=lambda: QPen(QColor("#f28c28")),
+        center_marker_pen=lambda: QPen(QColor("#f28c28")),
+        center_marker_radius=7.5,
         replace_vector_preview=lambda _group_id, objects: previews.append(tuple(objects)),
         clear_vector_preview=lambda: None,
     )
@@ -251,11 +253,12 @@ def test_text_transform_preview_keeps_unselected_siblings(qapp) -> None:
 
 def test_text_rotation_keeps_configured_center_fixed() -> None:
     pivot = Point(50.0, 25.0)
-    transform = TextPropertiesPanel._transform_with_rotation(
-        AffineTransform(),
-        90.0,
-        pivot,
-    )
+    from easypicture.domain import TextObject
+    from easypicture.domain.object_operations import edited_object_transform, object_center_offset
+
+    node = TextObject.create(FloatRect(0, 0, 100, 50))
+    node.transform_pivot = pivot
+    transform, _ = edited_object_transform(node, pivot, 100, 50, 90, object_center_offset(node))
     mapped = transform.map_point(pivot)
     assert abs(mapped.x - pivot.x) < 1e-8
     assert abs(mapped.y - pivot.y) < 1e-8

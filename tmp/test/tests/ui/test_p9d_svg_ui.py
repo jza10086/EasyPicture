@@ -3,7 +3,6 @@ from __future__ import annotations
 from uuid import uuid4
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QLabel
 
 from easypicture.commands import DocumentCommandService
 from easypicture.controller import ApplicationController
@@ -70,15 +69,8 @@ def test_svg_ellipse_properties_hide_duplicate_local_geometry(qtbot) -> None:
     )
 
     assert panel.kind_label.text() == "椭圆"
-    assert not panel.x_spin.isHidden()
-    assert not panel.y_spin.isHidden()
-    assert not panel.width_spin.isHidden()
-    assert not panel.height_spin.isHidden()
     assert panel.geometry_title.isHidden()
     assert panel.geometry_stack.isHidden()
-    pivot_label = panel.transform_form.labelForField(panel.pivot_x_spin)
-    assert isinstance(pivot_label, QLabel)
-    assert pivot_label.text() == "旋转中心 X"
 
 
 def test_svg_rect_properties_only_show_corner_specific_geometry(qtbot) -> None:
@@ -100,10 +92,6 @@ def test_svg_line_properties_use_document_endpoints_without_duplicate_bounds(qtb
     live.transform = AffineTransform.translation(20.0, 30.0)
     panel.set_object(live)
 
-    assert panel.x_spin.isHidden()
-    assert panel.y_spin.isHidden()
-    assert panel.width_spin.isHidden()
-    assert panel.height_spin.isHidden()
     assert tuple(field.value() for field in panel.line_fields) == (22.0, 33.0, 32.0, 43.0)
 
 

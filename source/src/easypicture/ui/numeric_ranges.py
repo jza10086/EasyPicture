@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
 from easypicture.domain.vector import MAX_TEXT_FONT_SIZE
+from easypicture.ui.drag_value_spinbox import DragValueDoubleSpinBox
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +60,18 @@ PALETTE_COLOR_COUNT_RANGE = UiNumericRange(1, 64, 1, 256, 16)
 PIXEL_OUTLINE_WIDTH_RANGE = UiNumericRange(1, 16, 1, 64, 1)
 AI_PIXEL_BLOCK_RANGE = UiNumericRange(1, 64, 1, 4096, 8)
 AI_PALETTE_COLOR_COUNT_RANGE = UiNumericRange(1, 64, 1, 256, 32)
+
+
+def sync_spatial_range(
+    field: DragValueDoubleSpinBox, extent: float, *, dimension: bool = False
+) -> None:
+    """Canvas-aware drag range; manual entry retains the spatial hard limit."""
+    field.syncPropertyRange(
+        0.01 if dimension else -extent,
+        extent,
+        manual_minimum=0.01 if dimension else -EXTENDED_SPATIAL_LIMIT,
+        manual_maximum=EXTENDED_SPATIAL_LIMIT,
+    )
 
 
 __all__ = [

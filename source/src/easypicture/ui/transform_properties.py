@@ -9,7 +9,7 @@ from easypicture.ui.drag_value_spinbox import (
     DragValueDoubleSpinBox,
     NumericEditState,
 )
-from easypicture.ui.numeric_ranges import SIGNED_COORDINATE_RANGE
+from easypicture.ui.numeric_ranges import SIGNED_COORDINATE_RANGE, sync_spatial_range
 
 type CornerValues = tuple[float, float, float, float, float, float, float, float]
 type PivotValues = tuple[float, float]
@@ -76,6 +76,10 @@ class TransformPropertiesPanel(QWidget):
         layout.addLayout(grid)
         layout.addStretch(1)
         self.set_session_active(False)
+
+    def set_canvas_size(self, width: int, height: int) -> None:
+        for index, field in enumerate((*self._fields, *self._pivot_fields)):
+            sync_spatial_range(field, width if index % 2 == 0 else height)
 
     def corners(self) -> CornerValues:
         return tuple(field.value() for field in self._fields)  # type: ignore[return-value]

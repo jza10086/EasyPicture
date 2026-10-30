@@ -22,6 +22,7 @@ from easypicture.ui.drag_value_spinbox import (
 from easypicture.ui.numeric_ranges import (
     OBJECT_RADIUS_RANGE,
     SIGNED_COORDINATE_RANGE,
+    sync_spatial_range,
 )
 
 
@@ -113,6 +114,18 @@ class ShapePropertiesPanel(QWidget):
         layout.addWidget(self._stack)
         layout.addStretch(1)
         self.set_geometry(None)
+
+    def set_canvas_size(self, width: int, height: int) -> None:
+        for fields in (
+            self._line_fields,
+            self._box_fields,
+            self._rounded_fields[:4],
+            self._polygon_fields,
+        ):
+            for index, field in enumerate(fields):
+                sync_spatial_range(field, width if index % 2 == 0 else height)
+        sync_spatial_range(self.vertex_x, width)
+        sync_spatial_range(self.vertex_y, height)
 
     def set_geometry(self, geometry: ShapeGeometry | None) -> None:
         self._geometry = geometry
@@ -220,7 +233,7 @@ class ShapePropertiesPanel(QWidget):
         try:
             self._rounded_fields[4].setPropertyRange(
                 OBJECT_RADIUS_RANGE.soft_minimum,
-                min(OBJECT_RADIUS_RANGE.soft_maximum, maximum),
+                maximum,
                 manual_minimum=OBJECT_RADIUS_RANGE.hard_minimum,
                 manual_maximum=maximum,
             )

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import replace
 from uuid import UUID
 
@@ -53,10 +52,10 @@ from easypicture.ui.numeric_ranges import (
     MITER_LIMIT_RANGE,
     OBJECT_DIMENSION_RANGE,
     OBJECT_RADIUS_RANGE,
-    ROTATION_DEGREES_RANGE,
     SIGNED_COORDINATE_RANGE,
     STROKE_WIDTH_RANGE,
     UiNumericRange,
+    sync_spatial_range,
 )
 from easypicture.ui.property_binding import (
     EditTarget,
@@ -99,13 +98,6 @@ class SvgPropertiesPanel(QWidget):
         self.name_edit.installEventFilter(self)
         self.name_edit.textEdited.connect(self._name_edited)
         self.kind_label = QLabel(self)
-        self.x_spin = self._range_field(SIGNED_COORDINATE_RANGE)
-        self.y_spin = self._range_field(SIGNED_COORDINATE_RANGE)
-        self.width_spin = self._range_field(OBJECT_DIMENSION_RANGE)
-        self.height_spin = self._range_field(OBJECT_DIMENSION_RANGE)
-        self.rotation_spin = self._range_field(ROTATION_DEGREES_RANGE, suffix="°")
-        self.pivot_x_spin = self._range_field(SIGNED_COORDINATE_RANGE)
-        self.pivot_y_spin = self._range_field(SIGNED_COORDINATE_RANGE)
         self.opacity_spin = self._field(0.0, 100.0, suffix="%")
         self.opacity_spin.setDefaultValue(100.0)
         self.visible_check = QCheckBox("可见", self)
@@ -224,13 +216,6 @@ class SvgPropertiesPanel(QWidget):
         self.transform_form = QFormLayout()
         self.transform_form.addRow("名称", self.name_edit)
         self.transform_form.addRow("SVG 元素", self.kind_label)
-        self.transform_form.addRow("位置 X", self.x_spin)
-        self.transform_form.addRow("位置 Y", self.y_spin)
-        self.transform_form.addRow("宽度", self.width_spin)
-        self.transform_form.addRow("高度", self.height_spin)
-        self.transform_form.addRow("旋转", self.rotation_spin)
-        self.transform_form.addRow("旋转中心 X", self.pivot_x_spin)
-        self.transform_form.addRow("旋转中心 Y", self.pivot_y_spin)
         self.transform_form.addRow("不透明度", self.opacity_spin)
         self.transform_form.addRow(self.visible_check)
         self.transform_form.addRow(self.locked_check)
@@ -269,13 +254,6 @@ class SvgPropertiesPanel(QWidget):
         self.rect_fields[2].valueChanged.connect(self._rect_size_changed)
         self.rect_fields[3].valueChanged.connect(self._rect_size_changed)
         fields = (
-            self.x_spin,
-            self.y_spin,
-            self.width_spin,
-            self.height_spin,
-            self.rotation_spin,
-            self.pivot_x_spin,
-            self.pivot_y_spin,
             self.opacity_spin,
             self.stroke_width_spin,
             self.miter_limit_spin,
@@ -369,10 +347,6 @@ class SvgPropertiesPanel(QWidget):
             form.addRow(label, field)
         return page, fields
 
-    def _set_common_bounds_visible(self, visible: bool) -> None:
-        for field in (self.x_spin, self.y_spin, self.width_spin, self.height_spin):
-            self._set_form_row_visible(self.transform_form, field, visible)
-
     def _set_geometry_rows_visible(
         self,
         page: QWidget,
@@ -430,6 +404,7 @@ class SvgPropertiesPanel(QWidget):
             self.setEnabled(vector_object is not None)
             if vector_object is None:
                 return
+            self._sync_ranges()
             self._sync_transform(vector_object)
             self._sync_primitive(self._primitive)
         finally:
@@ -448,20 +423,22 @@ class SvgPropertiesPanel(QWidget):
         was_syncing = self._syncing
         self._syncing = True
         try:
+            self._sync_ranges()
             self._sync_transform(vector_object)
             self._sync_primitive(self._primitive)
         finally:
             self._syncing = was_syncing
 
+    def _sync_ranges(self) -> None:
+        document = self.commands.document
+        if document is None:
+            return
+        for index, field in enumerate(self.line_fields):
+            sync_spatial_range(field, document.width if index % 2 == 0 else document.height)
+        sync_spatial_range(self.vertex_x_spin, document.width)
+        sync_spatial_range(self.vertex_y_spin, document.height)
+
     def _sync_transform(self, vector_object: SvgObject) -> None:
-        bounds = vector_object.intrinsic_bounds
-        matrix = vector_object.transform
-        top_left = matrix.map_point(Point(bounds.x, bounds.y))
-        width = bounds.width * math.hypot(matrix.a, matrix.b)
-        height = bounds.height * math.hypot(matrix.c, matrix.d)
-        pivot = vector_object.transform_pivot or matrix.map_point(
-            Point(bounds.x + bounds.width / 2.0, bounds.y + bounds.height / 2.0)
-        )
         if not self.name_edit.hasFocus():
             self.name_edit.setText(vector_object.name)
         self.kind_label.setText(
@@ -474,19 +451,11 @@ class SvgPropertiesPanel(QWidget):
                 "polygon": "多边形",
             }.get(vector_object.element_kind, vector_object.element_kind)
         )
-        self._set_field(self.x_spin, top_left.x)
-        self._set_field(self.y_spin, top_left.y)
-        self._set_field(self.width_spin, width)
-        self._set_field(self.height_spin, height)
-        self._set_field(self.rotation_spin, math.degrees(math.atan2(matrix.b, matrix.a)))
-        self._set_field(self.pivot_x_spin, pivot.x)
-        self._set_field(self.pivot_y_spin, pivot.y)
         self._set_field(self.opacity_spin, vector_object.opacity * 100.0)
         self.visible_check.setChecked(vector_object.visible)
         self.locked_check.setChecked(vector_object.locked)
 
     def _sync_primitive(self, primitive: EditableSvgPrimitive | None) -> None:
-        self._set_common_bounds_visible(True)
         self.geometry_title.show()
         self.geometry_stack.show()
         self._set_geometry_rows_visible(self.rect_page, self.rect_fields, True)
@@ -531,6 +500,17 @@ class SvgPropertiesPanel(QWidget):
         ):
             widget.setEnabled(True)
         geometry = primitive.geometry
+        bounds = primitive_bounds(geometry, SvgPrimitiveStyle(stroke=None))
+        edge = max(1.0, min(bounds.width, bounds.height))
+        self.stroke_width_spin.syncPropertyRange(
+            0, min(8192, edge / 4), manual_minimum=0, manual_maximum=8192
+        )
+        self.dash_value_spin.syncPropertyRange(
+            0, min(8192, edge), manual_minimum=0, manual_maximum=8192
+        )
+        self.dash_offset_spin.syncPropertyRange(
+            -min(8192, edge), min(8192, edge), manual_minimum=-8192, manual_maximum=8192
+        )
         if isinstance(geometry, SvgRectGeometry):
             self.geometry_stack.setCurrentWidget(self.rect_page)
             self._set_geometry_rows_visible(self.rect_page, self.rect_fields[:4], False)
@@ -554,7 +534,6 @@ class SvgPropertiesPanel(QWidget):
             self.geometry_stack.hide()
         elif isinstance(geometry, SvgLineGeometry):
             self.geometry_stack.setCurrentWidget(self.line_page)
-            self._set_common_bounds_visible(False)
             source = self._preview_object or self._object
             transform = source.transform if source is not None else AffineTransform()
             start = transform.map_point(Point(geometry.x1, geometry.y1))
@@ -613,7 +592,6 @@ class SvgPropertiesPanel(QWidget):
         if source is None:
             return None
         primitive = self._primitive
-        transform, pivot = self._transform_values(self._object or source)
         svg = source.svg
         bounds = source.intrinsic_bounds
         if primitive is not None:
@@ -637,8 +615,8 @@ class SvgPropertiesPanel(QWidget):
                 element_kind=source.element_kind,
                 svg=svg,
                 intrinsic_bounds=bounds,
-                transform=transform,
-                transform_pivot=pivot,
+                transform=source.transform,
+                transform_pivot=source.transform_pivot,
                 fill_override=source.fill_override,
                 stroke_override=source.stroke_override,
                 stroke_width_override=source.stroke_width_override,
@@ -648,36 +626,6 @@ class SvgPropertiesPanel(QWidget):
             )
         except TypeError, ValueError:
             return None
-
-    def _transform_values(
-        self,
-        source: SvgObject,
-    ) -> tuple[AffineTransform, Point]:
-        bounds = source.intrinsic_bounds
-        old = source.transform
-        current_width = max(1e-9, bounds.width * math.hypot(old.a, old.b))
-        current_height = max(1e-9, bounds.height * math.hypot(old.c, old.d))
-        current_rotation = math.degrees(math.atan2(old.b, old.a))
-        top_left = old.map_point(Point(bounds.x, bounds.y))
-        pivot = Point(self.pivot_x_spin.value(), self.pivot_y_spin.value())
-        delta = (
-            AffineTransform.translation(-pivot.x, -pivot.y)
-            .then(
-                AffineTransform.scale(
-                    self.width_spin.value() / current_width,
-                    self.height_spin.value() / current_height,
-                )
-            )
-            .then(AffineTransform.rotation(self.rotation_spin.value() - current_rotation))
-            .then(AffineTransform.translation(pivot.x, pivot.y))
-            .then(
-                AffineTransform.translation(
-                    self.x_spin.value() - top_left.x,
-                    self.y_spin.value() - top_left.y,
-                )
-            )
-        )
-        return old.then(delta), pivot
 
     def _geometry_from_controls(
         self,
@@ -725,13 +673,13 @@ class SvgPropertiesPanel(QWidget):
             radius_y = max(0.0, height / 2.0)
             self.rect_fields[4].syncPropertyRange(
                 OBJECT_RADIUS_RANGE.soft_minimum,
-                min(OBJECT_RADIUS_RANGE.soft_maximum, radius_x),
+                radius_x,
                 manual_minimum=OBJECT_RADIUS_RANGE.hard_minimum,
                 manual_maximum=radius_x,
             )
             self.rect_fields[5].syncPropertyRange(
                 OBJECT_RADIUS_RANGE.soft_minimum,
-                min(OBJECT_RADIUS_RANGE.soft_maximum, radius_y),
+                radius_y,
                 manual_minimum=OBJECT_RADIUS_RANGE.hard_minimum,
                 manual_maximum=radius_y,
             )

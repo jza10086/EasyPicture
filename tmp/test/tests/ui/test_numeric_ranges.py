@@ -22,10 +22,6 @@ def test_spatial_fields_share_common_soft_ranges_and_keep_hard_entry(qtbot) -> N
 
     assert shape._box_fields[2].drag_maximum == SIGNED_COORDINATE_RANGE.soft_maximum
     assert shape._box_fields[2].maximum() == 32768.0
-    assert svg.width_spin.drag_maximum == COMMON_CANVAS_SIZE
-    assert svg.width_spin.maximum() == 32768.0
-    assert svg.rotation_spin.drag_minimum == -180.0
-    assert svg.rotation_spin.maximum() == 36000.0
     assert text.width_spin.drag_maximum == COMMON_CANVAS_SIZE
     assert text.width_spin.maximum() == 8192.0
     assert text.size_spin.drag_maximum == 256.0
