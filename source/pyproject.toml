@@ -44,9 +44,9 @@ easypicture = ["resources/icons/*.svg", "resources/icons/LICENSE.txt"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-markers"
-testpaths = ["../archive/validation/tests"]
-pythonpath = ["src", "../archive/validation"]
-cache_dir = ".cache/pytest"
+testpaths = ["../tmp/test/tests"]
+pythonpath = ["src", "../tmp/test"]
+cache_dir = "../tmp/test/cache/pytest"
 qt_api = "pyside6"
 
 [tool.ruff]

@@ -12,9 +12,59 @@ from PySide6.QtGui import (
     QTransform,
 )
 
-from easypicture.domain import AffineTransform
+from easypicture.domain import (
+    AffineTransform,
+    RasterObject,
+    SvgCircleGeometry,
+    SvgEllipseGeometry,
+    SvgLineGeometry,
+    SvgObject,
+    SvgPolygonGeometry,
+    SvgRectGeometry,
+    TextObject,
+    parse_editable_svg,
+)
 from easypicture.imaging.shapes import ShapeGeometry, ShapeKind
 from easypicture.pixels import DEFAULT_TILE_SIZE, TileCoord
+
+
+def object_selection_path(node: RasterObject | TextObject | SvgObject) -> QPainterPath:
+    """Creation geometry, without stroke/culling padding, mapped with the object."""
+    path = QPainterPath()
+    matrix = node.transform
+    if isinstance(node, RasterObject):
+        path.addRect(QRectF(0, 0, node.size.width, node.size.height))
+        matrix = node.world_transform
+    elif isinstance(node, TextObject):
+        rect = node.frame
+        path.addRect(QRectF(rect.x, rect.y, rect.width, rect.height))
+    else:
+        primitive = parse_editable_svg(node.svg)
+        if primitive is None:
+            rect = node.intrinsic_bounds
+            path.addRect(QRectF(rect.x, rect.y, rect.width, rect.height))
+        else:
+            geometry = primitive.geometry
+            if isinstance(geometry, SvgRectGeometry):
+                shape_rect = QRectF(geometry.x, geometry.y, geometry.width, geometry.height)
+                if geometry.rx > 0 and geometry.ry > 0:
+                    path.addRoundedRect(shape_rect, geometry.rx, geometry.ry)
+                else:
+                    path.addRect(shape_rect)
+            elif isinstance(geometry, (SvgCircleGeometry, SvgEllipseGeometry)):
+                rx = geometry.r if isinstance(geometry, SvgCircleGeometry) else geometry.rx
+                ry = geometry.r if isinstance(geometry, SvgCircleGeometry) else geometry.ry
+                path.addEllipse(QRectF(geometry.cx - rx, geometry.cy - ry, rx * 2, ry * 2))
+            elif isinstance(geometry, SvgLineGeometry):
+                path.moveTo(geometry.x1, geometry.y1)
+                path.lineTo(geometry.x2, geometry.y2)
+            else:
+                path.moveTo(*geometry.points[0])
+                for point in geometry.points[1:]:
+                    path.lineTo(*point)
+                if isinstance(geometry, SvgPolygonGeometry):
+                    path.closeSubpath()
+    return QTransform(*matrix.values).map(path)
 
 
 def shape_path(geometry: ShapeGeometry) -> QPainterPath:

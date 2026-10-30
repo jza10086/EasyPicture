@@ -187,7 +187,9 @@ def main():
         print(json.dumps(result), flush=True)
     color = color_scene()
     print(json.dumps(color), flush=True)
-    Path(".cache/object-refactor-interaction.json").write_text(
+    output = Path(__file__).resolve().parents[1] / "runs" / "object-refactor-interaction.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
         json.dumps(
             {
                 "backend": "offscreen virtual pointer + QPainter",

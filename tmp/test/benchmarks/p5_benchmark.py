@@ -27,7 +27,13 @@ from easypicture.persistence import DocumentSnapshot
 from easypicture.pixels import Rect
 
 OUTPUT_PATH = (
-    Path(os.environ.get("EASYPICTURE_BENCHMARK_DIR", "../archive/runs/benchmarks")) / "p5.json"
+    Path(
+        os.environ.get(
+            "EASYPICTURE_BENCHMARK_DIR",
+            str(Path(__file__).resolve().parents[1] / "runs" / "benchmarks"),
+        )
+    )
+    / "p5.json"
 )
 DIMENSION = 4096
 

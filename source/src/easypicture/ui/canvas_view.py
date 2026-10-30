@@ -674,10 +674,11 @@ class CanvasView(QGraphicsView):
             painter.save()
             pen = QPen(QColor("#ff9b38"), 1)
             pen.setCosmetic(True)
+            pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            for bounds in self.render_coordinator.selection_bounds(self._object_selection):
-                painter.drawRect(QRectF(bounds.x, bounds.y, bounds.width, bounds.height))
+            for path in self.render_coordinator.selection_paths(self._object_selection):
+                painter.drawPath(path)
             painter.restore()
         if self._tile_heatmap_segments:
             painter.save()

@@ -334,14 +334,14 @@ class CanvasRenderCoordinator(QObject):
             self._object_transform_preview.clear()
             self.request_frame()
 
-    def selection_bounds(self, ids: tuple[UUID, ...]) -> tuple[FloatRect, ...]:
+    def selection_paths(self, ids: tuple[UUID, ...]) -> tuple[QPainterPath, ...]:
         from easypicture.domain import walk_nodes
-        from easypicture.domain.spatial import object_bounds
+        from easypicture.render.shape_path import object_selection_path
 
         document = self.document
         if document is None:
             return ()
-        bounds: dict[UUID, FloatRect] = {}
+        paths: dict[UUID, QPainterPath] = {}
         for key in ids:
             try:
                 root = document.node_by_id(key)
@@ -356,8 +356,8 @@ class CanvasRenderCoordinator(QObject):
                     visible &= parent.visible
                     parent = document.parent_of(parent.id)
                 if visible:
-                    bounds[node.id] = object_bounds(self._with_opacity_preview(node))
-        return tuple(bounds.values())
+                    paths[node.id] = object_selection_path(self._with_opacity_preview(node))
+        return tuple(paths.values())
 
     def _with_opacity_preview[T: DocumentNode](
         self,

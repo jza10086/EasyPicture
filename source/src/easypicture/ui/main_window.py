@@ -22,6 +22,7 @@ from PySide6.QtGui import (
     QShortcut,
 )
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QDockWidget,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
     QTabBar,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -161,6 +163,7 @@ from easypicture.ui.notifications import NoticeSeverity, UserNotice
 from easypicture.ui.object_properties import ObjectTransformBlock
 from easypicture.ui.overlays import OverlayManager
 from easypicture.ui.pixel_outline_panel import PixelOutlinePanel
+from easypicture.ui.pointer_backend import pointer_backend
 from easypicture.ui.preferences_dialog import PreferencesDialog
 from easypicture.ui.property_binding import interaction_coordinator
 from easypicture.ui.selection_state import EditMode
@@ -385,6 +388,10 @@ class MainWindow(QMainWindow):
         self._create_menus()
         self._create_toolbars()
         self._create_docks()
+        self.canvas_view.installEventFilter(self)
+        self.layer_panel.tree_view.installEventFilter(self)
+        QApplication.setEffectEnabled(Qt.UIEffect.UI_AnimateTooltip, False)
+        QApplication.setEffectEnabled(Qt.UIEffect.UI_FadeTooltip, False)
         self._color_apply_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
         self._color_apply_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         self._color_apply_shortcut.activated.connect(self._apply_color_adjustment_if_active)
@@ -720,8 +727,28 @@ class MainWindow(QMainWindow):
                 lambda _checked=False, tool_name=name: self._activate_tool(tool_name)
             )
             self.tool_action_group.addAction(action)
-            self.tools_toolbar.addAction(action)
+            if name in {"shape", "text", "raster_object"}:
+                self.addAction(action)
+            else:
+                self.tools_toolbar.addAction(action)
             self.tool_actions[name] = action
+        self.create_object_menu = QMenu("创建对象", self)
+        self.create_vector_menu = self.create_object_menu.addMenu(icon("pen-tool"), "矢量对象")
+        combo = self.tool_options_panel.shape.kind_combo
+        for index in range(combo.count()):
+            action = self.create_vector_menu.addAction(combo.itemText(index))
+            action.triggered.connect(lambda _checked=False, index=index: self._create_shape(index))
+        self.create_vector_menu.addSeparator()
+        self.create_vector_menu.addAction(self.tool_actions["text"])
+        self.create_raster_menu = self.create_object_menu.addMenu(icon("image"), "位图对象")
+        self.create_raster_menu.addAction(self.tool_actions["raster_object"])
+        self.create_object_button = QToolButton(self)
+        self.create_object_button.setText("创建对象")
+        self.create_object_button.setIcon(icon("shapes"))
+        self.create_object_button.setToolTip("创建对象 (Shift+A)")
+        self.create_object_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.create_object_button.setMenu(self.create_object_menu)
+        self.create_object_toolbar_action = self.tools_toolbar.addWidget(self.create_object_button)
         self.edit_raster_action = QAction("编辑栅格像素", self)
         self.edit_raster_action.setIcon(icon("image"))
         self.edit_raster_action.triggered.connect(self._open_raster_editor)
@@ -1079,13 +1106,16 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(self.sprite_count_label)
         status_bar.addPermanentWidget(self.coordinate_label)
         status_bar.addPermanentWidget(self.zoom_label)
+        self._status_layout_timer = QTimer(self)
+        self._status_layout_timer.setSingleShot(True)
+        self._status_layout_timer.timeout.connect(self._position_operation_status)
         status_bar.installEventFilter(self)
         self._update_shortcut_hint(
             next(
                 (name for name, action in self.tool_actions.items() if action.isChecked()), "object"
             )
         )
-        QTimer.singleShot(0, self._position_operation_status)
+        self._status_layout_timer.start(0)
 
     def _position_operation_status(self) -> None:
         if not hasattr(self, "operation_status_label"):
@@ -1096,7 +1126,44 @@ class MainWindow(QMainWindow):
         self.operation_status_label.setGeometry(x, 0, width, status_bar.height())
         self.operation_status_label.raise_()
 
+    def event(self, event: QEvent) -> bool:
+        if event.type() == QEvent.Type.WindowDeactivate:
+            interaction_coordinator(self).cancel()
+        return super().event(event)
+
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if isinstance(event, QKeyEvent) and watched in (
+            self.canvas_view,
+            self.layer_panel.tree_view,
+        ):
+            key = event.key()
+            modifiers = event.modifiers()
+            create = key == Qt.Key.Key_A and modifiers == Qt.KeyboardModifier.ShiftModifier
+            transform = key in (Qt.Key.Key_G, Qt.Key.Key_S, Qt.Key.Key_R)
+            delete = key == Qt.Key.Key_Delete
+            command = create or (
+                (transform or delete) and modifiers == Qt.KeyboardModifier.NoModifier
+            )
+            if command and not self._is_raster_editor():
+                if event.type() == QEvent.Type.ShortcutOverride:
+                    event.accept()
+                    return True
+                if event.type() == QEvent.Type.KeyRelease:
+                    return True
+                if event.type() == QEvent.Type.KeyPress:
+                    if (
+                        not event.isAutoRepeat()
+                        and not self._editing_busy
+                        and (interaction_coordinator(self).owner is None)
+                        and not self._active_surface_is_read_only()
+                    ):
+                        if create:
+                            self._show_create_menu()
+                        elif delete:
+                            self._delete_selected_objects()
+                        else:
+                            self._start_object_transform(chr(key).lower())
+                    return True
         if (
             hasattr(self, "operation_status_label")
             and watched is self.statusBar()
@@ -1107,8 +1174,41 @@ class MainWindow(QMainWindow):
                 QEvent.Type.LayoutRequest,
             }
         ):
-            QTimer.singleShot(0, self._position_operation_status)
+            self._status_layout_timer.start(0)
         return super().eventFilter(watched, event)
+
+    def _create_shape(self, index: int) -> None:
+        if interaction_coordinator(self).owner is not None:
+            return
+        self.tool_options_panel.shape.kind_combo.setCurrentIndex(index)
+        self.tool_actions["shape"].setChecked(True)
+        self._activate_tool("shape")
+        self.canvas_view.setFocus()
+
+    def _show_create_menu(self) -> None:
+        if self.create_object_button.isEnabled():
+            self.create_object_menu.popup(pointer_backend().position())
+
+    def _delete_selected_objects(self) -> None:
+        if self.controller.document is None:
+            return
+        ids = self.layer_panel.selection.state.selected_ids
+        if ids and not self.controller.commands.objects.delete(ids):
+            self._show_operation_status("选中对象包含锁定目标，不能删除", 4000)
+
+    def _start_object_transform(self, mode: str) -> None:
+        self._activate_tool("object")
+        self.tool_actions["object"].setChecked(True)
+        tool = cast(ObjectTool, self._tools["object"])
+        point = self.canvas_view.viewport_to_document(
+            self.canvas_view.viewport().mapFromGlobal(pointer_backend().position())
+        )
+        if tool.begin_transform(mode, point, self.object_properties.transform_pivot()):
+            self.canvas_view.setFocus()
+            self._show_operation_status(
+                "G 移动 / S 缩放 / R 旋转 · X/Y 轴约束 · Shift 精调 · "
+                "左键/Enter 确认 · Esc/右键取消"
+            )
 
     def _show_operation_status(self, message: str, timeout: int = 0) -> None:
         self._status_message_generation += 1
@@ -1124,6 +1224,7 @@ class MainWindow(QMainWindow):
 
     def _update_shortcut_hint(self, tool_name: str) -> None:
         hints = {
+            "object": "G/S/R 变换 · Del 删除 · Shift+A 创建 · 滚轮缩放",
             "brush": "B 画笔 · 拖动绘制 · 中键/Space 平移",
             "eraser": "E 橡皮 · 拖动擦除 · 中键/Space 平移",
             "eyedropper": "I 吸管 · 左键前景色 · 右键背景色",
@@ -1213,7 +1314,7 @@ class MainWindow(QMainWindow):
             self.controller.sessions_changed.connect(self._refresh_workspace_tabs)
             self.controller.active_session_changed.connect(self._refresh_workspace_tabs)
             self.controller.active_session_changed.connect(
-                lambda _index: QTimer.singleShot(0, self._configure_active_read_only_surface)
+                lambda _index: QTimer.singleShot(0, self, self._configure_active_read_only_surface)
             )
             self.controller.surfaces_changed.connect(self._refresh_surface_tabs)
             self.controller.animation_surface_changed.connect(self._on_animation_surface_changed)
@@ -1969,7 +2070,7 @@ class MainWindow(QMainWindow):
         if tool_name == "sprite_slice" and hasattr(self, "sprite_frames_dock"):
             self.sprite_frames_dock.show()
             self._resize_sprite_frame_dock()
-            QTimer.singleShot(0, self._resize_sprite_frame_dock)
+            QTimer.singleShot(0, self, self._resize_sprite_frame_dock)
 
     def _activate_transform_command(self) -> None:
         if self.controller.document is None or self._editing_busy:
@@ -3458,7 +3559,7 @@ class MainWindow(QMainWindow):
         if self._group_expansion_restore_scheduled:
             return
         self._group_expansion_restore_scheduled = True
-        QTimer.singleShot(0, self._restore_pending_group_expansion)
+        QTimer.singleShot(0, self, self._restore_pending_group_expansion)
 
     def _restore_pending_group_expansion(self) -> None:
         preserved = self._pending_group_expansion
@@ -3601,6 +3702,13 @@ class MainWindow(QMainWindow):
             "rectangle_selection",
             "eyedropper",
         }
+        self.create_object_toolbar_action.setVisible(not pixel)
+        self.create_object_button.setEnabled(
+            not pixel
+            and self.controller.document is not None
+            and not self._editing_busy
+            and not self._active_surface_is_read_only()
+        )
         for name, action in self.tool_actions.items():
             visible = name in pixel_tools if pixel else name not in pixel_tools - {"eyedropper"}
             action.setVisible(visible)
@@ -3945,16 +4053,16 @@ class MainWindow(QMainWindow):
             and self._slice_preview_reference_id is not None
             and self.tool_controller.active_tool is self._tools.get("sprite_slice")
         ):
-            QTimer.singleShot(0, self._refresh_slice_preview_reference)
+            QTimer.singleShot(0, self, self._refresh_slice_preview_reference)
         if affects_rendered_content(event) and self._active_sprite_animation() is not None:
-            QTimer.singleShot(0, self._configure_animation_surface)
+            QTimer.singleShot(0, self, self._configure_animation_surface)
         session = getattr(self.controller, "active_session", None)
         if (
             affects_rendered_content(event)
             and session is not None
             and EditingSurfaceRef("tile") in session.open_surfaces
         ):
-            QTimer.singleShot(0, self._refresh_tile_workspace)
+            QTimer.singleShot(0, self, self._refresh_tile_workspace)
 
     def _select_all(self) -> None:
         document = self.controller.document
@@ -4227,6 +4335,8 @@ class MainWindow(QMainWindow):
             return
         self.settings.save_window(self)
         self._status_timer.stop()
+        self._status_layout_timer.stop()
+        self.statusBar().removeEventFilter(self)
         self.tool_controller.active_tool.deactivate()
         runners = {self.controller.jobs, self.controller.preview_jobs}
         for session in getattr(self.controller, "sessions", ()):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from math import atan2, degrees, hypot
+from typing import cast
 from uuid import UUID
 
 from PySide6.QtCore import QPointF, QRectF, Qt
@@ -17,11 +19,14 @@ from easypicture.domain import (
     FloatRect,
     Point,
     RasterObject,
+    SvgObject,
+    TextObject,
     walk_nodes,
 )
-from easypicture.domain.coordinates import RasterMapping, validate_object_transform
+from easypicture.domain.coordinates import RasterMapping
 from easypicture.domain.effective import iter_effective_leaves
-from easypicture.tools.object_hit_test import opaque_at
+from easypicture.domain.object_operations import transformed_object_matrices
+from easypicture.tools.object_hit_test import opaque_at, opaque_in_rect
 from easypicture.tools.protocol import NullTool, ToolContext
 from easypicture.ui.property_binding import interaction_coordinator
 from easypicture.ui.selection_state import SelectionCoordinator
@@ -45,6 +50,10 @@ class ObjectTool(NullTool):
         self._consumed_keys: set[int] = set()
         self._canceled_button = False
         self._unsubscribe: Callable[[], None] | None = None
+        self._mode: str | None = None
+        self._pivot = Point(0, 0)
+        self._axis: str | None = None
+        self._last_point = Point(0, 0)
 
     def activate(self, context: ToolContext) -> None:
         super().activate(context)
@@ -68,12 +77,49 @@ class ObjectTool(NullTool):
         self._box = None
         self._ids = ()
         self._delta = AffineTransform()
+        self._mode = None
+        self._axis = None
+
+    def begin_transform(self, mode: str, point: Point, pivot: Point) -> bool:
+        context = self._context
+        document = context.document_provider() if context else None
+        if context is None or document is None or self._start is not None:
+            return False
+        ids = self._selection().state.selected_ids
+        if not ids:
+            return False
+        try:
+            transformed_object_matrices(document, ids, AffineTransform())
+        except (ValueError, PermissionError) as error:
+            if context.status:
+                context.status(str(error))
+            return False
+        if not interaction_coordinator(context.canvas).acquire(self, self._cancel):
+            return False
+        self._ids, self._start, self._last_point = ids, point, point
+        self._pivot, self._mode = pivot, mode
+        self._revision = document.revision
+        self._unsubscribe = document.subscribe(self._document_changed)
+        if context.status:
+            context.status("移动" if mode == "g" else "缩放" if mode == "s" else "旋转")
+        return True
+
+    def _finish(self) -> None:
+        context, ids, delta = self._context, self._ids, self._delta
+        self._cancel()
+        if context and context.commands:
+            context.commands.transform_objects(ids, delta)
 
     def _document_changed(self, event: DocumentEvent) -> None:
         if isinstance(event, DocumentRevisionChanged) and event.revision != self._revision:
             self._cancel()
 
     def mouse_press(self, event: QMouseEvent) -> bool:
+        if self._mode is not None and event.button() == Qt.MouseButton.LeftButton:
+            self.mouse_move(event)
+            self._finish()
+            self._canceled_button = True
+            return True
         if event.button() == Qt.MouseButton.RightButton and self._start is not None:
             self._cancel()
             self._canceled_button = True
@@ -157,29 +203,60 @@ class ObjectTool(NullTool):
                 ).normalized()
             )
         else:
-            delta = AffineTransform.translation(point.x - self._start.x, point.y - self._start.y)
-            matrices: dict[UUID, AffineTransform] = {}
-            try:
-                for key in self._ids:
-                    for node in walk_nodes((document.node_by_id(key),)):
-                        if isinstance(node, Collection):
-                            continue
-                        matrix = node.transform.then(delta)
-                        if isinstance(node, RasterObject):
-                            matrix = node.world_transform.then(delta).then(
-                                AffineTransform.translation(-node.origin.x, -node.origin.y)
-                            )
-                        validate_object_transform(matrix)
-                        matrices[node.id] = matrix
-            except ValueError:
-                return True
-            self._delta = delta
-            context.canvas.render_coordinator.set_object_transform_preview(matrices)
+            self._last_point = point
+            self._preview_transform(point, event.modifiers())
         return True
+
+    def _preview_transform(self, point: Point, modifiers: Qt.KeyboardModifier) -> None:
+        context = self._context
+        if context is None or self._start is None:
+            return
+        document = context.document_provider()
+        if document is None:
+            return
+        factor = 0.1 if modifiers & Qt.KeyboardModifier.ShiftModifier else 1.0
+        dx, dy = point.x - self._start.x, point.y - self._start.y
+        if self._mode == "r":
+            angle = degrees(
+                atan2(point.y - self._pivot.y, point.x - self._pivot.x)
+                - atan2(self._start.y - self._pivot.y, self._start.x - self._pivot.x)
+            )
+            angle = (angle + 180) % 360 - 180
+            delta = AffineTransform.rotation(angle * factor)
+        elif self._mode == "s":
+            initial = hypot(self._start.x - self._pivot.x, self._start.y - self._pivot.y)
+            ratio = (
+                hypot(point.x - self._pivot.x, point.y - self._pivot.y) / initial
+                if initial > 1e-6
+                else 1 + dx / 100
+            )
+            scale = 1 + (ratio - 1) * factor
+            delta = AffineTransform.scale(
+                1 if self._axis == "y" else scale, 1 if self._axis == "x" else scale
+            )
+        else:
+            delta = AffineTransform.translation(
+                0 if self._axis == "y" else dx * factor,
+                0 if self._axis == "x" else dy * factor,
+            )
+        if self._mode in {"s", "r"}:
+            delta = (
+                AffineTransform.translation(-self._pivot.x, -self._pivot.y)
+                .then(delta)
+                .then(AffineTransform.translation(self._pivot.x, self._pivot.y))
+            )
+        try:
+            matrices = transformed_object_matrices(document, self._ids, delta)
+        except ValueError, PermissionError:
+            return
+        self._delta = delta
+        context.canvas.render_coordinator.set_object_transform_preview(matrices)
 
     def mouse_release(self, event: QMouseEvent) -> bool:
         if self._canceled_button:
             self._canceled_button = False
+            return True
+        if self._mode is not None:
             return True
         if self._start is None or not self._context:
             return False
@@ -193,13 +270,22 @@ class ObjectTool(NullTool):
             if rect.isEmpty():
                 self._cancel()
                 return True
-            candidates = document.spatial_index.query(
-                FloatRect(rect.x(), rect.y(), rect.width(), rect.height())
-            )
+            query = FloatRect(rect.x(), rect.y(), rect.width(), rect.height())
+            candidates = document.spatial_index.query(query)
             ids = tuple(
                 entry.leaf.id
                 for entry in iter_effective_leaves(document)
-                if entry.visible and entry.leaf.id in candidates
+                if entry.visible
+                and entry.leaf.id in candidates
+                and (
+                    not self._ignore_transparent()
+                    or (
+                        entry.opacity > 0
+                        and opaque_in_rect(
+                            cast(RasterObject | TextObject | SvgObject, entry.leaf), query
+                        )
+                    )
+                )
             )
             selection = self._selection()
             selection.select((*selection.state.selected_ids, *ids) if self._extend else ids)
@@ -210,6 +296,12 @@ class ObjectTool(NullTool):
         return True
 
     def key_press(self, event: QKeyEvent) -> bool:
+        if self._mode is not None and event.key() in (Qt.Key.Key_X, Qt.Key.Key_Y):
+            self._consumed_keys.add(event.key())
+            axis = "x" if event.key() == Qt.Key.Key_X else "y"
+            self._axis = None if self._axis == axis else axis
+            self._preview_transform(self._last_point, event.modifiers())
+            return True
         if self._start is not None and event.key() in (
             Qt.Key.Key_Escape,
             Qt.Key.Key_Return,
@@ -217,9 +309,9 @@ class ObjectTool(NullTool):
         ):
             self._consumed_keys.add(event.key())
             if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._ids and self._context:
-                if self._context.commands:
-                    self._context.commands.transform_objects(self._ids, self._delta)
-            self._cancel()
+                self._finish()
+            else:
+                self._cancel()
             return True
         return False
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from easypicture.commands import DocumentCommandService
 from easypicture.imaging import ShapeGeometry, ShapeKind
 from easypicture.ui.dialogs import NewDocumentDialog, NewDocumentSpec
-from easypicture.ui.numeric_ranges import COMMON_CANVAS_SIZE
+from easypicture.ui.numeric_ranges import COMMON_CANVAS_SIZE, SIGNED_COORDINATE_RANGE
 from easypicture.ui.shape_properties import ShapePropertiesPanel
 from easypicture.ui.svg_properties import SvgPropertiesPanel
 from easypicture.ui.text_properties import TextPropertiesPanel
@@ -20,7 +20,7 @@ def test_spatial_fields_share_common_soft_ranges_and_keep_hard_entry(qtbot) -> N
     for widget in (shape, svg, text, transform, new_document):
         qtbot.addWidget(widget)
 
-    assert shape._box_fields[2].drag_maximum == COMMON_CANVAS_SIZE
+    assert shape._box_fields[2].drag_maximum == SIGNED_COORDINATE_RANGE.soft_maximum
     assert shape._box_fields[2].maximum() == 32768.0
     assert svg.width_spin.drag_maximum == COMMON_CANVAS_SIZE
     assert svg.width_spin.maximum() == 32768.0
@@ -30,7 +30,7 @@ def test_spatial_fields_share_common_soft_ranges_and_keep_hard_entry(qtbot) -> N
     assert text.width_spin.maximum() == 8192.0
     assert text.size_spin.drag_maximum == 256.0
     assert text.size_spin.maximum() == 1024.0
-    assert transform._fields[0].drag_maximum == COMMON_CANVAS_SIZE
+    assert transform._fields[0].drag_maximum == SIGNED_COORDINATE_RANGE.soft_maximum
     assert transform._fields[0].maximum() == 32768.0
     assert new_document.width_spin.drag_maximum == int(COMMON_CANVAS_SIZE)
     assert new_document.width_spin.maximum() == 8192

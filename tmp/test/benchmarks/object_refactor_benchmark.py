@@ -104,7 +104,11 @@ def measure(size: int, layers: int, vectors: int) -> dict[str, object]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", type=Path, default=Path(".cache/object-refactor-current.json"))
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=(Path(__file__).resolve().parents[1] / "runs" / "object-refactor-current.json"),
+    )
     args = parser.parse_args()
     app = QApplication([])
     results = []

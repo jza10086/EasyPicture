@@ -19,14 +19,30 @@ from easypicture.jobs import CancellationToken, JobCancelled
 from easypicture.persistence import DocumentSnapshot, load_project, save_project
 
 OUTPUT_PATH = (
-    Path(os.environ.get("EASYPICTURE_BENCHMARK_DIR", "../archive/runs/benchmarks")) / "p3.json"
+    Path(
+        os.environ.get(
+            "EASYPICTURE_BENCHMARK_DIR",
+            str(Path(__file__).resolve().parents[1] / "runs" / "benchmarks"),
+        )
+    )
+    / "p3.json"
 )
 PROJECT_PATH = (
-    Path(os.environ.get("EASYPICTURE_BENCHMARK_DIR", "../archive/runs/benchmarks"))
+    Path(
+        os.environ.get(
+            "EASYPICTURE_BENCHMARK_DIR",
+            str(Path(__file__).resolve().parents[1] / "runs" / "benchmarks"),
+        )
+    )
     / "p3-dense.limg"
 )
 CANCEL_PATH = (
-    Path(os.environ.get("EASYPICTURE_BENCHMARK_DIR", "../archive/runs/benchmarks"))
+    Path(
+        os.environ.get(
+            "EASYPICTURE_BENCHMARK_DIR",
+            str(Path(__file__).resolve().parents[1] / "runs" / "benchmarks"),
+        )
+    )
     / "p3-cancelled.limg"
 )
 DIMENSION = 4096

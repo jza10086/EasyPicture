@@ -1,6 +1,6 @@
 # 目录与发布约定
 
-仓库根目录按用途保留三个可见文件夹：
+仓库源代码、归档和发布产物分开；当前测试按约定集中在 `tmp/test/`：
 
 ```text
 EasyPicture/
@@ -14,10 +14,15 @@ EasyPicture/
 │  └─ .cache/             # 开发工具缓存，Git 忽略
 ├─ archive/
 │  ├─ legacy-2026-10-26/  # 整理前材料，不删除旧工程或构建
-│  ├─ validation/         # 原测试、性能场景及输入素材
+│  ├─ validation/         # 历史报告及输入素材
 │  ├─ migrations/         # 路径迁移清单
-│  ├─ runs/               # 按运行时间存放构建/检查/报告
+│  ├─ runs/               # 构建记录及历史检查报告
 │  └─ releases/           # 后续发布时保留被替换的成品
+├─ tmp/test/
+│  ├─ tests/              # 当前回归测试
+│  ├─ benchmarks/         # 性能场景
+│  ├─ cache/              # 检查缓存，Git 忽略
+│  └─ runs/               # 测试数据、日志、截图和报告，Git 忽略
 └─ release/
    └─ EasyPicture.exe
 ```
@@ -30,8 +35,14 @@ EasyPicture/
 所有 PowerShell 入口以自身位置定位工作区，支持从其他当前目录调用。
 `sync.ps1` 用锁定依赖创建 `source/.venv`；其他入口调用该环境的 Python，
 不依赖旧目录的可执行脚本或系统 Python 包。
-pytest 的 `testpaths` 和 `pythonpath` 指向归档测试及当前源码。
+pytest 的 `testpaths` 和 `pythonpath` 指向 `tmp/test/tests` 及当前源码。
 Ruff 显式声明项目包与测试包，避免目录搬迁改变导入分类。
+
+`check.ps1` 将单元、UI、CLI 集成用例放在三个独立进程中完整执行，分别保留文本日志。
+当前 Windows / PySide6 6.11.1 环境中，全部用例合并到一个进程，或启用 JUnit XML 收集时，
+Qt 对象回收阶段可出现 `0xc0000374` 堆异常；未修改的 v0.9.0 同样复现。
+默认按组独立运行并保留文本日志，不代表已修复合并运行／XML 收集的生命周期问题。
+没有跳过用例或失败后自动重试。
 
 检查输出进入 `archive/runs/check-时间/`：Ruff、mypy、完整 pytest、JUnit 和
 应用启动、v5 读写、图片导出、SVG、软件渲染五项离屏 smoke。

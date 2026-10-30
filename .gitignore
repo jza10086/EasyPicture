@@ -36,3 +36,5 @@ Thumbs.db
 /archive/runs/
 /archive/releases/
 /archive/validation/test-assets/
+/tmp/test/cache/
+/tmp/test/runs/

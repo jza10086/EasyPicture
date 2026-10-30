@@ -100,7 +100,8 @@ def main() -> None:
     staged = run / "distribution"
     staged.mkdir()
     shutil.copy2(candidate, staged / "EasyPicture.exe")
-    results = smoke([str(staged / "EasyPicture.exe")], run / "smoke")
+    smoke_output = inside(ROOT / "tmp" / "test" / "runs" / f"package-{stamp}")
+    results = smoke([str(staged / "EasyPicture.exe")], smoke_output)
     release = inside(ROOT / "release")
     release.mkdir(exist_ok=True)
     existing = list(release.iterdir())
@@ -118,6 +119,7 @@ def main() -> None:
         "executable": "release/EasyPicture.exe",
         "bytes": (release / "EasyPicture.exe").stat().st_size,
         "validation": results,
+        "validation_directory": str(smoke_output.relative_to(ROOT)),
         "native_mouse": "manual acceptance pending",
         "hardware_opengl": "not covered by offscreen checks",
     }

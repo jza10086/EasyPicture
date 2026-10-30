@@ -27,7 +27,13 @@ from easypicture.persistence import DocumentSnapshot
 from easypicture.pixels import MaskArray, RGBAArray, TileCoord, TilePixelStore
 
 OUTPUT_PATH = (
-    Path(os.environ.get("EASYPICTURE_BENCHMARK_DIR", "../archive/runs/benchmarks")) / "p4.json"
+    Path(
+        os.environ.get(
+            "EASYPICTURE_BENCHMARK_DIR",
+            str(Path(__file__).resolve().parents[1] / "runs" / "benchmarks"),
+        )
+    )
+    / "p4.json"
 )
 DIMENSION = 4096
 

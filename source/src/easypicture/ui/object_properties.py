@@ -12,6 +12,11 @@ from easypicture.commands import DocumentCommandService
 from easypicture.domain import AffineTransform, Document, Point
 from easypicture.domain.object_operations import transformed_object_matrices
 from easypicture.ui.drag_value_spinbox import DragValueDoubleSpinBox
+from easypicture.ui.numeric_ranges import (
+    OBJECT_SCALE_RANGE,
+    ROTATION_DEGREES_RANGE,
+    SIGNED_COORDINATE_RANGE,
+)
 from easypicture.ui.property_binding import EditTarget, PropertyEditSession
 from easypicture.ui.selection_state import SelectionCoordinator, SelectionState
 
@@ -35,19 +40,27 @@ class ObjectTransformBlock(QWidget):
         self._field = ""
         self._syncing = False
         self._pivot = Point(0, 0)
+        self._custom_pivot = False
         self.message = QLabel(self)
         self.fields: dict[str, DragValueDoubleSpinBox] = {}
         form = QFormLayout(self)
-        for name, label, minimum, maximum, default in (
-            ("x", "平移 X", -32768, 32768, 0),
-            ("y", "平移 Y", -32768, 32768, 0),
-            ("rotation", "旋转 °", -3600, 3600, 0),
-            ("scale_x", "缩放 X", -100, 100, 1),
-            ("scale_y", "缩放 Y", -100, 100, 1),
-            ("pivot_x", "共同中心 X", -32768, 32768, 0),
-            ("pivot_y", "共同中心 Y", -32768, 32768, 0),
+        for name, label, limits in (
+            ("x", "平移 X", SIGNED_COORDINATE_RANGE),
+            ("y", "平移 Y", SIGNED_COORDINATE_RANGE),
+            ("rotation", "旋转 °", ROTATION_DEGREES_RANGE),
+            ("scale_x", "缩放 X", OBJECT_SCALE_RANGE),
+            ("scale_y", "缩放 Y", OBJECT_SCALE_RANGE),
+            ("pivot_x", "共同中心 X", SIGNED_COORDINATE_RANGE),
+            ("pivot_y", "共同中心 Y", SIGNED_COORDINATE_RANGE),
         ):
-            field = DragValueDoubleSpinBox(minimum, maximum, default, parent=self)
+            field = DragValueDoubleSpinBox(
+                limits.soft_minimum,
+                limits.soft_maximum,
+                limits.default_value,
+                manual_minimum=limits.hard_minimum,
+                manual_maximum=limits.hard_maximum,
+                parent=self,
+            )
             self.fields[name] = field
             form.addRow(label, field)
             if name.startswith("pivot"):
@@ -88,6 +101,7 @@ class ObjectTransformBlock(QWidget):
         self._center()
 
     def _center(self) -> None:
+        self._custom_pivot = False
         document = self._document()
         if document is None:
             return
@@ -107,7 +121,13 @@ class ObjectTransformBlock(QWidget):
             self.message.setText(str(error))
 
     def _set_pivot(self) -> None:
+        self._custom_pivot = True
         self._pivot = Point(self.fields["pivot_x"].value(), self.fields["pivot_y"].value())
+
+    def transform_pivot(self) -> Point:
+        if not self._custom_pivot:
+            self._center()
+        return self._pivot
 
     def _begin(self, name: str) -> None:
         self._field = name

@@ -23,7 +23,13 @@ from easypicture.pixels import TileCoord
 from easypicture.render import DEFAULT_RENDER_CACHE_BYTES, TileRenderer
 
 OUTPUT_PATH = (
-    Path(os.environ.get("EASYPICTURE_BENCHMARK_DIR", "../archive/runs/benchmarks")) / "p2.json"
+    Path(
+        os.environ.get(
+            "EASYPICTURE_BENCHMARK_DIR",
+            str(Path(__file__).resolve().parents[1] / "runs" / "benchmarks"),
+        )
+    )
+    / "p2.json"
 )
 DIMENSION = 4096
 LAYER_COUNT = 10

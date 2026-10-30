@@ -24,7 +24,13 @@ from easypicture.pixels import Rect, TilePixelStore
 from easypicture.render import rgba_tile_to_qimage
 
 OUTPUT_PATH = (
-    Path(os.environ.get("EASYPICTURE_BENCHMARK_DIR", "../archive/runs/benchmarks")) / "p0.json"
+    Path(
+        os.environ.get(
+            "EASYPICTURE_BENCHMARK_DIR",
+            str(Path(__file__).resolve().parents[1] / "runs" / "benchmarks"),
+        )
+    )
+    / "p0.json"
 )
 TILE_SIZES = (256, 512)
 
