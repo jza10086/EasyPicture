@@ -200,6 +200,9 @@ def test_text_creation_uses_selected_collection_or_object_parent(qapp) -> None:
         document_provider=lambda: document,
         selected_node_provider=lambda: selected[-1] if selected else document.active_layer,
         select_node=selected.append,
+        foreground_provider=lambda: (12, 34, 56, 255),
+        initialize_text=None,
+        object_created=None,
         overlays=overlays,
     )
     tool = TextTool()

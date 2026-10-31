@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
-from uuid import UUID
+from functools import lru_cache
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QColor, QHideEvent, QKeyEvent
+from PySide6.QtGui import QColor, QHideEvent, QKeyEvent, QPainterPath
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
@@ -41,6 +42,12 @@ from easypicture.domain import (
     primitive_bounds,
     update_editable_svg,
 )
+from easypicture.domain.object_operations import (
+    edited_object_transform,
+    object_center_offset,
+    object_local_bounds,
+    object_pivot,
+)
 from easypicture.ui.blender_combo_box import BlenderComboBox
 from easypicture.ui.drag_value_spinbox import (
     DragValueDoubleSpinBox,
@@ -65,6 +72,19 @@ from easypicture.ui.property_binding import (
 from easypicture.ui.property_blocks import FillStrokeFields, choose_property_color
 
 
+@lru_cache(maxsize=64)
+def _fill_rule_changes_shape(points: tuple[tuple[float, float], ...]) -> bool:
+    path = QPainterPath()
+    path.moveTo(*points[0])
+    for point in points[1:]:
+        path.lineTo(*point)
+    path.closeSubpath()
+    path.setFillRule(Qt.FillRule.OddEvenFill)
+    winding = QPainterPath(path)
+    winding.setFillRule(Qt.FillRule.WindingFill)
+    return not winding.subtracted(path).isEmpty()
+
+
 class SvgPropertiesPanel(QWidget):
     object_changed = Signal(object)
     preview_changed = Signal(object)
@@ -81,6 +101,7 @@ class SvgPropertiesPanel(QWidget):
         self._primitive: EditableSvgPrimitive | None = None
         self._preview_object: SvgObject | None = None
         self._syncing = False
+        self._color_editing = False
         self._interaction_active = False
         self._edit_session = PropertyEditSession[SvgObject](
             self._edit_target,
@@ -90,8 +111,6 @@ class SvgPropertiesPanel(QWidget):
         )
         self._fill_color = QColor(255, 255, 255, 255)
         self._stroke_color = QColor(0, 0, 0, 255)
-        self._resource_source_svg: str | None = None
-        self._resource_object_id: UUID | None = None
 
         self.name_edit = QLineEdit(self)
         self._name_valid = True
@@ -103,6 +122,13 @@ class SvgPropertiesPanel(QWidget):
         self.visible_check = QCheckBox("可见", self)
         self.locked_check = QCheckBox("锁定对象", self)
 
+        self.length_spin = self._range_field(OBJECT_DIMENSION_RANGE, suffix=" px")
+        self.width_spin = self._range_field(OBJECT_DIMENSION_RANGE, suffix=" px")
+        self.length_spin.setToolTip("沿对象局部 X 轴的尺寸，不包含描边；保持对象中心")
+        self.width_spin.setToolTip("沿对象局部 Y 轴的尺寸，不包含描边；保持对象中心")
+        self.size_form = QFormLayout()
+        self.size_form.addRow("长度", self.length_spin)
+        self.size_form.addRow("宽度", self.width_spin)
         self.geometry_stack = QStackedWidget(self)
         self.geometry_none = QLabel("该 SVG 图元暂不支持直接几何编辑", self)
         self.geometry_none.setWordWrap(True)
@@ -175,14 +201,12 @@ class SvgPropertiesPanel(QWidget):
         for combo in (self.fill_mode, self.stroke_mode):
             combo.addItem("无", "none")
             combo.addItem("纯色", "solid")
-            combo.addItem("资源（只读）", "resource")
+            combo.setPlaceholderText("SVG 渐变／图案")
         self.paint_fields = FillStrokeFields.create(
             self, self._range_field(STROKE_WIDTH_RANGE, suffix=" px")
         )
         self.fill_button = self.paint_fields.fill
         self.stroke_button = self.paint_fields.stroke
-        self.reset_fill_resource_button = QPushButton("重置填充覆盖", self)
-        self.reset_stroke_resource_button = QPushButton("重置描边覆盖", self)
         self.stroke_width_spin = self.paint_fields.width
         self.line_cap_combo = BlenderComboBox(self)
         for label, value in (("平头", "butt"), ("圆头", "round"), ("方头", "square")):
@@ -198,7 +222,7 @@ class SvgPropertiesPanel(QWidget):
         self.dash_list.setMaximumHeight(92)
         self.dash_value_spin = self._range_field(DASH_LENGTH_RANGE, suffix=" px")
         self.dash_offset_spin = self._range_field(DASH_OFFSET_RANGE, suffix=" px")
-        dash_buttons = QWidget(self)
+        dash_buttons = self.dash_buttons = QWidget(self)
         dash_buttons_layout = QHBoxLayout(dash_buttons)
         dash_buttons_layout.setContentsMargins(0, 0, 0, 0)
         self.add_dash_button = QPushButton("添加", dash_buttons)
@@ -219,13 +243,13 @@ class SvgPropertiesPanel(QWidget):
         self.transform_form.addRow("不透明度", self.opacity_spin)
         self.transform_form.addRow(self.visible_check)
         self.transform_form.addRow(self.locked_check)
-        style_form = QFormLayout()
+        self.paint_section = QWidget(self)
+        style_form = self.style_form = QFormLayout(self.paint_section)
+        style_form.setContentsMargins(0, 0, 0, 0)
         style_form.addRow("填充", self.fill_mode)
         style_form.addRow("填充颜色", self.fill_button)
-        style_form.addRow(self.reset_fill_resource_button)
         style_form.addRow("描边", self.stroke_mode)
         style_form.addRow("描边颜色", self.stroke_button)
-        style_form.addRow(self.reset_stroke_resource_button)
         style_form.addRow("描边宽度", self.stroke_width_spin)
         style_form.addRow("端点", self.line_cap_combo)
         style_form.addRow("连接", self.line_join_combo)
@@ -241,16 +265,21 @@ class SvgPropertiesPanel(QWidget):
         layout.addWidget(QLabel("SVG 矢量属性", self))
         layout.addLayout(self.transform_form)
         self.geometry_title = QLabel("图元几何", self)
+        layout.addLayout(self.size_form)
         layout.addWidget(self.geometry_title)
         layout.addWidget(self.geometry_stack)
-        layout.addWidget(QLabel("填充与描边", self))
-        layout.addLayout(style_form)
+        layout.addWidget(self.paint_section)
         layout.addStretch(1)
         self._connect_signals()
         self.set_object(None)
 
     def _connect_signals(self) -> None:
         self.name_edit.editingFinished.connect(self._finish_name_edit)
+        for field in (self.length_spin, self.width_spin):
+            field.valueChanged.connect(self._preview_dimensions)
+            field.interactionStarted.connect(self._begin_interaction)
+            field.editingFinished.connect(self._finish_interaction)
+            field.interactionCanceled.connect(self._cancel_interaction)
         self.rect_fields[2].valueChanged.connect(self._rect_size_changed)
         self.rect_fields[3].valueChanged.connect(self._rect_size_changed)
         fields = (
@@ -283,8 +312,6 @@ class SvgPropertiesPanel(QWidget):
         self.locked_check.toggled.connect(self._commit_candidate)
         self.fill_button.clicked.connect(lambda: self._pick_color("fill"))
         self.stroke_button.clicked.connect(lambda: self._pick_color("stroke"))
-        self.reset_fill_resource_button.clicked.connect(lambda: self._reset_resource("fill"))
-        self.reset_stroke_resource_button.clicked.connect(lambda: self._reset_resource("stroke"))
         self.vertex_combo.currentIndexChanged.connect(self._sync_selected_vertex)
         self.dash_list.currentRowChanged.connect(self._sync_selected_dash)
         self.add_vertex_button.clicked.connect(self._add_vertex)
@@ -385,16 +412,6 @@ class SvgPropertiesPanel(QWidget):
                     self.name_edit.setText(vector_object.name)
             finally:
                 self._syncing = was_syncing
-        if vector_object is None or vector_object.id != self._resource_object_id:
-            original = parse_editable_svg(vector_object.svg) if vector_object else None
-            self._resource_object_id = vector_object.id if vector_object else None
-            self._resource_source_svg = (
-                vector_object.svg
-                if vector_object is not None
-                and original is not None
-                and (original.fill_resource is not None or original.stroke_resource is not None)
-                else None
-            )
         self._object = vector_object
         self._preview_object = None
         self._primitive = parse_editable_svg(vector_object.svg) if vector_object else None
@@ -451,11 +468,19 @@ class SvgPropertiesPanel(QWidget):
                 "polygon": "多边形",
             }.get(vector_object.element_kind, vector_object.element_kind)
         )
+        if (
+            self._primitive is not None
+            and isinstance(self._primitive.geometry, SvgPolygonGeometry)
+            and len(self._primitive.geometry.points) == 3
+        ):
+            self.kind_label.setText("三角形")
         self._set_field(self.opacity_spin, vector_object.opacity * 100.0)
         self.visible_check.setChecked(vector_object.visible)
         self.locked_check.setChecked(vector_object.locked)
 
     def _sync_primitive(self, primitive: EditableSvgPrimitive | None) -> None:
+        self._sync_dimensions()
+        self._sync_style_visibility(primitive)
         self.geometry_title.show()
         self.geometry_stack.show()
         self._set_geometry_rows_visible(self.rect_page, self.rect_fields, True)
@@ -469,8 +494,6 @@ class SvgPropertiesPanel(QWidget):
                 self.stroke_mode,
                 self.fill_button,
                 self.stroke_button,
-                self.reset_fill_resource_button,
-                self.reset_stroke_resource_button,
                 self.stroke_width_spin,
                 self.line_cap_combo,
                 self.line_join_combo,
@@ -487,8 +510,6 @@ class SvgPropertiesPanel(QWidget):
             self.stroke_mode,
             self.fill_button,
             self.stroke_button,
-            self.reset_fill_resource_button,
-            self.reset_stroke_resource_button,
             self.stroke_width_spin,
             self.line_cap_combo,
             self.line_join_combo,
@@ -575,17 +596,87 @@ class SvgPropertiesPanel(QWidget):
         self._set_combo(self.fill_rule_combo, primitive.style.fill_rule.value)
         self._set_field(self.dash_offset_spin, primitive.style.dash_offset)
         self._sync_dash_list(primitive.style.dash_array)
-        resource_primitive = (
-            parse_editable_svg(self._resource_source_svg)
-            if self._resource_source_svg is not None
-            else None
+
+    def _sync_dimensions(self) -> None:
+        node = self._preview_object or self._object
+        primitive = self._primitive
+        box = primitive is not None and isinstance(
+            primitive.geometry, (SvgRectGeometry, SvgEllipseGeometry, SvgCircleGeometry)
         )
-        self.reset_fill_resource_button.setEnabled(
-            resource_primitive is not None and resource_primitive.fill_resource is not None
+        for field in (self.length_spin, self.width_spin):
+            self._set_form_row_visible(self.size_form, field, box)
+        if not box or node is None:
+            return
+        document = self.commands.document
+        if document is not None:
+            sync_spatial_range(self.length_spin, document.width, dimension=True)
+            sync_spatial_range(self.width_spin, document.height, dimension=True)
+        bounds, matrix = object_local_bounds(node), node.transform
+        self._set_field(self.length_spin, bounds.width * math.hypot(matrix.a, matrix.b))
+        self._set_field(self.width_spin, bounds.height * math.hypot(matrix.c, matrix.d))
+
+    def _preview_dimensions(self, _value: float) -> None:
+        node = self._object
+        if self._syncing or node is None:
+            return
+        try:
+            matrix, pivot = edited_object_transform(
+                node,
+                object_pivot(node),
+                self.length_spin.value(),
+                self.width_spin.value(),
+                math.degrees(math.atan2(node.transform.b, node.transform.a)),
+                object_center_offset(node),
+            )
+            candidate = replace(node, transform=matrix, transform_pivot=pivot)
+        except ValueError:
+            self._edit_session.reject()
+            return
+        if self._edit_session.active:
+            self._edit_session.preview(candidate)
+        else:
+            self._publish_candidate(candidate)
+
+    def _sync_style_visibility(self, primitive: EditableSvgPrimitive | None) -> None:
+        self.paint_section.setVisible(primitive is not None)
+        if primitive is None:
+            return
+        geometry, style = primitive.geometry, primitive.style
+        line = isinstance(geometry, SvgLineGeometry)
+        polyline = isinstance(geometry, SvgPolylineGeometry)
+        polygon = isinstance(geometry, SvgPolygonGeometry)
+        fill = style.fill is not None or primitive.fill_resource is not None
+        stroke = style.stroke is not None or primitive.stroke_resource is not None
+        points = (
+            len(geometry.points)
+            if isinstance(geometry, (SvgPolygonGeometry, SvgPolylineGeometry))
+            else 0
         )
-        self.reset_stroke_resource_button.setEnabled(
-            resource_primitive is not None and resource_primitive.stroke_resource is not None
+        supports_fill = not line and (not polyline or points > 2)
+        joins = stroke and (polygon or (polyline and points > 2))
+        fill_rule = (
+            fill
+            and isinstance(geometry, SvgPolygonGeometry)
+            and _fill_rule_changes_shape(geometry.points)
         )
+        dash = bool(style.dash_array)
+        for widget, visible in (
+            (self.fill_mode, supports_fill),
+            (self.fill_button, supports_fill and fill),
+            (self.stroke_button, stroke),
+            (self.stroke_width_spin, stroke),
+            (self.line_cap_combo, stroke and (line or polyline)),
+            (self.line_join_combo, joins),
+            (self.miter_limit_spin, joins and style.line_join is SvgLineJoin.MITER),
+            (self.fill_rule_combo, fill_rule),
+            (self.dash_list, stroke and dash),
+            (self.dash_value_spin, stroke and dash),
+            (self.dash_buttons, stroke),
+            (self.dash_offset_spin, stroke and dash),
+        ):
+            self._set_form_row_visible(self.style_form, widget, visible)
+        for button in (self.delete_dash_button, self.dash_up_button, self.dash_down_button):
+            button.setVisible(dash)
 
     def _candidate(self) -> SvgObject | None:
         source = self._preview_object or self._object
@@ -602,8 +693,8 @@ class SvgPropertiesPanel(QWidget):
                     source.svg,
                     geometry,
                     style,
-                    preserve_fill_resource=str(self.fill_mode.currentData()) == "resource",
-                    preserve_stroke_resource=str(self.stroke_mode.currentData()) == "resource",
+                    preserve_fill_resource=self.fill_mode.currentIndex() == -1,
+                    preserve_stroke_resource=self.stroke_mode.currentIndex() == -1,
                 )
                 bounds = primitive_bounds(geometry, style)
             except TypeError, ValueError:
@@ -775,7 +866,7 @@ class SvgPropertiesPanel(QWidget):
                 self._syncing = previous
 
     def _finish_name_edit(self) -> None:
-        if self._syncing:
+        if self._syncing or self._color_editing:
             return
         owner = interaction_coordinator(self).owner
         if owner is not None and owner is not self:
@@ -797,6 +888,8 @@ class SvgPropertiesPanel(QWidget):
         self._restore_name()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if self._color_editing:
+            return super().eventFilter(watched, event)
         if watched is self.name_edit:
             if event.type() == QEvent.Type.FocusIn:
                 self._begin_name_edit()
@@ -849,6 +942,7 @@ class SvgPropertiesPanel(QWidget):
     def _publish_candidate(self, candidate: SvgObject) -> None:
         self._preview_object = candidate
         self._primitive = parse_editable_svg(candidate.svg)
+        self._sync_style_visibility(self._primitive)
         self.preview_changed.emit(candidate)
 
     def hideEvent(self, event: QHideEvent) -> None:
@@ -888,69 +982,39 @@ class SvgPropertiesPanel(QWidget):
         changed = bool(changes) and self.commands.update_vector_object(self._object.id, **changes)
         if changed:
             self.object_changed.emit(self._object)
+        self.set_object(self._object)
         return changed
 
     def _pick_color(self, field: str) -> None:
+        interaction_coordinator(self).cancel()
+        self._begin_interaction()
+        if not self._edit_session.active:
+            return
         current = self._fill_color if field == "fill" else self._stroke_color
-        color = choose_property_color(self, current, "SVG 颜色")
-        if color is None:
-            return
-        if field == "fill":
-            self._fill_color = color
-            self._set_combo(self.fill_mode, "solid")
-            self._update_color_button(self.fill_button, self._fill_color)
-        else:
-            self._stroke_color = color
-            self._set_combo(self.stroke_mode, "solid")
-            self._update_color_button(self.stroke_button, self._stroke_color)
-        self._commit_candidate()
 
-    def _reset_resource(self, field: str) -> None:
-        source = self._preview_object or self._object
-        primitive = self._primitive
-        original_svg = self._resource_source_svg
-        if source is None or primitive is None or original_svg is None:
-            return
-        original = parse_editable_svg(original_svg)
-        if original is None:
-            return
-        if field == "fill" and original.fill_resource is None:
-            return
-        if field == "stroke" and original.stroke_resource is None:
-            return
+        def preview(color: QColor) -> None:
+            if not self._edit_session.active:
+                return
+            if field == "fill":
+                self._fill_color = QColor(color)
+                self._set_combo(self.fill_mode, "solid")
+                self._update_color_button(self.fill_button, color)
+            else:
+                self._stroke_color = QColor(color)
+                self._set_combo(self.stroke_mode, "solid")
+                self._update_color_button(self.stroke_button, color)
+            self._preview_from_controls()
+
+        self._color_editing = True
         try:
-            restored_style = replace(
-                primitive.style,
-                fill=None if field == "fill" else primitive.style.fill,
-                stroke=None if field == "stroke" else primitive.style.stroke,
-            )
-            svg = update_editable_svg(
-                original_svg,
-                primitive.geometry,
-                restored_style,
-                preserve_fill_resource=(
-                    field == "fill" or str(self.fill_mode.currentData()) == "resource"
-                ),
-                preserve_stroke_resource=(
-                    field == "stroke" or str(self.stroke_mode.currentData()) == "resource"
-                ),
-            )
-            candidate = replace(
-                source,
-                svg=svg,
-                intrinsic_bounds=primitive_bounds(primitive.geometry, restored_style),
-            )
-        except TypeError, ValueError:
-            return
-        self._preview_object = candidate
-        self._primitive = parse_editable_svg(svg)
-        was_syncing = self._syncing
-        self._syncing = True
-        try:
-            self._sync_primitive(self._primitive)
+            color = choose_property_color(self, current, "SVG 颜色", preview=preview)
+            if color is not None:
+                preview(color)
+                self._finish_interaction()
         finally:
-            self._syncing = was_syncing
-        self._commit_candidate()
+            self._color_editing = False
+            if self._edit_session.active:
+                self._cancel_interaction()
 
     def _sync_selected_vertex(self, _index: int = 0) -> None:
         primitive = self._primitive
@@ -1132,7 +1196,7 @@ class SvgPropertiesPanel(QWidget):
 
     @staticmethod
     def _set_combo(combo: BlenderComboBox, value: str) -> None:
-        combo.setCurrentIndex(max(0, combo.findData(value)))
+        combo.setCurrentIndex(combo.findData(value))
 
     @staticmethod
     def _update_color_button(button: QPushButton, color: QColor) -> None:

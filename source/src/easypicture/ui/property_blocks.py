@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from PySide6.QtGui import QColor
@@ -12,9 +13,17 @@ from easypicture.ui.drag_value_spinbox import DragValueDoubleSpinBox
 from easypicture.ui.property_binding import interaction_coordinator
 
 
-def choose_property_color(parent: QWidget, current: QColor, title: str) -> QColor | None:
+def choose_property_color(
+    parent: QWidget,
+    current: QColor,
+    title: str,
+    *,
+    preview: Callable[[QColor], None] | None = None,
+) -> QColor | None:
     interaction_coordinator(parent).cancel()
     dialog = ColorPickerDialog(current, title, parent)
+    if preview is not None:
+        dialog.color_changed.connect(preview)
     try:
         return dialog.selected_color if dialog.exec() == QDialog.DialogCode.Accepted else None
     finally:

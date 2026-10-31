@@ -120,14 +120,25 @@ class ObjectTool(NullTool):
     def _show_axes(self) -> None:
         if self._context is None:
             return
-        basis = self._basis if self._orientation == "local" else AffineTransform()
-        self._context.canvas.set_transform_axes((self._pivot, basis, self._axis))
+        self._update_axes()
         if self._context.status:
             orientation = "局部" if self._orientation == "local" else "全局"
             self._context.status(
                 f"{self._mode.upper() if self._mode else ''} · {orientation} {self._axis or 'XY'}"
                 " · X/Y 切换轴与坐标系 · L 切换坐标系 · Enter 确认 · Esc 取消"
             )
+
+    def _update_axes(self) -> None:
+        if self._context is None or self._mode is None:
+            return
+        # Only the display follows the preview; gesture calculations keep their initial basis.
+        basis = AffineTransform()
+        if self._orientation == "local":
+            linear = AffineTransform(self._delta.a, self._delta.b, self._delta.c, self._delta.d)
+            basis = self._basis.then(linear)
+        self._context.canvas.set_transform_axes(
+            (self._delta.map_point(self._pivot), basis, self._axis)
+        )
 
     def _finish(self) -> None:
         context, ids, delta = self._context, self._ids, self._delta
@@ -283,6 +294,7 @@ class ObjectTool(NullTool):
             return
         self._delta = delta
         context.canvas.render_coordinator.set_object_transform_preview(matrices)
+        self._update_axes()
 
     def mouse_release(self, event: QMouseEvent) -> bool:
         if self._canceled_button:

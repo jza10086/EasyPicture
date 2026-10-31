@@ -156,6 +156,7 @@ from easypicture.ui.canvas_view import CanvasView
 from easypicture.ui.color_adjustment_controller import ColorAdjustmentController
 from easypicture.ui.color_adjustment_panel import ColorAdjustmentPanel
 from easypicture.ui.color_panel import ColorPanel
+from easypicture.ui.creation_properties import CreationPropertiesPanel
 from easypicture.ui.drag_value_spinbox import configure_numeric_drag_sensitivity
 from easypicture.ui.geometry_dialogs import CanvasSizeDialog, ScaleGeometryDialog
 from easypicture.ui.icons import TOOL_ICONS, icon
@@ -367,6 +368,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_container)
 
         self.overlay_manager = OverlayManager(self.canvas_view.scene())
+        self.creation_properties: CreationPropertiesPanel
         self.tool_context = ToolContext(
             canvas=self.canvas_view,
             overlays=self.overlay_manager,
@@ -377,6 +379,9 @@ class MainWindow(QMainWindow):
             set_background=self._set_background_rgba,
             jobs=self.controller.preview_jobs,
             project_provider=lambda: self.controller.project_document,
+            object_created=self._object_created,
+            initialize_text=lambda node: self.creation_properties.initialize_text(node),
+            initialize_raster=lambda node: self.creation_properties.initialize_raster(node),
             set_busy=self._set_editing_busy,
             status=self.controller.status_message.emit,
             selected_node_provider=lambda: (
@@ -749,6 +754,8 @@ class MainWindow(QMainWindow):
         combo = self.tool_options_panel.shape.kind_combo
         for index in range(combo.count()):
             action = self.create_vector_menu.addAction(combo.itemText(index))
+            if combo.itemData(index) == ShapeKind.TRIANGLE.value:
+                action.setIcon(icon("triangle"))
             action.triggered.connect(lambda _checked=False, index=index: self._create_shape(index))
         self.create_vector_menu.addSeparator()
         self.create_vector_menu.addAction(self.tool_actions["text"])
@@ -821,6 +828,9 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.layers_dock)
 
         self.color_panel = ColorPanel(self.settings, self.controller.dialogs, self)
+        self.color_panel.colors_changed.connect(
+            self.tool_options_panel.shape.set_creation_colors
+        )
 
         self.tool_details_stack = QStackedWidget(self)
         self.tool_details_toolbar = QToolBar("详细工具设置", self)
@@ -1007,6 +1017,10 @@ class MainWindow(QMainWindow):
         self.inspector_tabs = QTabWidget(self)
         self.inspector_tabs.addTab(inspector, icon("settings-2"), "对象")
         self.inspector_tabs.addTab(self.color_panel, icon("palette"), "颜色")
+        self.creation_properties = CreationPropertiesPanel(
+            self.settings, self.tool_options_panel.shape, self
+        )
+        self.inspector_tabs.addTab(self.creation_properties, icon("settings-2"), "初始化")
         self.properties_dock = self._make_dock("对象属性", "PropertiesDock", self.inspector_tabs)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.properties_dock)
         self.splitDockWidget(self.layers_dock, self.properties_dock, Qt.Orientation.Vertical)
@@ -1193,6 +1207,13 @@ class MainWindow(QMainWindow):
             self._status_layout_timer.start(0)
         return super().eventFilter(watched, event)
 
+    def _object_created(self, node: RasterObject | TextObject | SvgObject) -> None:
+        self.creation_properties.record_created(node)
+        self.layer_panel.select_node(node)
+        self.tool_actions["object"].setChecked(True)
+        self._activate_tool("object")
+        self.inspector_tabs.setCurrentIndex(0)
+
     def _create_shape(self, index: int) -> None:
         if interaction_coordinator(self).owner is not None:
             return
@@ -1248,7 +1269,7 @@ class MainWindow(QMainWindow):
             "object": "G/S/R 变换 · Del 删除 · Shift+A 创建 · 滚轮缩放",
             "brush": "B 画笔 · 拖动绘制 · 中键/Space 平移",
             "eraser": "E 橡皮 · 拖动擦除 · 中键/Space 平移",
-            "eyedropper": "I 吸管 · 左键前景色 · 右键背景色",
+            "eyedropper": "I 吸管 · 左键主颜色 · 右键副颜色",
             "bucket": "G 油漆桶 · 左键填充 · Esc 取消任务",
             "rectangle_selection": "M 矩形选区 · Shift 添加 · Alt 减去",
             "magic_wand": "W 魔棒 · Shift 添加 · Alt 减去",

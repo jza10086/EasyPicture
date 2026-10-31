@@ -254,7 +254,9 @@ class _ColorPreview(QWidget):
 
 
 class ColorPickerDialog(QDialog):
-    """Compact modal HSV-circle picker used for foreground/background colors."""
+    """Compact modal HSV-circle picker with live color feedback."""
+
+    color_changed = Signal(QColor)
 
     def __init__(
         self,
@@ -431,6 +433,7 @@ class ColorPickerDialog(QDialog):
             return
         self._color = QColor(color)
         self._sync_widgets()
+        self.color_changed.emit(QColor(self._color))
 
     def _wheel_changed(self, hue: int, saturation: int) -> None:
         if self._syncing:

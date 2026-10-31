@@ -60,8 +60,9 @@ def _pointer(window, backend, point):
         (Qt.Key.Key_R, (32, 48), AffineTransform.rotation(90)),
     ],
 )
+@pytest.mark.parametrize("orientation", ["global", "local"])
 def test_transform_shortcuts_preview_commit_once_and_undo(
-    qtbot, tmp_path, virtual_pointer, key, end, expected
+    qtbot, tmp_path, virtual_pointer, key, end, expected, orientation
 ):
     window, controller = _window(qtbot, tmp_path)
     document = controller.document
@@ -71,13 +72,25 @@ def test_transform_shortcuts_preview_commit_once_and_undo(
     _pointer(window, virtual_pointer, (48, 32))
     stack = controller.commands.undo_stack.activeStack()
     before = stack.count()
+    window.transform_orientation.setCurrentIndex(0 if orientation == "global" else 1)
     _key(window.canvas_view, key)
     assert interaction_coordinator(window).owner is window._tools["object"]
     for _ in range(3):
         _mouse(window, QEvent.Type.MouseMove, end)
         assert document.node_by_id(node.id).transform.is_identity
         assert stack.count() == before
+        origin, basis, _axis = window.canvas_view._transform_axes
+        expected_origin = Point(36, 40) if key == Qt.Key.Key_G else Point(32, 32)
+        assert origin.x == pytest.approx(expected_origin.x)
+        assert origin.y == pytest.approx(expected_origin.y)
+        expected_basis = (
+            AffineTransform(expected.a, expected.b, expected.c, expected.d)
+            if orientation == "local"
+            else AffineTransform()
+        )
+        assert basis.almost_equals(expected_basis)
     _key(window.canvas_view, Qt.Key.Key_Return)
+    assert window.canvas_view._transform_axes is None
     assert stack.count() == before + 1
     if key != Qt.Key.Key_G:
         expected = (
@@ -113,6 +126,7 @@ def test_transform_cancel_and_delete_cannot_steal_gesture(qtbot, tmp_path, virtu
     assert controller.document.node_by_id(node.id).transform.is_identity
     assert controller.commands.undo_stack.activeStack().count() == before
     assert interaction_coordinator(window).owner is None
+    assert window.canvas_view._transform_axes is None
 
 
 def test_axis_precision_click_confirm_and_delete_with_undo(qtbot, tmp_path, virtual_pointer):
@@ -178,13 +192,13 @@ def test_create_menu_unifies_tools_and_shift_a_opens_same_menu(qtbot, tmp_path):
     assert [action.text() for action in vector.actions()[:6]] == [
         "直线",
         "矩形",
-        "圆角矩形",
         "椭圆",
+        "三角形",
         "折线",
         "多边形",
     ]
     window.create_object_menu.close()
-    vector.actions()[3].trigger()
+    vector.actions()[2].trigger()
     assert window.tool_controller.active_tool is window._tools["shape"]
     assert window.tool_options_panel.shape.kind() == ShapeKind.ELLIPSE
     raster = window.create_raster_menu
@@ -351,6 +365,9 @@ def test_local_global_axis_cycle_and_single_commit(qtbot, tmp_path, virtual_poin
     _key(window.canvas_view, Qt.Key.Key_X)  # local X is global Y for this object
     assert object_pivot(render.selection_nodes((node.id,))[0]).x == pytest.approx(32)
     assert object_pivot(render.selection_nodes((node.id,))[0]).y == pytest.approx(52)
+    axes_origin = window.canvas_view._transform_axes[0]
+    assert axes_origin.x == pytest.approx(32)
+    assert axes_origin.y == pytest.approx(52)
     _key(window.canvas_view, Qt.Key.Key_X)  # no axis constraint
     assert object_pivot(render.selection_nodes((node.id,))[0]).x == pytest.approx(42)
     _key(window.canvas_view, Qt.Key.Key_Escape)

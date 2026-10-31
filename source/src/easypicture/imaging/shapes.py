@@ -34,6 +34,7 @@ class ShapeKind(StrEnum):
     RECTANGLE = "rectangle"
     ROUNDED_RECTANGLE = "rounded_rectangle"
     ELLIPSE = "ellipse"
+    TRIANGLE = "triangle"
     POLYLINE = "polyline"
     POLYGON = "polygon"
 
@@ -75,7 +76,9 @@ class ShapeGeometry:
                 raise ValueError("box geometry must have positive dimensions")
         elif self.kind is ShapeKind.POLYLINE:
             _validate_polyline(self.points)
-        elif self.kind is ShapeKind.POLYGON:
+        elif self.kind in (ShapeKind.POLYGON, ShapeKind.TRIANGLE):
+            if self.kind is ShapeKind.TRIANGLE and len(self.points) != 3:
+                raise ValueError("triangle geometry requires three vertices")
             _validate_polygon(self.points)
 
     @property

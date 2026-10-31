@@ -176,10 +176,16 @@ class TextTool:
         )
         self._cancel_draft()
         created = TextObject.create(frame, name="文本", text="文本")
+        if context.foreground_provider is not None:
+            created.color = context.foreground_provider()
+        if context.initialize_text is not None:
+            created = context.initialize_text(created)
         if not context.commands.create_object(created, parent_id, insertion_index):
             return
         if context.select_node is not None:
             context.select_node(document.node_by_id(created.id))
+        if context.object_created is not None:
+            context.object_created(created)
 
     def _cancel_draft(self) -> None:
         self._draft_start = None

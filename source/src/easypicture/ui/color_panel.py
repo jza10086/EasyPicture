@@ -25,11 +25,11 @@ class ColorPanel(QWidget):
         self._foreground = settings.foreground_color()
         self._background = settings.background_color()
 
-        self.foreground_button = QPushButton("前景色", self)
-        self.background_button = QPushButton("背景色", self)
+        self.foreground_button = QPushButton("主颜色", self)
+        self.background_button = QPushButton("副颜色", self)
         self.swap_button = QPushButton("交换颜色", self)
-        self.foreground_button.setToolTip("打开前景色选择器")
-        self.background_button.setToolTip("打开背景色选择器")
+        self.foreground_button.setToolTip("打开主颜色选择器")
+        self.background_button.setToolTip("打开副颜色选择器")
         self.foreground_button.clicked.connect(self._choose_foreground)
         self.background_button.clicked.connect(self._choose_background)
         self.swap_button.clicked.connect(self.swap_colors)
@@ -70,12 +70,12 @@ class ColorPanel(QWidget):
         self._persist_and_emit()
 
     def _choose_foreground(self) -> None:
-        color = self._dialogs.choose_color(self, self._foreground, "选择前景色")
+        color = self._dialogs.choose_color(self, self._foreground, "选择主颜色")
         if color is not None:
             self.set_foreground(color)
 
     def _choose_background(self) -> None:
-        color = self._dialogs.choose_color(self, self._background, "选择背景色")
+        color = self._dialogs.choose_color(self, self._background, "选择副颜色")
         if color is not None:
             self.set_background(color)
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPointF, Qt
-from PySide6.QtGui import QKeyEvent, QMouseEvent
+import pytest
+
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
+from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
 from easypicture.commands import DocumentCommandService
@@ -90,7 +92,10 @@ def test_text_drag_cancel_has_no_history(qtbot):
     original = live.font_size
     core, _, _ = _drag(panel.size_spin)
     QApplication.sendEvent(
-        core, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+        core,
+        QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier
+        ),
     )
     assert commands.undo_stack.count() == 0
     assert live.font_size == original
@@ -98,7 +103,9 @@ def test_text_drag_cancel_has_no_history(qtbot):
 
 
 def test_svg_corner_feedback_keeps_dragging(qtbot):
-    _, commands, panel, live = _panel_for_object(qtbot, SvgRectGeometry(4, 5, 20, 10, 2, 2))
+    _, commands, panel, live = _panel_for_object(
+        qtbot, SvgRectGeometry(4, 5, 20, 10, 2, 2)
+    )
     panel.show()
     previews = []
     panel.preview_changed.connect(previews.append)
@@ -184,7 +191,9 @@ def test_layer_opacity_uses_private_preview_and_one_commit(qtbot, tmp_path):
     assert field.interaction_state is NumericEditState.DRAGGING
     assert live.opacity == 1.0
     assert controller.commands.undo_stack.count() == 0
-    displayed = window.canvas_view.render_coordinator.display_raster_children(document.nodes[0])
+    displayed = window.canvas_view.render_coordinator.display_raster_children(
+        document.nodes[0]
+    )
     assert displayed[0].opacity == field.value() / 100.0 < 1
     QApplication.sendEvent(
         core,
@@ -220,3 +229,65 @@ def test_svg_name_is_one_text_session_and_invalid_name_restores(qtbot):
     qtbot.keyClick(panel.name_edit, Qt.Key.Key_Return)
     assert panel.name_edit.text() == live.name == "renamed"
     assert commands.undo_stack.count() == 1
+
+
+@pytest.mark.parametrize("kind", ["svg_fill", "svg_stroke", "text_fill", "text_stroke"])
+@pytest.mark.parametrize("accept", [True, False])
+def test_object_color_dialog_previews_live_and_commits_once(
+    qtbot, monkeypatch, kind, accept
+):
+    from easypicture.domain import parse_editable_svg
+    from easypicture.ui.color_dialog import ColorPickerDialog
+    from easypicture.ui.property_binding import interaction_coordinator
+
+    if kind.startswith("svg"):
+        _, commands, panel, live = _panel_for_object(
+            qtbot, SvgRectGeometry(4, 5, 20, 10)
+        )
+
+        def read_color(node):
+            return getattr(parse_editable_svg(node.svg).style, kind[4:])
+
+        def action():
+            panel._pick_color(kind[4:])
+    else:
+        commands, panel, live = _text_panel(qtbot)
+        field = "stroke_color" if kind.endswith("stroke") else "color"
+
+        def read_color(node):
+            return getattr(node, field)
+
+        action = (
+            panel._pick_stroke_color if kind.endswith("stroke") else panel._pick_color
+        )
+    original = read_color(live)
+    previews = []
+    panel.preview_changed.connect(lambda node: previews.append(read_color(node)))
+    cleared = []
+    panel.preview_cleared.connect(lambda: cleared.append(True))
+    seen = []
+    execute = ColorPickerDialog.exec
+
+    def run_dialog(dialog):
+        def edit():
+            for color in (QColor(12, 34, 56, 200), QColor(90, 80, 70, 180)):
+                dialog._set_color(color)
+                seen.append(
+                    (previews[-1], read_color(live), commands.undo_stack.count())
+                )
+            dialog.accept() if accept else dialog.reject()
+
+        QTimer.singleShot(0, edit)
+        return execute(dialog)
+
+    monkeypatch.setattr(ColorPickerDialog, "exec", run_dialog)
+    action()
+    assert seen == [((12, 34, 56, 200), original, 0), ((90, 80, 70, 180), original, 0)]
+    assert cleared
+    assert not panel._edit_session.active
+    assert interaction_coordinator(panel).owner is None
+    assert commands.undo_stack.count() == int(accept)
+    assert read_color(live) == ((90, 80, 70, 180) if accept else original)
+    if accept:
+        commands.undo_stack.undo()
+        assert read_color(live) == original

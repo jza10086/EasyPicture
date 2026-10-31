@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSignalBlocker, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -646,20 +647,26 @@ class ShapeOptionsWidget(QWidget):
     commit_requested = Signal()
     cancel_requested = Signal()
 
-    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, settings: AppSettings, parent: QWidget | None = None, *, vertical: bool = False
+    ) -> None:
         super().__init__(parent)
         self.kind_combo = BlenderComboBox(self)
         for label, kind in (
             ("直线", ShapeKind.LINE),
             ("矩形", ShapeKind.RECTANGLE),
-            ("圆角矩形", ShapeKind.ROUNDED_RECTANGLE),
             ("椭圆", ShapeKind.ELLIPSE),
+            ("三角形", ShapeKind.TRIANGLE),
             ("折线", ShapeKind.POLYLINE),
             ("多边形", ShapeKind.POLYGON),
         ):
             self.kind_combo.addItem(label, kind.value)
         self.kind_combo.setCurrentIndex(
-            max(0, self.kind_combo.findData(settings.shape_kind().value))
+            self.kind_combo.findData(
+                ShapeKind.RECTANGLE.value
+                if settings.shape_kind() is ShapeKind.ROUNDED_RECTANGLE
+                else settings.shape_kind().value
+            )
         )
         self.kind_combo.setDefaultValue(ShapeKind.RECTANGLE.value)
         current = settings.shape_settings()
@@ -713,24 +720,44 @@ class ShapeOptionsWidget(QWidget):
         # second Apply action would imply that the result is still pending.
         self.apply_button.hide()
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 0, 4, 0)
-        for label, widget in (
-            ("输出", self.output_combo),
-            ("类型", self.kind_combo),
-            ("样式", self.style_combo),
-            ("描边", self.stroke_width_spin),
-            ("不透明度", self.opacity_spin),
-            ("混合", self.blend_combo),
-        ):
-            layout.addWidget(QLabel(label, self))
-            layout.addWidget(widget)
-        layout.addWidget(self.stroke_color_button)
-        layout.addWidget(self.fill_color_button)
-        layout.addWidget(self.antialias_check)
-        layout.addWidget(self.apply_button)
-        layout.addWidget(self.cancel_button)
-        layout.addStretch(1)
+        if vertical:
+            form = QFormLayout(self)
+            for label, widget in (
+                ("样式", self.style_combo),
+                ("描边宽度", self.stroke_width_spin),
+                ("不透明度", self.opacity_spin),
+                ("描边颜色", self.stroke_color_button),
+                ("填充颜色", self.fill_color_button),
+            ):
+                form.addRow(label, widget)
+            for hidden_widget in (
+                self.kind_combo,
+                self.output_combo,
+                self.blend_combo,
+                self.antialias_check,
+                self.apply_button,
+                self.cancel_button,
+            ):
+                hidden_widget.hide()
+        else:
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(4, 0, 4, 0)
+            for label, widget in (
+                ("输出", self.output_combo),
+                ("类型", self.kind_combo),
+                ("样式", self.style_combo),
+                ("描边", self.stroke_width_spin),
+                ("不透明度", self.opacity_spin),
+                ("混合", self.blend_combo),
+            ):
+                layout.addWidget(QLabel(label, self))
+                layout.addWidget(widget)
+            layout.addWidget(self.stroke_color_button)
+            layout.addWidget(self.fill_color_button)
+            layout.addWidget(self.antialias_check)
+            layout.addWidget(self.apply_button)
+            layout.addWidget(self.cancel_button)
+            layout.addStretch(1)
 
         self.kind_combo.currentIndexChanged.connect(self._emit_kind)
         self.output_combo.currentIndexChanged.connect(self._emit_output_target)
@@ -789,6 +816,23 @@ class ShapeOptionsWidget(QWidget):
 
     def _emit_settings(self, _value: object = None) -> None:
         self.settings_changed.emit(self.settings())
+
+    def set_settings(self, value: ShapeSettings) -> None:
+        with QSignalBlocker(self):
+            self.style_combo.setCurrentIndex(self.style_combo.findData(value.style.value))
+            self.stroke_width_spin.syncValue(value.stroke_width)
+            self.opacity_spin.syncValue(round(value.opacity * 100))
+            self.antialias_check.setChecked(value.antialias)
+            self.blend_combo.setCurrentIndex(self.blend_combo.findData(value.blend_mode.value))
+            self._stroke_color = QColor.fromRgb(*value.stroke_color)
+            self._fill_color = QColor.fromRgb(*value.fill_color)
+            self._refresh_color_buttons()
+
+    def set_creation_colors(self, primary: QColor, secondary: QColor) -> None:
+        self._stroke_color = QColor(primary)
+        self._fill_color = QColor(secondary)
+        self._refresh_color_buttons()
+        self._emit_settings()
 
     def _choose_stroke(self) -> None:
         color = self._choose_color(self._stroke_color, "选择描边颜色")

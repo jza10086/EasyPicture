@@ -680,8 +680,8 @@ class ColorAdjustmentPanel(QWidget):
         preset_buttons = QHBoxLayout()
         for button in (save_preset, rename_preset, delete_preset):
             preset_buttons.addWidget(button)
-        add_foreground = QPushButton("添加前景色", page)
-        add_background = QPushButton("添加背景色", page)
+        add_foreground = QPushButton("添加主颜色", page)
+        add_background = QPushButton("添加副颜色", page)
         add_custom = QPushButton("添加颜色…", page)
         remove = QPushButton("删除选中色", page)
         move_left = QPushButton("左移", page)

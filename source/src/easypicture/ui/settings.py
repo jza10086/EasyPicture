@@ -11,7 +11,7 @@ from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import QMainWindow
 
-from easypicture.domain import Size
+from easypicture.domain import FloatRect, RasterObject, Size, TextObject
 from easypicture.domain.document import MAX_DOCUMENT_DIMENSION
 from easypicture.imaging import (
     MAX_BRUSH_SIZE,
@@ -72,6 +72,18 @@ class TileWorkspaceSettings:
     transition_mode: TileTransitionMode = TileTransitionMode.ORDERED_DITHER
     boundary_percent: int = 50
     transition_width: int = 8
+
+
+_TEXT_INITIALIZATION_FIELDS = (
+    "text",
+    "font_family",
+    "font_size",
+    "font_weight",
+    "italic",
+    "line_spacing",
+    "opacity",
+    "stroke_width",
+)
 
 
 class AppSettings:
@@ -528,6 +540,69 @@ class AppSettings:
         self._settings.setValue("tools/magic_wand/sample_merged", settings.sample_merged)
         self._settings.setValue("tools/magic_wand/include_alpha", settings.include_alpha)
         self.set_selection_combine_mode(settings.mode)
+
+    def text_auto_size(self) -> bool:
+        return self._settings.value("creation/text/auto_size", True, type=bool) is True
+
+    def set_text_auto_size(self, enabled: bool) -> None:
+        self._settings.setValue("creation/text/auto_size", enabled)
+
+    def text_initialization(self) -> TextObject:
+        from dataclasses import replace
+
+        default = TextObject.create(FloatRect(0, 0, 256, 64))
+        return replace(
+            default,
+            text=str(self._settings.value("creation/text/text", default.text)),
+            font_family=str(self._settings.value("creation/text/font_family", default.font_family)),
+            font_size=float(
+                str(self._settings.value("creation/text/font_size", default.font_size))
+            ),
+            font_weight=int(
+                str(self._settings.value("creation/text/font_weight", default.font_weight))
+            ),
+            italic=self._settings.value("creation/text/italic", default.italic, type=bool) is True,
+            line_spacing=float(
+                str(self._settings.value("creation/text/line_spacing", default.line_spacing))
+            ),
+            opacity=float(str(self._settings.value("creation/text/opacity", default.opacity))),
+            stroke_width=float(
+                str(self._settings.value("creation/text/stroke_width", default.stroke_width))
+            ),
+        )
+
+    def set_text_initialization(self, value: TextObject) -> None:
+        for name in _TEXT_INITIALIZATION_FIELDS:
+            self._settings.setValue(f"creation/text/{name}", getattr(value, name))
+
+    def initialize_raster(self, node: RasterObject) -> RasterObject:
+        from dataclasses import replace
+
+        from easypicture.domain.layer import RasterSampling
+
+        return replace(
+            node,
+            opacity=float(str(self._settings.value("creation/raster/opacity", 1.0))),
+            alpha_locked=self._settings.value("creation/raster/alpha_locked", False, type=bool)
+            is True,
+            sampling=RasterSampling(
+                str(self._settings.value("creation/raster/sampling", "nearest"))
+            ),
+        )
+
+    def set_raster_initialization(self, node: RasterObject) -> None:
+        self._settings.setValue("creation/raster/opacity", node.opacity)
+        self._settings.setValue("creation/raster/alpha_locked", node.alpha_locked)
+        self._settings.setValue("creation/raster/sampling", node.sampling.value)
+
+    def last_created_kind(self) -> str:
+        kind = str(self._settings.value("creation/last_kind", "text"))
+        if kind not in {"text", "shape", "raster"}:
+            raise ValueError(f"Invalid creation kind: {kind}")
+        return kind
+
+    def set_last_created_kind(self, kind: str) -> None:
+        self._settings.setValue("creation/last_kind", kind)
 
     def shape_kind(self) -> ShapeKind:
         value = str(self._settings.value("tools/shape/kind", ShapeKind.RECTANGLE.value))

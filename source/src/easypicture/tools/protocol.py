@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 
-from easypicture.domain import Document
+from easypicture.domain import Document, RasterObject, SvgObject, TextObject
 
 if TYPE_CHECKING:
     from easypicture.commands import DocumentCommandService
@@ -33,6 +33,9 @@ class ToolContext:
     selected_node_provider: Callable[[], object | None] | None = None
     select_node: Callable[[object], None] | None = None
     project_provider: Callable[[], Document | None] | None = None
+    object_created: Callable[[RasterObject | TextObject | SvgObject], None] | None = None
+    initialize_text: Callable[[TextObject], TextObject] | None = None
+    initialize_raster: Callable[[RasterObject], RasterObject] | None = None
 
 
 class Tool(Protocol):

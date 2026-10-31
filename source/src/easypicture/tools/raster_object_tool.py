@@ -94,11 +94,15 @@ class RasterObjectTool(NullTool):
             return True
         node = RasterObject.create_blank("栅格对象", Size(ceil(rect.width()), ceil(rect.height())))
         node.transform = AffineTransform.translation(rect.x(), rect.y())
+        if context.initialize_raster is not None:
+            node = context.initialize_raster(node)
         selected = context.selected_node_provider() if context.selected_node_provider else None
         parent, index = object_insertion(document, selected)
         if context.commands and context.commands.create_object(node, parent, index):
             if context.select_node:
                 context.select_node(document.node_by_id(node.id))
+            if context.object_created is not None:
+                context.object_created(node)
         elif context.status:
             context.status("无法在锁定的集合中添加栅格对象")
         return True

@@ -514,7 +514,9 @@ class ShapeTool:
                 else:
                     context.select_node(created)
             if existing_id is None:
-                self._status("已创建矢量图形，可继续绘制")
+                self._status("已创建矢量图形")
+                if context.object_created is not None:
+                    context.object_created(vector_object)
             return True
         result = session.latest_result
         if result is None:
@@ -980,6 +982,7 @@ class ShapeTool:
                     geometry,
                     style,
                     Size(document.width, document.height),
+                    name="三角形" if self._kind_provider() is ShapeKind.TRIANGLE else None,
                 )
             svg = update_editable_svg(session.vector_object.svg, geometry, style)
             return replace(
@@ -1092,6 +1095,7 @@ class ShapeTool:
                 ShapeKind.RECTANGLE,
                 ShapeKind.ROUNDED_RECTANGLE,
                 ShapeKind.ELLIPSE,
+                ShapeKind.TRIANGLE,
             )
             and modifiers & Qt.KeyboardModifier.ShiftModifier
         ):
@@ -1102,6 +1106,13 @@ class ShapeTool:
             x0, x1 = x0 - (x1 - x0), x1
             y0, y1 = y0 - (y1 - y0), y1
         try:
+            if kind is ShapeKind.TRIANGLE:
+                left, right = sorted((x0, x1))
+                top, bottom = sorted((y0, y1))
+                return ShapeGeometry(
+                    ShapeKind.POLYGON,
+                    (((left + right) / 2, top), (right, bottom), (left, bottom)),
+                )
             return ShapeGeometry(kind, ((x0, y0), (x1, y1)))
         except ValueError:
             return None

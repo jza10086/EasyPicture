@@ -50,6 +50,7 @@ class TextPropertiesPanel(QWidget):
         self.commands = commands
         self._object: TextObject | None = None
         self._syncing = False
+        self._color_editing = False
         self._feedback_values: dict[DragValueDoubleSpinBox, float] = {}
         self._bindings: dict[DragValueDoubleSpinBox, PropertyBinding[float]] = {}
         self._edit_session = PropertyEditSession[dict[str, Any]](
@@ -396,7 +397,7 @@ class TextPropertiesPanel(QWidget):
         return self._edit_session.active
 
     def _finish_edit(self) -> None:
-        if self._syncing:
+        if self._syncing or self._color_editing:
             return
         if self._edit_session.active:
             self._edit_session.finish()
@@ -444,6 +445,8 @@ class TextPropertiesPanel(QWidget):
         return changed
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        if self._color_editing:
+            return super().eventFilter(watched, event)
         if watched in (self.name_edit, self.font_edit, self.text_edit):
             if event.type() == QEvent.Type.FocusIn:
                 self._begin_text_edit()
@@ -482,19 +485,42 @@ class TextPropertiesPanel(QWidget):
         super().hideEvent(event)
 
     def _pick_color(self) -> None:
-        color = self._choose_color(self._color, "文字颜色")
-        if color is not None:
-            self._set_color(color)
-            self.apply()
+        self._edit_color(stroke=False)
 
     def _pick_stroke_color(self) -> None:
-        color = self._choose_color(self._stroke_color, "描边颜色")
-        if color is not None:
-            self._set_stroke_color(color)
+        self._edit_color(stroke=True)
+
+    def _edit_color(self, *, stroke: bool) -> None:
+        interaction_coordinator(self).cancel()
+        self._begin_edit()
+        if not self._edit_session.active:
+            return
+
+        def preview(color: QColor) -> None:
+            if not self._edit_session.active:
+                return
+            if stroke:
+                self._set_stroke_color(color)
+            else:
+                self._set_color(color)
             self.apply()
 
-    def _choose_color(self, current: QColor, title: str) -> QColor | None:
-        return choose_property_color(self, current, title)
+        self._color_editing = True
+        try:
+            color = choose_property_color(
+                self,
+                self._stroke_color if stroke else self._color,
+                "描边颜色" if stroke else "文字颜色",
+                preview=preview,
+            )
+            if color is not None:
+                preview(color)
+                self._color_editing = False
+                self._finish_edit()
+        finally:
+            self._color_editing = False
+            if self._edit_session.active:
+                self._cancel_edit()
 
     def _set_color(self, color: QColor) -> None:
         self._color = QColor(color)

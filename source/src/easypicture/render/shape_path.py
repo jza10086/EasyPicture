@@ -74,7 +74,7 @@ def shape_path(geometry: ShapeGeometry) -> QPainterPath:
         for point in geometry.points[1:]:
             path.lineTo(QPointF(*point))
         return path
-    if geometry.kind is ShapeKind.POLYGON:
+    if geometry.kind in (ShapeKind.POLYGON, ShapeKind.TRIANGLE):
         polygon = QPolygonF([QPointF(*point) for point in geometry.points])
         path.addPolygon(polygon)
         path.closeSubpath()

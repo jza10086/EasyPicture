@@ -715,7 +715,9 @@ class CanvasView(QGraphicsView):
             painter.setPen(QPen(self._center_marker_color, 1.0))
             centers = list(self.render_coordinator.selection_centers(self._object_selection))
             if len(centers) > 1 and self._selection_pivot is not None:
-                centers.append(self._selection_pivot)
+                centers.append(
+                    self._transform_axes[0] if self._transform_axes else self._selection_pivot
+                )
             for center in centers:
                 painter.drawEllipse(
                     mapping.map(QPointF(center.x, center.y)),

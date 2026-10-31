@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -58,6 +59,9 @@ def collect_licenses(destination: Path) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--skip-smoke", action="store_true", help="Package without launching the EXE")
+    options = parser.parse_args()
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run = inside(ROOT / "archive" / "runs" / f"package-{stamp}")
     run.mkdir(parents=True)
@@ -101,7 +105,7 @@ def main() -> None:
     staged.mkdir()
     shutil.copy2(candidate, staged / "EasyPicture.exe")
     smoke_output = inside(ROOT / "tmp" / "test" / "runs" / f"package-{stamp}")
-    results = smoke([str(staged / "EasyPicture.exe")], smoke_output)
+    results = [] if options.skip_smoke else smoke([str(staged / "EasyPicture.exe")], smoke_output)
     release = inside(ROOT / "release")
     release.mkdir(exist_ok=True)
     existing = list(release.iterdir())
@@ -119,7 +123,7 @@ def main() -> None:
         "executable": "release/EasyPicture.exe",
         "bytes": (release / "EasyPicture.exe").stat().st_size,
         "validation": results,
-        "validation_directory": str(smoke_output.relative_to(ROOT)),
+        "validation_directory": None if options.skip_smoke else str(smoke_output.relative_to(ROOT)),
         "native_mouse": "manual acceptance pending",
         "hardware_opengl": "not covered by offscreen checks",
     }
